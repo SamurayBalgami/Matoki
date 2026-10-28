@@ -33,6 +33,9 @@ typedef struct LitUniforms {
     Vec3 eye;
     b32  use_mip;
     Vec3 tint;
+    /* yalnızca shaders/lit_hq.mtk (lit.mtk ve C shader'ları okumaz) */
+    f32  wrap;          /* diffuse: 0 = Lambert, 1 = half-Lambert² (yumuşak, kıvrımlar belli) */
+    f32  translucency;  /* arkadan gelen ışığın geçen payı (kumaş) */
     u32  lv_count;                  /* lit_uniforms_prepare doldurur */
     TexLevel lv[TEX_MAX_LEVELS];
 } LitUniforms;

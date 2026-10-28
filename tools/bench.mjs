@@ -34,7 +34,7 @@ const MODE_NAMES = ['skaler', 'simd'];
 const RASTER_MODES = ex.engine_set_raster_mode ? MODE_NAMES.slice(0, ex.engine_raster_mode_count()) : ['önceki (anlık, skaler)'];
 console.log(`CPU: ${os.cpus()[0].model}, node ${process.version}, ${W}x${H}, ${frames} kare/ölçüm, wasm ${String(wasmPath).split(/[\\/]/).pop()}`);
 // demo.c SHADER_* sırası; lit satırları her shader modu için en hızlı raster moduyla ölçülür
-const SHADER_NAMES = ['lit ref', 'lit lut', 'lit simd', 'lit matoki'];
+const SHADER_NAMES = ['lit ref', 'lit lut', 'lit simd', 'lit matoki', 'lit hq'];
 const MATOKI = 3;
 const SHADER_MODES = ex.engine_set_shader_mode ? SHADER_NAMES.slice(0, ex.engine_shader_mode_count()) : ['lit'];
 const hasMatoki = ex.engine_matoki_ready && ex.engine_matoki_ready();

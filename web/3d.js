@@ -25,13 +25,13 @@ const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected',
   'triEmitted', 'triBack', 'triDegen', 'triDrawn', 'quads', 'pixels', 'frameUs', 'arenaKb', 'camX', 'camY', 'camZ',
   'rasterMode', 'binItems', 'binFull', 'shaderMode', 'physBodies', 'physContacts', 'physUs', 'physSteps', 'physAwake',
   'playMode', 'carKmh', 'carWheels', 'charGrounded', 'softParticles', 'softUs', 'softContacts',
-  'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes'];
+  'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes', 'msaa', 'resolveUs'];
 // ?prof: kareler rAF yerine art arda, sabit 1/60 sn adımla sürülür (vsync ve gizli sekmeden bağımsız);
 // her sahnede 60 kare ısınma + 180 kare ölçüm, aşama ortalamaları konsola ve window.__prof'a
 const PROF = qs.has('prof');
 const PROF_SCENES = [1, 2, 3, 4, 5, 6], PROF_WARM = 60, PROF_MEASURE = 180, PROF_DT = 1000 / 60;
 const PLAY_NAMES = ['SÜRÜŞ', 'YÜRÜYÜŞ', 'UÇUŞ'];
-const SHADER_NAMES = ['ref (skaler)', 'tablo (skaler)', 'SIMD', 'Matoki JIT'];
+const SHADER_NAMES = ['ref (skaler)', 'tablo (skaler)', 'SIMD', 'Matoki JIT', 'Matoki HQ (anizotropik)'];
 
 async function main() {
   if (!crossOriginIsolated) throw new Error('SharedArrayBuffer yok: sayfa COOP/COEP başlıklarıyla sunulmalı (python build.py serve)');
@@ -93,7 +93,7 @@ async function main() {
     const st = Object.fromEntries(ST.map((k, i) => [k, s[i]]));
     const ms = {
       dt, total: st.totalUs / 1000, clear: st.clearUs / 1000, geo: st.geoUs / 1000, flush: st.flushUs / 1000,
-      phys: st.physUs / 1000, soft: st.softUs / 1000, copy: copyMs, wall: wallMs,
+      phys: st.physUs / 1000, soft: st.softUs / 1000, copy: copyMs, wall: wallMs, resolve: st.resolveUs / 1000,
     };
     acc += dt; frames++;
     for (const k in ms) sum[k] = (sum[k] || 0) + ms[k];
@@ -126,7 +126,7 @@ async function main() {
         `sahne ${st.scene}   mipmap ${st.mip ? 'AÇIK' : 'kapalı'}   kamera ${['uçuş', 'orbit', 'oyun'][st.cam] || '?'}\n` +
         `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H}   ${threads} thread\n` +
         `  temizle ${f('clear')}  geometri ${f('geo')}  boyama ${f('flush')}  fizik ${f('phys')}  yumuşak ${f('soft')}  kopya ${f('copy')}\n` +
-        `raster ${st.rasterMode ? 'SIMD' : 'skaler'}   shader ${SHADER_NAMES[st.shaderMode]}\n` +
+        `raster ${st.rasterMode ? 'SIMD' : 'skaler'}   shader ${SHADER_NAMES[st.shaderMode]}   MSAA ${st.msaa}x (çözümleme ${f('resolve')} ms)\n` +
         `bin ${st.binItems} (tam ${st.binFull})\n` +
         (st.scene >= 3
           ? `fizik: ${st.physBodies} gövde (uyanık ${st.physAwake}), ${st.physContacts} temas, ${(st.physUs / 1000).toFixed(2)} ms (${st.physSteps} adım)\n`

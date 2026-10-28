@@ -22,6 +22,7 @@
 #define KEY_G 71
 #define KEY_T 84
 #define KEY_V 86
+#define KEY_N 78
 
 /* sahne 4 oyun modu */
 enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
@@ -47,6 +48,7 @@ enum {
     ST_SOFT_PARTICLES, ST_SOFT_US, ST_SOFT_CONTACTS,
     ST_CLEAR_US, ST_GEO_US, ST_FLUSH_US, ST_TOTAL_US,   /* kare profili (µs) */
     ST_PRELUDES,                                         /* çizim önsözü çağrısı */
+    ST_MSAA, ST_RESOLVE_US,                              /* örnek sayısı, MSAA çözümleme (µs) */
     ST_COUNT
 };
 
@@ -118,62 +120,77 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->fog_color = v3(0.62f, 0.72f, 0.85f);
     u->tint = tint;
     u->use_mip = FALSE;
+    u->wrap = 0.25f;
+    u->translucency = 0.0f;
     lit_uniforms_prepare(u);
 }
 
-/* lit shader uygulaması; dördü de bit-bit aynı çıktı. Varsayılan SHADER_MATOKI = shaders/lit.mtk JIT'i
- * (önsöz + hızlı gövde); C uygulamaları kâhin ve A/B ölçümü için kalır (L tuşu). */
-enum { SHADER_REF, SHADER_LUT, SHADER_SIMD, SHADER_MATOKI, SHADER_MODE_COUNT };
+/* lit shader uygulaması; ilk dördü bit-bit aynı çıktı (lit.mtk = C shader'ları). Varsayılan SHADER_HQ =
+ * shaders/lit_hq.mtk (anizotropik + çift doğrusal süzme, sargılı diffuse, kumaş geçirgenliği). L tuşu gezer. */
+enum { SHADER_REF, SHADER_LUT, SHADER_SIMD, SHADER_MATOKI, SHADER_HQ, SHADER_MODE_COUNT };
 
 static void shade_capture(const ShadeQuad* q, const void* uniforms, u32 out[4]);   /* ölçüm, aşağıda */
 static ShadeFn g_matoki_full;
 
 static ShadeFn g_matoki_lit;      /* hızlı yol (önsöz önbelleğini okur) */
 static PreludeFn g_matoki_pre;
+static ShadeFn g_hq_lit;
+static PreludeFn g_hq_pre;
 
 /* Matoki'de shader önsözle birlikte gelir; diğerlerinde önsöz yok */
-static PreludeFn lit_prelude_for(i32 mode) { return mode == SHADER_MATOKI && g_matoki_lit ? g_matoki_pre : NULL; }
+static PreludeFn lit_prelude_for(i32 mode) {
+    if (mode == SHADER_HQ && g_hq_lit) return g_hq_pre;
+    return mode == SHADER_MATOKI && g_matoki_lit ? g_matoki_pre : NULL;
+}
 
 static ShadeFn lit_shader_for(i32 mode) {
+    if (mode == SHADER_HQ && g_hq_lit) return g_hq_lit;
     if (mode == SHADER_MATOKI && g_matoki_lit) return g_matoki_lit;
 #if defined(__wasm_simd128__)
-    if (mode == SHADER_SIMD || mode == SHADER_MATOKI) return shade_lit_tex_simd;
+    if (mode == SHADER_SIMD || mode == SHADER_MATOKI || mode == SHADER_HQ) return shade_lit_tex_simd;
 #endif
     if (mode == SHADER_LUT) return shade_lit_tex_lut;
     return shade_lit_tex;
 }
 
-/* lit.mtk'yi derle + JIT; uniform yerleşimi LitUniforms ile aynı değilse kullanma. */
-static void matoki_lit_init(Arena* a) {
-    const EmbedFile* ef = embed_find("lit.mtk");
+/* .mtk'yi derle + JIT; uniform yerleşimi LitUniforms ile aynı değilse NULL. */
+static MatokiProgram* matoki_lit_load(Arena* a, const char* file) {
+    const EmbedFile* ef = embed_find(file);
+    char buf[320];
+    StrBuf sb;
+    sb_init(&sb, buf, sizeof(buf));
     if (!ef) {
-        log_cstr("matoki: lit.mtk gömülü değil");
-        return;
+        sb_cstr(&sb, "matoki: gömülü değil: ");
+        sb_cstr(&sb, file);
+        log_sb(&sb);
+        return NULL;
     }
     MatokiProgram* p = ARENA_NEW(a, MatokiProgram);
     MatokiError e;
     f64 t0 = sys_now_ms();
     b32 ok = matoki_compile(a, (const char*)ef->data, ef->len, NULL, p, &e) && matoki_jit(a, p, &e);
     f64 t1 = sys_now_ms();
-    char buf[320];
-    StrBuf sb;
-    sb_init(&sb, buf, sizeof(buf));
     if (!ok) {
-        sb_cstr(&sb, "matoki: lit.mtk:");
+        sb_cstr(&sb, "matoki: ");
+        sb_cstr(&sb, file);
+        sb_char(&sb, ':');
         matoki_format_error(&e, &sb);
         log_sb(&sb);
-        return;
+        return NULL;
     }
     const GlobalDecl* tex = matoki_find_uniform(p, "tex");
     const GlobalDecl* tint = matoki_find_uniform(p, "tint");
-    if (!tex || !tint || tex->offset != __builtin_offsetof(LitUniforms, tex) || tint->offset != __builtin_offsetof(LitUniforms, tint)) {
-        log_cstr("matoki: lit.mtk uniform yerleşimi LitUniforms ile uyuşmuyor");
-        return;
+    const GlobalDecl* tr = matoki_find_uniform(p, "translucency");
+    if (!tex || !tint || tex->offset != __builtin_offsetof(LitUniforms, tex) || tint->offset != __builtin_offsetof(LitUniforms, tint) ||
+        (tr && tr->offset != __builtin_offsetof(LitUniforms, translucency))) {
+        sb_cstr(&sb, "matoki: uniform yerleşimi LitUniforms ile uyuşmuyor: ");
+        sb_cstr(&sb, file);
+        log_sb(&sb);
+        return NULL;
     }
-    g_matoki_lit = p->fn_fast;
-    g_matoki_pre = p->prelude;
-    g_matoki_full = p->fn;
-    sb_cstr(&sb, "matoki: lit.mtk derlendi + JIT: ");
+    sb_cstr(&sb, "matoki: ");
+    sb_cstr(&sb, file);
+    sb_cstr(&sb, " derlendi + JIT: ");
     sb_u64(&sb, p->ir_live);
     sb_cstr(&sb, " IR komutu (");
     sb_u64(&sb, p->wasm.hoisted);
@@ -183,6 +200,21 @@ static void matoki_lit_init(Arena* a) {
     sb_f64(&sb, t1 - t0, 2);
     sb_cstr(&sb, " ms");
     log_sb(&sb);
+    return p;
+}
+
+static void matoki_lit_init(Arena* a) {
+    MatokiProgram* p = matoki_lit_load(a, "lit.mtk");
+    if (p) {
+        g_matoki_lit = p->fn_fast;
+        g_matoki_pre = p->prelude;
+        g_matoki_full = p->fn;
+    }
+    MatokiProgram* hq = matoki_lit_load(a, "lit_hq.mtk");
+    if (hq) {
+        g_hq_lit = hq->fn_fast;
+        g_hq_pre = hq->prelude;
+    }
 }
 
 static void material(Material* m, const LitUniforms* u) {
@@ -618,7 +650,7 @@ static void scene_set(i32 s) {
 
 EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     if (w <= 0 || h <= 0) return 0;
-    if (!arena_init_sys(&g.perm, (usize)48 << 20)) return 0;
+    if (!arena_init_sys(&g.perm, (usize)112 << 20)) return 0;   /* MSAA örnek tamponları 720p'de ~30 MB */
     if (!arena_init_sys(&g.frame, (usize)32 << 20)) return 0;
     if (!arena_init_sys(&g.bins, (usize)48 << 20)) return 0;
     if (!arena_init_sys(&g.soft_arena, (usize)8 << 20)) return 0;
@@ -627,6 +659,10 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.fb.h = h;
     g.fb.color = ARENA_ARRAY(&g.perm, u32, (usize)w * (usize)h);
     g.fb.depth = ARENA_ARRAY(&g.perm, f32, (usize)w * (usize)h);
+    /* MSAA 4x örnek tamponları (N tuşu açar/kapatır; varsayılan açık) */
+    g.fb.color_ms = ARENA_ARRAY(&g.perm, u32, (usize)w * (usize)h * RASTER_MSAA);
+    g.fb.depth_ms = ARENA_ARRAY(&g.perm, f32, (usize)w * (usize)h * RASTER_MSAA);
+    g.fb.samples = RASTER_MSAA;
     raster_init(&g.raster, &g.fb);
     camera_init(&g.cam, (f32)w / (f32)h);
 
@@ -690,7 +726,11 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     material(&g.m_tire, &g.u_tire);
     material(&g.m_char, &g.u_char);
     lit_defaults(&g.u_flag, g.tex_checker, v3(0.95f, 0.22f, 0.18f));
+    g.u_flag.wrap = 1.0f;          /* half-Lambert²: kıvrımlar belli, gölge yüzü kara değil */
+    g.u_flag.translucency = 0.3f;  /* ters yüz arkadan ışıkla parlar */
     lit_defaults(&g.u_jelly, g.tex_grid, v3(0.35f, 0.95f, 0.45f));
+    g.u_jelly.wrap = 0.7f;
+    g.u_jelly.translucency = 0.2f;
     material(&g.m_flag, &g.u_flag);
     material(&g.m_jelly, &g.u_jelly);
     phys_world_init(&g.phys, &g.perm, 1024, 8192);
@@ -702,6 +742,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.shader_mode = SHADER_SIMD;
     matoki_lit_init(&g.perm);
     if (g_matoki_lit) g.shader_mode = SHADER_MATOKI;
+    if (g_hq_lit) g.shader_mode = SHADER_HQ;
     scene_set(1);
     g.ready = TRUE;
     return 1;
@@ -914,6 +955,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
         if (g.phys_acc > PHYS_DT) g.phys_acc = 0.0f;
     }
     if (g.in.pressed[KEY_M]) g.mip = !g.mip;
+    if (g.in.pressed[KEY_N]) g.fb.samples = g.fb.samples == RASTER_MSAA ? 1u : RASTER_MSAA;
     if (g.in.pressed[KEY_L]) g.shader_mode = (g.shader_mode + 1) % SHADER_MODE_COUNT;
     if (g.in.pressed[KEY_R]) raster_set_mode(&g.raster, (RasterMode)((g.raster.mode + 1) % RASTER_MODE_COUNT));
     if (g.in.pressed[KEY_C] && g.cam.mode != CAM_EXTERNAL) camera_set_mode(&g.cam, g.cam.mode == CAM_FLY ? CAM_ORBIT : CAM_FLY);
@@ -953,6 +995,8 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
     f64 t1 = sys_now_ms();
+    fb_resolve(&g.fb);   /* MSAA: örnekler → renk */
+    f64 t_res = sys_now_ms();
 
     const PipeStats* ps = &g.pipe.stats;
     const RasterStats* rs = &g.raster.stats;
@@ -975,8 +1019,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_CLEAR_US] = (u32)((t_clear - t0) * 1000.0);
     g.stats[ST_GEO_US] = (u32)((t_geo - t_clear) * 1000.0);
     g.stats[ST_FLUSH_US] = (u32)((t1 - t_geo) * 1000.0);
-    g.stats[ST_TOTAL_US] = (u32)((t1 - t_start) * 1000.0);
+    g.stats[ST_TOTAL_US] = (u32)((t_res - t_start) * 1000.0);
     g.stats[ST_PRELUDES] = rs->preludes;
+    g.stats[ST_MSAA] = fb_msaa(&g.fb) ? RASTER_MSAA : 1u;
+    g.stats[ST_RESOLVE_US] = (u32)((t_res - t1) * 1000.0);
     g.stats[ST_ARENA_KB] = (u32)(g.bins.peak >> 10);
     g.stats[ST_RASTER_MODE] = (u32)g.raster.mode;
     g.stats[ST_BIN_ITEMS] = rs->bin_items;
@@ -1032,6 +1078,7 @@ static const BenchView BENCH_VIEWS[] = {
     { 1, 0.0f, 8.3f, -29.1f, 0.0f, 0.2f },      /* 2: ızgaranın içinde, yakın kırpma */
     { 1, 34.0f, 30.0f, 22.0f, -0.57f, -0.30f }, /* 3: uzaktan: çok sayıda küçük üçgen */
     { 2, 0.0f, 1.7f, 0.0f, 0.3f, -0.08f },      /* 4: ufka uzanan mipmap zemini */
+    { 6, -3.2f, 5.2f, 1.2f, -0.25f, 0.05f },    /* 5: bayrak yakından (kumaş ışığı) */
 };
 
 EXPORT(engine_bench_view_count) i32 engine_bench_view_count(void) { return (i32)ARRAY_COUNT(BENCH_VIEWS); }
@@ -1192,6 +1239,9 @@ EXPORT(engine_scratch) char* engine_scratch(u32 n) {
 }
 
 /* ölçüm: kullanılacak en fazla thread (0 = hepsi, 1 = tek) */
+/* ölçüm: MSAA 4x aç / kapa */
+EXPORT(engine_set_msaa) void engine_set_msaa(i32 on) { g.fb.samples = on ? RASTER_MSAA : 1u; }
+
 EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0 ? (u32)n : 0); }
 
 EXPORT(engine_set_codegen_scalar) void engine_set_codegen_scalar(i32 on) { codegen_set_scalar(on != 0); }

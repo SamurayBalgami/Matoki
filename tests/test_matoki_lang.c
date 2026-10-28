@@ -113,7 +113,7 @@ TEST(matoki_discard_through_raster) {
     for (u32 mode = 0; mode < RASTER_MODE_COUNT; mode++) {
         u32 color[W * H];
         f32 depth[W * H];
-        Framebuffer fb = { color, depth, W, H };
+        Framebuffer fb = { color, depth, W, H, 1, NULL, NULL };
         fb_clear(&fb, 0xFF00FF00u, 1.0f);
         Raster rs;
         raster_init(&rs, &fb);
@@ -375,7 +375,7 @@ TEST(matoki_prelude_through_raster) {
     u32 want_a = 0xFF000080u, want_b = 0xFF008000u;   /* (0.5/1, 0, 0) ve (0, 0.25/0.5, 0) */
     for (u32 mode = 0; mode < RASTER_MODE_COUNT; mode++) {
         u32 color[W * H];
-        Framebuffer fb = { color, NULL, W, H };
+        Framebuffer fb = { color, NULL, W, H, 1, NULL, NULL };
         fb_clear(&fb, 0xFF00FF00u, 1.0f);
         Raster rs;
         raster_init(&rs, &fb);

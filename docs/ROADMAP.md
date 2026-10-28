@@ -33,4 +33,5 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 14b | M10 Faz 2: Matoki eksikleri (mip, bilinear, discard, matris, exp/log/pow); lit.mtk C ile bit-bit | ✅ |
 | 14c | M10 Faz 3: Matoki demo varsayılanı (önsöz, skaler quad-sabitler, seviye tabloları); C ile bit-bit | ✅ |
 | 14d | M10 Faz 4: paralel raster (9), tek/çok thread bit-bit | ✅ |
-| 14e | M10 Faz 5: geometri aşaması paralel/SIMD (4c), fizik iş sistemine | ⏳ |
+| 14e | M10 Faz 5: anizotropik süzme + kumaş ışığı (lit_hq.mtk), MSAA 4x | ✅ (D28) |
+| 14f | M10 Faz 6: geometri aşaması paralel/SIMD (4c), fizik iş sistemine | ⏳ |

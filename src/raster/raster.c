@@ -12,12 +12,65 @@
 static const i32 LANE_X[4] = { 0, 1, 0, 1 };
 static const i32 LANE_Y[4] = { 0, 0, 1, 1 };
 
+/* MSAA örnek tamponlarını satır blokları hâlinde temizle (paralel) */
+#define CLEAR_ROWS 16
+
+typedef struct ClearCtx {
+    Framebuffer* fb;
+    u32          color;
+    f32          depth;
+} ClearCtx;
+
+static void clear_ms_rows(void* ctx, u32 index, u32 tid) {
+    UNUSED(tid);
+    const ClearCtx* c = (const ClearCtx*)ctx;
+    Framebuffer* fb = c->fb;
+    i32 y0 = (i32)index * CLEAR_ROWS, y1 = MIN(y0 + CLEAR_ROWS, fb->h);
+    usize a = (usize)y0 * (usize)fb->w * RASTER_MSAA, b = (usize)y1 * (usize)fb->w * RASTER_MSAA;
+    for (usize i = a; i < b; i++) fb->color_ms[i] = c->color;
+    if (fb->depth_ms) {
+        for (usize i = a; i < b; i++) fb->depth_ms[i] = c->depth;
+    }
+}
+
 void fb_clear(Framebuffer* fb, u32 color, f32 depth) {
+    if (fb_msaa(fb)) {
+        /* tek örnekli tamponlar kullanılmaz: renk fb_resolve'da baştan yazılır */
+        ClearCtx c = { fb, color, depth };
+        jobs_parallel_for(clear_ms_rows, &c, (u32)((fb->h + CLEAR_ROWS - 1) / CLEAR_ROWS));
+        return;
+    }
     usize n = (usize)fb->w * (usize)fb->h;
     for (usize i = 0; i < n; i++) fb->color[i] = color;
     if (fb->depth) {
         for (usize i = 0; i < n; i++) fb->depth[i] = depth;
     }
+}
+
+#define RESOLVE_ROWS 16
+
+static void resolve_rows(void* ctx, u32 index, u32 tid) {
+    UNUSED(tid);
+    Framebuffer* fb = (Framebuffer*)ctx;
+    i32 y0 = (i32)index * RESOLVE_ROWS, y1 = MIN(y0 + RESOLVE_ROWS, fb->h);
+    for (i32 y = y0; y < y1; y++) {
+        for (i32 x = 0; x < fb->w; x++) {
+            usize i = (usize)y * (usize)fb->w + (usize)x;
+            const u32* s = &fb->color_ms[i * RASTER_MSAA];
+            u32 out = 0;
+            for (u32 ch = 0; ch < 32; ch += 8) {
+                u32 sum = 2;
+                for (u32 k = 0; k < RASTER_MSAA; k++) sum += (s[k] >> ch) & 0xFF;
+                out |= (sum >> 2) << ch;
+            }
+            fb->color[i] = out;
+        }
+    }
+}
+
+void fb_resolve(Framebuffer* fb) {
+    if (!fb_msaa(fb)) return;
+    jobs_parallel_for(resolve_rows, fb, (u32)((fb->h + RESOLVE_ROWS - 1) / RESOLVE_ROWS));
 }
 
 void raster_init(Raster* r, Framebuffer* fb) {
@@ -125,6 +178,16 @@ static void flush_tile(void* ctx, u32 index, u32 tid) {
                 th->last_uni = t->uniforms;
                 th->st.preludes++;
             }
+            if (fb_msaa(fb)) {
+#if defined(__wasm_simd128__)
+                if (r->mode == RASTER_MODE_SIMD) {
+                    raster_tile_msaa_simd(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
+                    continue;
+                }
+#endif
+                raster_tile_msaa(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
+                continue;
+            }
 #if defined(__wasm_simd128__)
             if (r->mode == RASTER_MODE_SIMD) {
                 raster_tile_simd(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
@@ -228,11 +291,14 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
         t = Y[1]; Y[1] = Y[2]; Y[2] = t;
     }
 
-    /* Sınır kutusu: piksel i'nin merkezi i*256+128. */
+    /* Sınır kutusu: piksel i'nin merkezi i*256+128. MSAA: örnekler merkezden ±96 → piksel i'nin örnekleri
+     * [i*256+32, i*256+224] aralığında. */
+    const b32 msaa = fb_msaa(fb);
+    const i64 lo = msaa ? 224 : 128, hi = msaa ? 32 : 128;
     i64 min_fx = MIN(X[0], MIN(X[1], X[2])), max_fx = MAX(X[0], MAX(X[1], X[2]));
     i64 min_fy = MIN(Y[0], MIN(Y[1], Y[2])), max_fy = MAX(Y[0], MAX(Y[1], Y[2]));
-    i64 minx = (min_fx - 128 + 255) >> 8, maxx = (max_fx - 128) >> 8;
-    i64 miny = (min_fy - 128 + 255) >> 8, maxy = (max_fy - 128) >> 8;
+    i64 minx = (min_fx - lo + 255) >> 8, maxx = (max_fx - hi) >> 8;
+    i64 miny = (min_fy - lo + 255) >> 8, maxy = (max_fy - hi) >> 8;
     if (minx < 0) minx = 0;
     if (miny < 0) miny = 0;
     if (maxx > fb->w - 1) maxx = fb->w - 1;
@@ -267,8 +333,9 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
     t->prelude = r->prelude;
     t->uniforms = r->uniforms;
     t->var_count = nv;
-    t->depth_test = (u8)(r->depth_test && fb->depth);
-    t->depth_write = (u8)(r->depth_write && fb->depth);
+    const b32 has_depth = msaa ? fb->depth_ms != NULL : fb->depth != NULL;
+    t->depth_test = (u8)(r->depth_test && has_depth);
+    t->depth_write = (u8)(r->depth_write && has_depth);
     t->depth_func = (u8)r->depth_func;
     t->drawn = 0;
     t->minx = (i32)minx;
@@ -302,10 +369,13 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
             i64 rx0 = (i64)tx << RASTER_TILE_SHIFT, rx1 = MIN(rx0 + RASTER_TILE - 1, (i64)fb->w - 1);
             b32 outside = FALSE;
             u32 full = 1;
+            /* MSAA: köşeler yarım piksel dışarı (örnekler merkezden en çok 96/256 uzakta → güvenli) */
+            const i64 m = msaa ? 128 : 0;
             for (u32 k = 0; k < 3; k++) {
                 const EdgeEq* e = &t->e[k];
-                i64 a = edge_at(e, rx0, ry0), b = edge_at(e, rx1, ry0);
-                i64 c = edge_at(e, rx0, ry1), d = edge_at(e, rx1, ry1);
+                const i64 ex = (e->sx / 256) * m, ey = (e->sy / 256) * m;
+                i64 a = edge_at(e, rx0, ry0) - ex - ey, b = edge_at(e, rx1, ry0) + ex - ey;
+                i64 c = edge_at(e, rx0, ry1) - ex + ey, d = edge_at(e, rx1, ry1) + ex + ey;
                 if ((a & b & c & d) < 0) {   /* dördü de negatif */
                     outside = TRUE;
                     break;
@@ -398,5 +468,83 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
         row0 += 2 * e0->sy;
         row1 += 2 * e1->sy;
         row2 += 2 * e2->sy;
+    }
+}
+
+/* ---- MSAA 4x karo döngüsü ----
+ * Örnek konumları piksel merkezine göre 1/256 piksel (D3D 4x döndürülmüş ızgara). Kenar fonksiyonu
+ * örnekte: E(merkez) + (sx/256)·ox + (sy/256)·oy — sx = -dy·256 olduğundan tam sayı, kesin.
+ * Derinlik her örnekte; shader piksel merkezinde bir kez (helper lane'ler merkezden dışdeğerlenir),
+ * sonuç geçen örneklere yazılır. discard (kill) pikselin tüm örneklerini atar. */
+static const i32 MS_OX[RASTER_MSAA] = { -32, 96, -96, 32 };
+static const i32 MS_OY[RASTER_MSAA] = { -96, -32, 32, 96 };
+
+void raster_tile_msaa(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st) {
+    Framebuffer* fb = r->fb;
+    i32 minx = MAX(t->minx, tx0) & ~1, miny = MAX(t->miny, ty0) & ~1;
+    i32 maxx = MIN(t->maxx, tx1), maxy = MIN(t->maxy, ty1);
+    if (minx > maxx || miny > maxy) return;
+    const i32 fbw = fb->w, fbh = fb->h;
+    const u32 nv = t->var_count;
+    i64 off[3][RASTER_MSAA];
+    for (u32 k = 0; k < 3; k++) {
+        for (u32 s = 0; s < RASTER_MSAA; s++) off[k][s] = (t->e[k].sx / 256) * MS_OX[s] + (t->e[k].sy / 256) * MS_OY[s];
+    }
+
+    ShadeQuad q;
+    q.kill = 0;
+    u32 out[4];
+    for (i32 qy = miny; qy <= maxy; qy += 2) {
+        f32 fy = (f32)qy + 0.5f - t->y0;
+        for (i32 qx = minx; qx <= maxx; qx += 2) {
+            f32 fx = (f32)qx + 0.5f - t->x0;
+            u32 smask[4] = { 0, 0, 0, 0 };
+            f32 zs[4][RASTER_MSAA];
+            u32 pass = 0;
+            for (u32 l = 0; l < 4; l++) {
+                i32 px = qx + LANE_X[l], py = qy + LANE_Y[l];
+                if (px >= fbw || py >= fbh) continue;
+                i64 c0 = edge_at(&t->e[0], px, py), c1 = edge_at(&t->e[1], px, py), c2 = edge_at(&t->e[2], px, py);
+                usize base = ((usize)py * (usize)fbw + (usize)px) * RASTER_MSAA;
+                f32 lfx = fx + (f32)LANE_X[l], lfy = fy + (f32)LANE_Y[l];
+                for (u32 s = 0; s < RASTER_MSAA; s++) {
+                    if (!full && ((c0 + off[0][s]) | (c1 + off[1][s]) | (c2 + off[2][s])) < 0) continue;
+                    f32 z = attr_eval(&t->z, lfx + (f32)MS_OX[s] * (1.0f / 256.0f), lfy + (f32)MS_OY[s] * (1.0f / 256.0f));
+                    if (t->depth_test && !raster_depth_pass(t->depth_func, z, fb->depth_ms[base + s])) continue;
+                    zs[l][s] = z;
+                    smask[l] |= 1u << s;
+                }
+                if (smask[l]) pass |= 1u << l;
+            }
+            if (!pass) continue;
+
+            q.x = qx;
+            q.y = qy;
+            q.mask = pass;
+            for (u32 l = 0; l < 4; l++) {
+                f32 lfx = fx + (f32)LANE_X[l], lfy = fy + (f32)LANE_Y[l];
+                q.z[l] = attr_eval(&t->z, lfx, lfy);
+                f32 w = 1.0f / attr_eval(&t->w, lfx, lfy);
+                for (u32 i = 0; i < nv; i++) q.var[i][l] = attr_eval(&t->v[i], lfx, lfy) * w;
+            }
+            q.kill = 0;
+            t->shade(&q, t->uniforms, out);
+            pass &= ~q.kill;
+
+            u32 written = 0;
+            for (u32 l = 0; l < 4; l++) {
+                if (!(pass & (1u << l))) continue;
+                usize base = ((usize)(qy + LANE_Y[l]) * (usize)fbw + (usize)(qx + LANE_X[l])) * RASTER_MSAA;
+                for (u32 s = 0; s < RASTER_MSAA; s++) {
+                    if (!(smask[l] & (1u << s))) continue;
+                    fb->color_ms[base + s] = out[l];
+                    if (t->depth_write) fb->depth_ms[base + s] = zs[l][s];
+                }
+                written++;
+            }
+            st->quads_shaded++;
+            st->pixels_written += written;
+            if (written && !__atomic_exchange_n(&t->drawn, 1, __ATOMIC_RELAXED)) st->tris_drawn++;
+        }
     }
 }

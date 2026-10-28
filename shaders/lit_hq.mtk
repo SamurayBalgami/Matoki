@@ -1,0 +1,71 @@
+// shaders/lit_hq.mtk — yüksek kaliteli aydınlatma: anizotropik doku süzme + yumuşak diffuse + kumaş geçirgenliği.
+// Doku: mip seviyesi KÜÇÜK eksenden (ayak izi / 4), büyük eksen boyunca 4 çift doğrusal örnek
+// (eğik bakılan zemin ve dalgalanan bayrakta kumlanma / moiré yok). Işık: Lambert ↔ half-Lambert² diffuse +
+// yarım küre ortam + arkadan gelen ışığın bir payı (iki yüzlü kumaşta ters yüz). Sis lit.mtk ile aynı.
+// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra).
+
+uniform tex: texture2d @mipmap @bilinear;
+uniform to_light: vec3;
+uniform ambient: f32;
+uniform light_color: vec3;
+uniform fog_start: f32;
+uniform fog_color: vec3;
+uniform fog_end: f32;
+uniform eye: vec3;
+uniform use_mip: i32;
+uniform tint: vec3;
+uniform wrap: f32;
+uniform translucency: f32;
+
+varying wpos: vec3;
+varying nrm: vec3;
+varying uv: vec2;
+
+fn norm_safe(v: vec3) -> vec3 {
+    let l = sqrt(dot(v, v));
+    return select(l > 0.0, v * (1.0 / l), v);
+}
+
+// anizotropik: ayak izinin büyük ekseni boyunca 4 örnek, seviye küçük eksenden (oran en çok 4)
+fn sample_aniso(p: vec2) -> vec4 {
+    let ts = tex_size(tex);
+    let dx = dFdx(p);
+    let dy = dFdy(p);
+    let tx = dx * ts;
+    let ty = dy * ts;
+    let lx = dot(tx, tx);
+    let ly = dot(ty, ty);
+    let x_major = lx >= ly;
+    let major2 = max(lx, ly);
+    let minor2 = min(lx, ly);
+    let axis = select(x_major, dx, dy);
+    // texel cinsinden ayak izi²: küçük eksen, ama büyük eksenin 1/4'ünden az değil (4 örnek kapsar)
+    let foot2 = max(minor2, major2 * 0.0625);
+    let lod = clamp(i32(floor(0.5 * log2(max(foot2, 1.0)))), 0, 15);
+    let level = select(use_mip != 0, lod, 0);
+    var acc = vec4(0.0);
+    for i in 0..4 {
+        let t = (f32(i) + 0.5) * 0.25 - 0.5;
+        acc += sample_level(tex, p + axis * t, level);
+    }
+    return acc * 0.25;
+}
+
+fn frag() -> vec4 {
+    let texel = sample_aniso(uv);
+    let n = norm_safe(nrm);
+    let nl = dot(n, to_light);
+    // yumuşak diffuse: Lambert ile half-Lambert² arası (wrap = 0 → Lambert, 1 → ((n·l)/2 + 1/2)²).
+    // Kare, gölge tarafını kara basmadan kıvrımlardaki eğim farkını korur → kıvrımlar belli olur.
+    let h = nl * 0.5 + 0.5;
+    let diffuse = mix(max(nl, 0.0), h * h, wrap);
+    // arkadan ışık (ters yüz aydınlanır), yumuşak
+    let back = max(-nl, 0.0) * translucency;
+    let hemi = ambient * (0.75 + 0.25 * n.y);
+    let light = vec3(hemi) + light_color * (diffuse + back);
+    let c = texel.rgb * tint * light;
+    let d = length(wpos - eye);
+    let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
+    let f = clamp((d - fog_start) * fog_scale, 0.0, 1.0);
+    return vec4(mix(c, fog_color, f), 1.0);
+}

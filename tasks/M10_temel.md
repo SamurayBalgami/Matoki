@@ -98,9 +98,35 @@ Tarayıcı (`3d.html?prof`, 640×360, motor ms/kare, `?threads=0` ↔ varsayıla
 1: 5.95 → 1.98 · 2: 2.59 → 0.45 · 3: 3.21 → 0.76 · 4: 3.19 → 0.68 · 5: 6.68 → 2.22 · 6: 5.44 → 2.71
 (boyama ör. sahne 1'de 4.23 → 0.65 ms). Kalan seri kısım: geometri (sahne 1/5'te ~1.2 ms) ve kumaş fiziği.
 
+## Faz 5 — Görüntü kalitesi: anizotropik süzme, yumuşak kumaş ışığı, MSAA 4x (2026-10-29) ✅
+
+İstenen: zemindeki ve bayraktaki piksel karmaşası (aliasing), bayrak kıvrımlarının belli olması, kenar
+tırtıkları. Fizik ve mesh yapısına dokunulmadı (bayrak normalleri zaten her kare yeniden hesaplanıyordu).
+
+- `shaders/lit_hq.mtk` (varsayılan, `L` ile değişir): anizotropik + çift doğrusal + mip; Lambert ↔ half-Lambert²
+  diffuse, kumaşta arkadan ışık geçirgenliği (D28). Görsel kontrol `tools/shot.mjs` (bench görünümü → PNG;
+  görünüm 5 = bayrak yakından): zeminde ufka yakın moiré bandı kalktı, bayrak kıvrımları koyu bantla belli.
+- MSAA 4x (varsayılan, `N` ile kapanır): kenarlar yumuşak (küp kenarı 4× büyütülmüş karşılaştırmada açık).
+- Testler (`tests/test_msaa.c`): tam kaplamada MSAA = tek örnek, dikey kenarda örnek sayısı (1/4 → 64),
+  ortak kenarda boşluk yok, tek/çok thread ve skaler/SIMD bit-bit; 101/101.
+
+Maliyet (`tools/bench_quality.mjs`, 16 thread, kare medyanı ms):
+
+| görünüm | Matoki | HQ | Matoki + MSAA | HQ + MSAA (yeni) | 720p HQ + MSAA |
+|---|---|---|---|---|---|
+| 1 | 2.05 | 2.80 | 3.42 | 4.12 | 19.5 |
+| 2 | 1.26 | 2.12 | 2.96 | 3.75 | 23.2 |
+| 3 | 2.66 | 3.15 | 3.96 | 5.34 | 13.4 |
+| 4 | 0.78 | 1.88 | 4.91 | 5.07 | 19.1 |
+| 5 | 1.09 | 2.03 | 2.39 | 3.59 | 10.7 |
+
+MSAA aşamaları (görünüm 4): boyama 0.53 → 2.23 ms (skaler ilk sürüm 3.12), temizleme 0.29, çözümleme 0.37.
+Tarayıcıda 6 sahne 200 FPS (ekran sınırı), motor 2.5–3.9 ms.
+
 ## Sıradakiler
 
-1. **Geometri aşaması:** vertex dönüşümü + kırpma + üçgen kurulumu paralel/SIMD (artık karedeki en büyük seri pay).
+1. **MSAA boyama:** kenar sınıflaması için artımlı kenar adımı, örnek tamponu sıkıştırma (tam kaplı pikselde tek renk).
+2. **Geometri aşaması:** vertex dönüşümü + kırpma + üçgen kurulumu paralel/SIMD (artık karedeki en büyük seri pay).
 2. **Fizik paralel:** renk grupları (D20) ve kumaş adımları iş sistemine.
 3. **Matoki:** quad-sabit koşullarda gerçek dallanma (2. görünüm farkı), varyant önbelleği, trilinear,
    tam matris değerleri, vertex shader'ları; worker'larla birlikte thread başına önsöz önbelleği.

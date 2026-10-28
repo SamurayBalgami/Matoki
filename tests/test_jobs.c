@@ -79,7 +79,7 @@ typedef struct DrawSet {
 } DrawSet;
 
 static void render(const Scene* s, const DrawSet* d, u32* color, f32* depth, u32 w, u32 h, u32 threads) {
-    Framebuffer fb = { color, depth, (i32)w, (i32)h };
+    Framebuffer fb = { color, depth, (i32)w, (i32)h, 1, NULL, NULL };
     fb_clear(&fb, 0xFF332211u, 1.0f);
     Raster r;
     raster_init(&r, &fb);

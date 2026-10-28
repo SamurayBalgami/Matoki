@@ -217,6 +217,20 @@ discard SPMD kalır: kod akmaya devam eder, yalnızca etkin yol maskesi (iç iç
 - **Ölçüm (i7-12650H, 16 thread):** node 1280×720 kare 2.6–6.5× hızlı; tarayıcı 640×360 motor süresi 2.0–5.8×.
   Kalan seri kısım: geometri aşaması ve fizik (sıradaki iş).
 
+## D28. Görüntü kalitesi: anizotropik süzme Matoki'de, half-Lambert² + geçirgenlik, MSAA 4x (2026-10-29)
+- **lit_hq.mtk (varsayılan):** derleyiciye ek yok, dilin kendisiyle: büyük eksen boyunca 4 çift doğrusal
+  örnek, mip seviyesi küçük eksenden (ayak izi ≥ büyük/4). lit.mtk C kâhiniyle bit-bit kalır (testler);
+  lit_hq'nun doğruluğu derleyicinin genel farkı (ir_eval = JIT) ile güvencede, C eşi yok.
+- **Diffuse:** `mix(max(n·l,0), (n·l/2+1/2)², wrap)` — wrap 1 kumaşta (kıvrım kontrastı korunur, gölge yüzü
+  kara değil), arkadan ışık `translucency·max(-n·l,0)`. Önce düz sargı (n·l+w)/(1+w) denendi: kıvrımları
+  sildi (görsel karşılaştırma), terk edildi. `LitUniforms.wrap/translucency` tint'ten sonra (lit.mtk okumaz).
+- **MSAA 4x:** D3D döndürülmüş ızgara; kapsama ve derinlik örnek başına, shader piksel merkezinde bir kez,
+  `fb_resolve` kanal ortalaması. Kenar fonksiyonu örnekte tam sayı ile kesin (sx = -dy·256). Sınır kutusu
+  ve karo testleri örnek alanına genişletilir. SIMD yolu: piksel merkezi + ofset uç değerleriyle tam içeride /
+  tam dışarıda sınıflaması, yalnız kenar pikselleri örnek örnek; 4 örnek bitişik → derinlik/yazma tek v128.
+  Skaler yol kâhin (test: msaa_simd_matches_scalar). Temizleme ve çözümleme iş sistemiyle paralel.
+- **Maliyet (16 thread, 640×360):** HQ + MSAA kare 3.6–5.3 ms (önceki varsayılan 0.8–2.7 ms); 720p 11–23 ms.
+
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

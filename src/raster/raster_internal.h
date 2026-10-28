@@ -68,5 +68,10 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
 #if defined(__wasm_simd128__)
 void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st);
 #endif
+/* MSAA 4x: piksel başına 4 örnekte kapsama + derinlik, shader piksel merkezinde bir kez */
+void raster_tile_msaa(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st);
+#if defined(__wasm_simd128__)
+void raster_tile_msaa_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st);
+#endif
 
 #endif

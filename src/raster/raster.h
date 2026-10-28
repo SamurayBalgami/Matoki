@@ -15,10 +15,18 @@
 
 #define RASTER_MAX_COORD 4194304.0f   /* 2^22 piksel; 24.8'de 2^30, kenar çarpımı i64'e sığar */
 
+/* MSAA (samples = 4): raster örnek tamponlarına yazar (piksel i, örnek s → [i*4 + s]); kare sonunda
+ * fb_resolve örnekleri ortalayıp color'a yazar. Örnek konumları D3D 4x döndürülmüş ızgara.
+ * samples 0 veya 1: tek örnek, color/depth doğrudan. */
+#define RASTER_MSAA 4
+
 typedef struct Framebuffer {
     u32* color;
-    f32* depth;   /* NULL olabilir */
+    f32* depth;      /* NULL olabilir */
     i32  w, h;
+    u32  samples;    /* 0/1 veya RASTER_MSAA */
+    u32* color_ms;   /* samples == 4 iken w*h*4 */
+    f32* depth_ms;   /* samples == 4 iken w*h*4 (NULL olabilir) */
 } Framebuffer;
 
 typedef struct RasterVert {
@@ -84,6 +92,9 @@ typedef struct Raster {
 } Raster;
 
 void fb_clear(Framebuffer* fb, u32 color, f32 depth);
+/* MSAA: örneklerin kanal ortalaması ((a+b+c+d+2)>>2) → color; tek örnekte bir şey yapmaz. Satırlar paralel. */
+void fb_resolve(Framebuffer* fb);
+static inline b32 fb_msaa(const Framebuffer* fb) { return fb->samples == RASTER_MSAA && fb->color_ms; }
 
 void raster_init(Raster* r, Framebuffer* fb);
 void raster_set_shader(Raster* r, ShadeFn fn, const void* uniforms, u32 var_count);   /* önsözü sıfırlar */
