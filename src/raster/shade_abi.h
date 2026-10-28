@@ -12,7 +12,9 @@
 typedef struct ShadeQuad {
     i32 x, y;                        /* lane0 pikseli */
     u32 mask;                        /* bit l: lane l kapsandı ve derinlik testini geçti */
-    u32 _pad;
+    u32 kill;                        /* shader'ın TEK çıktı alanı: bit l = lane l atıldı (discard).
+                                      * Raster çağrıdan önce 0 yazar, sonra mask &= ~kill uygular;
+                                      * q raster'da yazılabilir bellektedir (const yalnızca sözleşme). */
     f32 z[4];                        /* NDC derinliği (0..1) */
     f32 var[SHADE_MAX_VARS][4];      /* varying[i][lane] */
 } ShadeQuad;
@@ -20,10 +22,13 @@ typedef struct ShadeQuad {
 /* out[l] = 0xAABBGGRR renk; yalnızca mask'taki lane'ler yazılır. */
 typedef void (*ShadeFn)(const ShadeQuad* q, const void* uniforms, u32 out[4]);
 
-/* Doku. Boyut 32 bayt (wasm32), ofsetler sabit (codegen bunlara gömülü erişir).
+/* Doku. Boyut 96 bayt (wasm32), ofsetler sabit (codegen bunlara gömülü erişir).
  * Mip zinciri: tüm seviyeler px'ten başlayarak bitişik; seviye k: wk = max(1, w>>k),
- * hk = max(1, h>>k), başlangıç = px + Σ_{i<k} wi*hi. levels = 0 → 1 kabul edilir.
+ * hk = max(1, h>>k), başlangıç = px + lv_ofs[k] (texel), lv_ofs[k] = Σ_{i<k} wi*hi.
+ * levels = 0 → 1 kabul edilir; lv_ofs[k >= levels] son seviyeyi tekrarlar (tex_create doldurur).
  * Wrap adreslemesi w,h'nin 2'nin kuvveti olmasını gerektirir. */
+#define TEX_MAX_LEVELS 16
+
 typedef struct Texture {
     u32* px;
     u32  w, h;
@@ -31,6 +36,7 @@ typedef struct Texture {
     u32  flags;
     u32  log2_w;
     u32  levels;           /* mip seviye sayısı (>= 1) */
+    u32  lv_ofs[TEX_MAX_LEVELS];
 } Texture;
 
 #define TEX_OFF_PX     0
@@ -41,13 +47,15 @@ typedef struct Texture {
 #define TEX_OFF_FLAGS  20
 #define TEX_OFF_LOG2W  24
 #define TEX_OFF_LEVELS 28
+#define TEX_OFF_LVOFS  32
+#define TEX_WORD_LVOFS 8    /* lv_ofs[0]'ın u32 indeksi */
 
 #define TEX_FLAG_BILINEAR 1u
 #define TEX_FLAG_CLAMP    2u
 #define TEX_FLAG_MIPMAP   4u
 
 #if defined(__wasm32__)
-_Static_assert(sizeof(Texture) == 32, "Texture ABI boyutu 32 bayt olmalı");
+_Static_assert(sizeof(Texture) == 96, "Texture ABI boyutu 96 bayt olmalı");
 #endif
 
 static inline u32 color_pack(u32 r, u32 g, u32 b, u32 a) { return r | (g << 8) | (b << 16) | (a << 24); }

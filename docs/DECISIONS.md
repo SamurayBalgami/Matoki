@@ -45,7 +45,7 @@ Tek thread'de bin'leme yükü skaler yolda %9–21 (ölçüm: tasks/M8_1_3d.md).
 kaldı (i64x2): 24.8 ve guard band ile değerler i32'ye sığmıyor, hassasiyet düşürmek top-left beraberliklerini bozardı.
 Skaler yol referans/kâhin olarak korunur; testler iki yolu bit-bit karşılaştırır.
 
-## D10. Mip seviye tablosu uniform'larda, Texture ABI'si sabit (2026-10-27)
+## D10. Mip seviye tablosu uniform'larda, Texture ABI'si sabit (2026-10-27) — D23 ile değişti
 `Texture` 32 bayt ve ofsetleri codegen sözleşmesi olduğu için seviye ofsetleri oraya eklenmedi. Bunun yerine
 `TexLevel[TEX_MAX_LEVELS]` tablosu shader uniform bloğunda tutulur (`tex_level_table`). Doku değişince tablo yeniden
 hesaplanmalıdır (`lit_uniforms_prepare`). Matoki codegen'i ileride aynı tabloyu uniform özelleştirmesiyle
@@ -158,6 +158,29 @@ soft step'te 60 Hz / ζ = 2 yumuşaklık (temaslardan sert, zincirde birkaç cm 
   rijit adımı + ayrı yumuşak adımı (D19) yapısını korurken aynı karede tepki verir. Temassız gövdede yol eski
   ara değerle birebir aynı (eski sonuçlar değişmez).
 - Açık hava sürüklemesi alt adımda normal göreli hızı tersine çeviremez (kararlılık sınırı).
+
+## D23. Texture ABI 96 bayt: seviye ofset tablosu dokunun içinde (2026-10-28)
+D10'un yerine geçer. `Texture` sonuna `u32 lv_ofs[16]` eklendi (ofset 32, eski alanların ofsetleri aynı).
+`tex_create` doldurur; elle kurulan dokular `tex_fill_level_offsets` çağırır. Böylece Matoki, uniform bloğuna
+tablo koymadan herhangi bir dokuda seviye başlangıcını tek okumayla bulur (`IR_TEX_WORD`). C tarafındaki
+`TexLevel` tablosu (`LitUniforms.lv`) C shader'larının hızlı yolu olarak kaldı.
+
+## D24. discard: ShadeQuad.kill, raster maskeyi shader'dan sonra uygular (2026-10-28)
+ShadeFn imzası değişmedi; `ShadeQuad`'ın boş `_pad` alanı `kill` oldu. Raster çağrıdan önce 0 yazar, sonra
+`pass &= ~kill`. Derinlik zaten shader'dan sonra yazıldığı için ayrı bir "geç z" yolu gerekmedi. Matoki'de
+discard SPMD kalır: kod akmaya devam eder, yalnızca etkin yol maskesi (iç içe if'lerin VE'si) kill'e eklenir.
+Ölçüm: discard'sız sahnelerde raster maliyeti ±%2 içinde (gürültü), hash'ler aynı.
+
+## D25. Matoki matematik genişlemesi: bit-bit C eşi olan polinomlar, matris yalnızca uniform (2026-10-28)
+- `exp2/log2/exp/log/pow`: `m_exp2f`/`m_log2f` (core/math.c) ile aynı işlem sırası → bit-bit aynı; göreli hata
+  ~1e-6. exp2 [-150, 128]'e kenetlenir, 2^n iki normal çarpanla uygulanır (denormal/taşma doğru yuvarlanır).
+  `pow(0, 0)` = NaN (GLSL'de tanımsız).
+- `mat3/mat4` yalnızca uniform ve yalnızca `M * v`: lower'ın değer gösterimi bileşen başına ≤ 4 IR değeri; tam
+  matris değerleri (yerel, parametre, `M * M`) bu sınırı kaldırmayı gerektirir. Sıra `mat4_mul_v4` ile aynı.
+- `IR_DERIV_*` sonucu artık "quad-sabit" (uniform bayrağı 1): her lane'e aynı farkı yayar. mip seviyesi bu
+  sayede tek lane'den kaydırma / tek okuma ile hesaplanır. Yan etki: türevin türevi her zaman 0 (önceden inf/NaN
+  girdide NaN olabilirdi); ir_eval ve codegen aynı kuralı izler.
+- `@bilinear` seviye içinde (GL_LINEAR_MIPMAP_NEAREST); seviyeler arası (trilinear) yok.
 
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi

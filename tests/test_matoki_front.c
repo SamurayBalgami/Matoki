@@ -168,7 +168,7 @@ TEST(matoki_lit_bit_exact_vs_c) {
         u.fog_end = (it % 17 == 0) ? u.fog_start : u.fog_start + rng_range(&rng, 1, 500);
         u.fog_color = v3(rng_f32(&rng), rng_f32(&rng), rng_f32(&rng));
         u.eye = v3(rng_range(&rng, -50, 50), rng_range(&rng, -50, 50), rng_range(&rng, -50, 50));
-        u.use_mip = FALSE;
+        u.use_mip = it % 3 != 0;
         u.tint = v3(rng_range(&rng, 0, 1.5f), rng_range(&rng, 0, 1.5f), rng_range(&rng, 0, 1.5f));
         lit_uniforms_prepare(&u);
 
@@ -183,6 +183,18 @@ TEST(matoki_lit_bit_exact_vs_c) {
             for (u32 k = 0; k < 3; k++) q.var[VAR3D_NRM + k][l] = (it % 23 == 0) ? 0.0f : special_f(&rng, -2, 2);
             q.var[VAR3D_UV][l] = special_f(&rng, -20, 20);
             q.var[VAR3D_UV + 1][l] = special_f(&rng, -20, 20);
+        }
+        if (it & 1) {
+            /* tutarlı uv: quad içinde doğrusal, ölçek 2^-10..2^2 → tüm mip seviyeleri */
+            f32 s = m_bits_f32((u32)(127 - 10 + (i32)(rng_u32(&rng) % 13)) << 23) * rng_range(&rng, 1.0f, 2.0f);
+            f32 u0 = rng_range(&rng, -4, 4), v0 = rng_range(&rng, -4, 4);
+            f32 ax = rng_range(&rng, -1, 1) * s, ay = rng_range(&rng, -1, 1) * s;
+            f32 bx = rng_range(&rng, -1, 1) * s, by = rng_range(&rng, -1, 1) * s;
+            for (u32 l = 0; l < 4; l++) {
+                f32 lx = (f32)(l & 1), ly = (f32)(l >> 1);
+                q.var[VAR3D_UV][l] = u0 + ax * lx + bx * ly;
+                q.var[VAR3D_UV + 1][l] = v0 + ay * lx + by * ly;
+            }
         }
         u32 ref[4], ev[4], jt[4];
         shade_lit_tex(&q, &u, ref);
@@ -340,4 +352,67 @@ TEST(matoki_derivatives_and_frag_coord) {
         CHECK(((ev[l] >> 8) & 0xFF) == 128);
         CHECK(((ev[l] >> 16) & 0xFF) == 64);
     }
+}
+
+/* @mipmap sample ↔ ref_sample_tex_mip, sample_level ↔ ref_sample_level, mip_level ↔ ref_mip_level;
+ * kare olmayan, wrap / clamp dokular. Çıktı: r = seviye, g/b/a = texel'in düşük 24 biti eşleşmesi. */
+TEST(matoki_mip_sampling_matches_ref) {
+    static const char* const srcs[2] = {
+        "uniform t: texture2d @mipmap;\nuniform lod: i32;\nvarying uv: vec2;\n"
+        "fn frag() -> vec4 {\n"
+        "  let a = sample(t, uv);\n  let b = sample_level(t, uv, lod);\n"
+        "  return vec4(f32(mip_level(t, uv)) / 255.0, a.r, a.g, b.r);\n}\n",
+        "uniform t: texture2d @mipmap @clamp;\nuniform lod: i32;\nvarying uv: vec2;\n"
+        "fn frag() -> vec4 {\n"
+        "  let a = sample(t, uv);\n  let b = sample_level(t, uv, lod);\n"
+        "  return vec4(f32(mip_level(t, uv)) / 255.0, a.r, a.g, b.r);\n}\n",
+    };
+    Arena* a = test_arena();
+    Texture* texs[3];
+    texs[0] = tex_create(a, 256, 16, TEX_FLAG_MIPMAP);
+    texs[1] = tex_create(a, 8, 64, TEX_FLAG_MIPMAP | TEX_FLAG_CLAMP);
+    texs[2] = tex_create(a, 32, 32, 0);
+    for (u32 k = 0; k < 3; k++) {
+        usize n = img_mip_total(texs[k]->w, texs[k]->h, texs[k]->levels);
+        for (usize i = 0; i < n; i++) texs[k]->px[i] = hash_u32((u32)i * 2654435761u + k);
+    }
+    struct { const Texture* t; i32 lod; } uni;
+    Rng rng = rng_make(0x3A9);
+    u32 bad = 0, levels_seen = 0;
+    for (u32 sv = 0; sv < 2; sv++) {
+        Runner r;
+        runner_init(t_, &r, srcs[sv]);
+        if (!r.ok) return;
+        for (u32 it = 0; it < 6000; it++) {
+            const Texture* t = texs[it % 3];
+            if (((t->flags & TEX_FLAG_CLAMP) != 0) != (sv == 1)) continue;
+            uni.t = t;
+            uni.lod = (i32)(rng_u32(&rng) % 12);
+            ShadeQuad q;
+            mem_zero(&q, sizeof(q));
+            f32 s = m_bits_f32((u32)(127 - 12 + (i32)(rng_u32(&rng) % 14)) << 23) * rng_range(&rng, 1.0f, 2.0f);
+            f32 u0 = rng_range(&rng, -3, 3), v0 = rng_range(&rng, -3, 3);
+            f32 ax = rng_range(&rng, -1, 1) * s, ay = rng_range(&rng, -1, 1) * s;
+            f32 bx = rng_range(&rng, -1, 1) * s, by = rng_range(&rng, -1, 1) * s;
+            for (u32 l = 0; l < 4; l++) {
+                q.var[0][l] = u0 + ax * (f32)(l & 1) + bx * (f32)(l >> 1);
+                q.var[1][l] = v0 + ay * (f32)(l & 1) + by * (f32)(l >> 1);
+            }
+            u32 ref_a[4];
+            ref_sample_tex_mip(t, q.var[0], q.var[1], ref_a);
+            u32 lvl = (t->flags & TEX_FLAG_MIPMAP) ? ref_mip_level(t, q.var[0], q.var[1]) : 0;
+            levels_seen |= 1u << lvl;
+            u32 ev[4], jt[4];
+            runner_run(&r, &q, &uni, ev, jt);
+            for (u32 l = 0; l < 4; l++) {
+                u32 ref_b = ref_sample_level(t, q.var[0][l], q.var[1][l], (u32)uni.lod);
+                u32 want = pack_c((f32)lvl / 255.0f, (f32)(ref_a[l] & 0xFF) / 255.0f, (f32)((ref_a[l] >> 8) & 0xFF) / 255.0f,
+                                  (f32)(ref_b & 0xFF) / 255.0f);
+                if (ev[l] != want || jt[l] != want) bad++;
+            }
+        }
+    }
+    test_note("görülen seviye maskesi", levels_seen, 0);
+    CHECK(bad == 0);
+    CHECK((levels_seen & 0x1FF) == 0x1FF);   /* 0..8 seviyelerinin hepsi denendi */
 }

@@ -16,7 +16,7 @@ typedef struct Kw {
 static const Kw KEYWORDS[] = {
     { "fn", T_FN }, { "let", T_LET }, { "var", T_VAR }, { "if", T_IF }, { "else", T_ELSE },
     { "for", T_FOR }, { "in", T_IN }, { "return", T_RETURN }, { "uniform", T_UNIFORM },
-    { "varying", T_VARYING }, { "true", T_TRUE }, { "false", T_FALSE },
+    { "varying", T_VARYING }, { "true", T_TRUE }, { "false", T_FALSE }, { "discard", T_DISCARD },
 };
 
 static const char* const TOK_NAMES[T_COUNT] = {
@@ -27,6 +27,7 @@ static const char* const TOK_NAMES[T_COUNT] = {
     "'='", "'+='", "'-='", "'*='", "'/='",
     "'&'", "'|'", "'^'", "'<<'", "'>>'", "'~'",
     "'fn'", "'let'", "'var'", "'if'", "'else'", "'for'", "'in'", "'return'", "'uniform'", "'varying'", "'true'", "'false'",
+    "'discard'",
 };
 
 const char* tok_name(TokKind k) { return k < T_COUNT ? TOK_NAMES[k] : "?"; }

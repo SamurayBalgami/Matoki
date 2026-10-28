@@ -44,6 +44,7 @@ enum {
     ST_PHYS_BODIES, ST_PHYS_CONTACTS, ST_PHYS_US, ST_PHYS_STEPS, ST_PHYS_AWAKE,
     ST_PLAY_MODE, ST_CAR_KMH, ST_CAR_WHEELS, ST_CHAR_GROUNDED,
     ST_SOFT_PARTICLES, ST_SOFT_US, ST_SOFT_CONTACTS,
+    ST_CLEAR_US, ST_GEO_US, ST_FLUSH_US, ST_TOTAL_US,   /* kare profili (µs) */
     ST_COUNT
 };
 
@@ -118,7 +119,7 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
 }
 
 /* lit shader uygulaması (ölçüm ve A/B için); ilk üçü bit-bit aynı çıktı.
- * SHADER_MATOKI = shaders/lit.mtk JIT'i; mip'siz örnekler (mip kapalıyken C ile bit-bit aynı). */
+ * SHADER_MATOKI = shaders/lit.mtk JIT'i; mip açık/kapalı C ile bit-bit aynı. */
 enum { SHADER_REF, SHADER_LUT, SHADER_SIMD, SHADER_MATOKI, SHADER_MODE_COUNT };
 
 static ShadeFn g_matoki_lit;
@@ -808,6 +809,7 @@ static void render_scene2(void) {
 
 EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (!g.ready) return;
+    f64 t_start = sys_now_ms();
     f32 dt = m_clampf(dt_ms * 0.001f, 0.0f, 0.1f);
     g.time += dt;
 
@@ -913,6 +915,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
 
     f64 t0 = sys_now_ms();
     fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);
+    f64 t_clear = sys_now_ms();
     arena_reset(&g.frame, 0);
     arena_reset(&g.bins, 0);
     raster_reset_stats(&g.raster);
@@ -926,6 +929,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     else if (g.scene == 4) render_scene4();
     else if (g.scene == 6) render_scene6();
     else render_scene5();
+    f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
     f64 t1 = sys_now_ms();
 
@@ -947,6 +951,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_QUADS] = rs->quads_shaded;
     g.stats[ST_PIXELS] = rs->pixels_written;
     g.stats[ST_FRAME_US] = (u32)((t1 - t0) * 1000.0);
+    g.stats[ST_CLEAR_US] = (u32)((t_clear - t0) * 1000.0);
+    g.stats[ST_GEO_US] = (u32)((t_geo - t_clear) * 1000.0);
+    g.stats[ST_FLUSH_US] = (u32)((t1 - t_geo) * 1000.0);
+    g.stats[ST_TOTAL_US] = (u32)((t1 - t_start) * 1000.0);
     g.stats[ST_ARENA_KB] = (u32)(g.bins.peak >> 10);
     g.stats[ST_RASTER_MODE] = (u32)g.raster.mode;
     g.stats[ST_BIN_ITEMS] = rs->bin_items;

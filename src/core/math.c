@@ -36,6 +36,49 @@ f32 m_atan2f(f32 y, f32 x) {
     return (y > 0.0f ? M_PI_F * 0.5f : -M_PI_F * 0.5f) - a;
 }
 
+/* 2^x: n = nearest(x), f = x - n ∈ [-0.5, 0.5], 2^f ≈ 6. derece Taylor (e^(f·ln2)),
+ * 2^n iki normal çarpana bölünür (n = h + (n - h)) → denormal ve taşma doğal yuvarlanır.
+ * Dikkat: işlem sırası Matoki lower_exp2 ile sözleşmedir. */
+f32 m_exp2f(f32 x) {
+    f32 xc = x < -150.0f ? -150.0f : (x > 128.0f ? 128.0f : x);
+    f32 n = __builtin_rintf(xc);
+    f32 f = xc - n;
+    i32 i = m_f2i_sat(n);
+    f32 p = 1.5403530e-4f;                  /* ln2^6 / 720 */
+    p = 1.3333558e-3f + f * p;              /* ln2^5 / 120 */
+    p = 9.6181291e-3f + f * p;              /* ln2^4 / 24 */
+    p = 5.5504109e-2f + f * p;              /* ln2^3 / 6 */
+    p = 2.4022651e-1f + f * p;              /* ln2^2 / 2 */
+    p = 6.9314718e-1f + f * p;              /* ln2 */
+    p = 1.0f + f * p;
+    i32 h = i >> 1;
+    f32 s1 = m_bits_f32((u32)(h + 127) << 23);
+    f32 s2 = m_bits_f32((u32)(i - h + 127) << 23);
+    return p * s1 * s2;
+}
+
+/* log2(x) = e + log2(m), m ∈ [√½, √2): t = (m-1)/(m+1), ln m = 2t(1 + t²/3 + t⁴/5 + t⁶/7 + t⁸/9). */
+f32 m_log2f(f32 x) {
+    u32 b = m_f32_bits(x);
+    i32 ef = (i32)((b >> 23) & 0xFF);
+    f32 m = m_bits_f32((b & 0x7FFFFF) | 0x3F800000u);
+    i32 e = ef - 127;
+    b32 big = m > 1.41421356f;
+    m = big ? m * 0.5f : m;
+    e = big ? e + 1 : e;
+    f32 t = (m - 1.0f) / (m + 1.0f);
+    f32 t2 = t * t;
+    f32 p = 1.0f / 9.0f;
+    p = 1.0f / 7.0f + t2 * p;
+    p = 1.0f / 5.0f + t2 * p;
+    p = 1.0f / 3.0f + t2 * p;
+    p = 1.0f + t2 * p;
+    f32 r = (f32)e + (t * p) * 2.88539008f;   /* 2 / ln 2 */
+    r = ef == 0 ? -m_bits_f32(0x7F800000u) : r;
+    r = ef == 255 ? x : r;
+    return x < 0.0f ? m_bits_f32(0x7FC00000u) : r;
+}
+
 Mat4 mat4_identity(void) {
     Mat4 r = { { 0 } };
     r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;

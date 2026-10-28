@@ -3,7 +3,7 @@
  * en sonda 1 adet i32 geçici (doku işaretçisi). Semantik ir_eval ile birebir:
  *   - kaydırma miktarı uniform ise lane 0'dan alınır, değilse lane lane skaler kaydırma
  *   - DERIV işleneni uniform ise sabit 0 (ir_eval aynı kuralı uygular)
- *   - texel okuma: 4 skaler i32.load (wasm'da gather yok) */
+ *   - texel / doku sözcüğü okuma: 4 skaler i32.load (wasm'da gather yok); indeks quad-sabitse 1 okuma */
 #include "matoki/codegen.h"
 #include "core/math.h"
 #include "core/mem.h"
@@ -62,7 +62,7 @@ static void append(WB* dst, const WB* src) {
 /* ---- komutlar ---- */
 enum {
     OP_END = 0x0b, OP_LOCAL_GET = 0x20, OP_LOCAL_SET = 0x21,
-    OP_I32_LOAD = 0x28, OP_F32_LOAD = 0x2a, OP_I32_CONST = 0x41,
+    OP_I32_LOAD = 0x28, OP_F32_LOAD = 0x2a, OP_I32_STORE = 0x36, OP_I32_CONST = 0x41,
     OP_I32_ADD = 0x6a, OP_I32_SHL = 0x74, OP_I32_SHR_S = 0x75, OP_I32_SHR_U = 0x76,
     OP_SIMD = 0xfd
 };
@@ -74,7 +74,7 @@ enum {
     S_F32X4_EQ = 65, S_F32X4_NE = 66, S_F32X4_LT = 67, S_F32X4_GT = 68, S_F32X4_LE = 69, S_F32X4_GE = 70,
     S_V128_AND = 78, S_V128_OR = 80, S_V128_XOR = 81, S_V128_BITSELECT = 82,
     S_F32X4_CEIL = 103, S_F32X4_FLOOR = 104, S_F32X4_TRUNC = 105, S_F32X4_NEAREST = 106,
-    S_I32X4_NEG = 161, S_I32X4_SHL = 171, S_I32X4_SHR_S = 172, S_I32X4_SHR_U = 173,
+    S_I32X4_NEG = 161, S_I32X4_BITMASK = 164, S_I32X4_SHL = 171, S_I32X4_SHR_S = 172, S_I32X4_SHR_U = 173,
     S_I32X4_ADD = 174, S_I32X4_SUB = 177, S_I32X4_MUL = 181, S_I32X4_MIN_S = 182, S_I32X4_MAX_S = 184,
     S_F32X4_ABS = 224, S_F32X4_NEG = 225, S_F32X4_SQRT = 227, S_F32X4_ADD = 228, S_F32X4_SUB = 229,
     S_F32X4_MUL = 230, S_F32X4_DIV = 231, S_F32X4_MIN = 232, S_F32X4_MAX = 233,
@@ -154,6 +154,7 @@ static i32 simple_simd_op(u32 op) {
 
 #define Q_X_OFS   0
 #define Q_Y_OFS   4
+#define Q_KILL_OFS 12
 #define Q_Z_OFS   16
 #define Q_VAR_OFS 32
 
@@ -233,13 +234,31 @@ b32 codegen_wasm(IrFunc* f, Arena* a, WasmModule* out) {
             simd(&body, S_I32X4_SPLAT);
             break;
         case IR_TEXEL_LOAD:
-            /* tmp = tex->px */
+        case IR_TEX_WORD:
+            /* tmp = tex->px (TEXEL_LOAD) ya da tex (TEX_WORD) */
             lget(&body, 1);
             byte(&body, OP_I32_LOAD);
             memarg(&body, 2, in->imm);
-            byte(&body, OP_I32_LOAD);
-            memarg(&body, 2, 0);
+            if (in->op == IR_TEXEL_LOAD) {
+                byte(&body, OP_I32_LOAD);
+                memarg(&body, 2, 0);
+            }
             lset(&body, tmp_i32);
+            if (f->ins[in->a].uniform) {
+                /* quad-sabit indeks: tek okuma + yayılım */
+                lget(&body, tmp_i32);
+                lget(&body, la);
+                simd(&body, S_I32X4_EXTRACT);
+                byte(&body, 0);
+                byte(&body, OP_I32_CONST);
+                sleb(&body, 2);
+                byte(&body, OP_I32_SHL);
+                byte(&body, OP_I32_ADD);
+                byte(&body, OP_I32_LOAD);
+                memarg(&body, 2, 0);
+                simd(&body, S_I32X4_SPLAT);
+                break;
+            }
             lget(&body, la);   /* taban vektör (lane'ler değiştirilecek) */
             for (u32 l = 0; l < 4; l++) {
                 lget(&body, tmp_i32);
@@ -321,6 +340,14 @@ b32 codegen_wasm(IrFunc* f, Arena* a, WasmModule* out) {
     lget(&body, local_of[f->out]);
     simd(&body, S_V128_STORE);
     memarg(&body, 4, 0);
+    if (f->kill) {
+        /* q->kill = i32x4.bitmask(kill) */
+        lget(&body, 0);
+        lget(&body, local_of[f->kill]);
+        simd(&body, S_I32X4_BITMASK);
+        byte(&body, OP_I32_STORE);
+        memarg(&body, 2, Q_KILL_OFS);
+    }
     byte(&body, OP_END);
     if (body.overflow) return FALSE;
     out->body_bytes = body.len;

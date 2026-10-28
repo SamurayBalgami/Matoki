@@ -18,6 +18,8 @@ u32 ref_sample_level(const Texture* t, f32 u, f32 v, u32 level);     /* en yakı
 u32 ref_mip_level_from_rho2(f32 rho2, u32 levels);
 u32 ref_mip_level(const Texture* t, const f32 u[4], const f32 v[4]); /* quad türevlerinden */
 void ref_sample_tex_mip(const Texture* t, const f32 u[4], const f32 v[4], u32 out[4]);
+/* çift doğrusal filtre, seviye içinde (out = RGBA 0..1); Matoki @bilinear kâhini */
+void ref_sample_bilinear(const Texture* t, f32 u, f32 v, u32 level, f32 out[4]);
 
 /* ---- 3D shader'lar ---- */
 typedef struct LitUniforms {

@@ -15,6 +15,8 @@ typedef struct Lower {
     Sym**        live;
     u32          live_count, live_cap;
     u32          budget;   /* açılan döngü turu + satır içi çağrı sınırı */
+    IrRef        cond;     /* etkin yol maskesi (iç içe if koşullarının VE'si); 0 = her lane */
+    IrRef        kill;     /* discard edilen lane maskesi; 0 = hiç discard yok */
 } Lower;
 
 static b32 failed(Lower* L) { return L->err->failed; }
@@ -79,6 +81,45 @@ static IrRef lower_sin(Lower* L, IrRef x) {
     return fmul(L, r, p);
 }
 
+/* m_exp2f ile aynı sıra (core/math.c) */
+static IrRef lower_exp2(Lower* L, IrRef x) {
+    IrRef xc = sel(L, F, op2(L, IR_FLT, I, x, cf(L, -150.0f)), cf(L, -150.0f),
+                   sel(L, F, op2(L, IR_FGT, I, x, cf(L, 128.0f)), cf(L, 128.0f), x));
+    IrRef n = op1(L, IR_FNEAREST, F, xc);
+    IrRef f = fsub(L, xc, n);
+    IrRef i = op1(L, IR_F2I, I, n);
+    static const f32 C[6] = { 1.3333558e-3f, 9.6181291e-3f, 5.5504109e-2f, 2.4022651e-1f, 6.9314718e-1f, 1.0f };
+    IrRef p = cf(L, 1.5403530e-4f);
+    for (u32 k = 0; k < 6; k++) p = fadd(L, cf(L, C[k]), fmul(L, f, p));
+    IrRef h = op2(L, IR_ISHR, I, i, ci(L, 1));
+    IrRef s1 = op1(L, IR_BITCAST_I2F, F, op2(L, IR_ISHL, I, op2(L, IR_IADD, I, h, ci(L, 127)), ci(L, 23)));
+    IrRef s2 = op1(L, IR_BITCAST_I2F, F,
+                   op2(L, IR_ISHL, I, op2(L, IR_IADD, I, op2(L, IR_ISUB, I, i, h), ci(L, 127)), ci(L, 23)));
+    return fmul(L, fmul(L, p, s1), s2);
+}
+
+/* m_log2f ile aynı sıra (core/math.c) */
+static IrRef lower_log2(Lower* L, IrRef x) {
+    IrRef b = op1(L, IR_BITCAST_F2I, I, x);
+    IrRef ef = op2(L, IR_IAND, I, op2(L, IR_ISHRU, I, b, ci(L, 23)), ci(L, 0xFF));
+    IrRef m = op1(L, IR_BITCAST_I2F, F, op2(L, IR_IOR, I, op2(L, IR_IAND, I, b, ci(L, 0x7FFFFF)), ci(L, 0x3F800000)));
+    IrRef e = op2(L, IR_ISUB, I, ef, ci(L, 127));
+    IrRef big = op2(L, IR_FGT, I, m, cf(L, 1.41421356f));
+    m = sel(L, F, big, fmul(L, m, cf(L, 0.5f)), m);
+    e = sel(L, I, big, op2(L, IR_IADD, I, e, ci(L, 1)), e);
+    IrRef t = fdiv(L, fsub(L, m, cf(L, 1.0f)), fadd(L, m, cf(L, 1.0f)));
+    IrRef t2 = fmul(L, t, t);
+    IrRef p = cf(L, 1.0f / 9.0f);
+    p = fadd(L, cf(L, 1.0f / 7.0f), fmul(L, t2, p));
+    p = fadd(L, cf(L, 1.0f / 5.0f), fmul(L, t2, p));
+    p = fadd(L, cf(L, 1.0f / 3.0f), fmul(L, t2, p));
+    p = fadd(L, cf(L, 1.0f), fmul(L, t2, p));
+    IrRef r = fadd(L, op1(L, IR_I2F, F, e), fmul(L, fmul(L, t, p), cf(L, 2.88539008f)));
+    r = sel(L, F, op2(L, IR_IEQ, I, ef, ci(L, 0)), cf(L, -m_bits_f32(0x7F800000u)), r);
+    r = sel(L, F, op2(L, IR_IEQ, I, ef, ci(L, 255)), x, r);
+    return sel(L, F, op2(L, IR_FLT, I, x, cf(L, 0.0f)), cf(L, m_bits_f32(0x7FC00000u)), r);
+}
+
 static IrRef tex_field(Lower* L, const GlobalDecl* g, u32 field_ofs) {
     return ir_emit(L->f, IR_TEX_FIELD, I, 0, 0, 0, g->offset | (field_ofs << 16));
 }
@@ -96,19 +137,112 @@ static IrRef texel_index_clamped(Lower* L, const GlobalDecl* g, IrRef ix, IrRef 
     return op2(L, IR_IADD, I, op2(L, IR_IMUL, I, iy, w), ix);
 }
 
-/* ref_sample_level (seviye 0) ve unpack_rgb ile aynı aritmetik */
+/* unpack_rgb ile aynı: kanal × (1/255) */
+static void unpack_texel(Lower* L, IrRef t, IrRef out[4]) {
+    IrRef k = cf(L, 1.0f / 255.0f);
+    for (u32 c = 0; c < 4; c++) {
+        IrRef sh = c ? op2(L, IR_ISHRU, I, t, ci(L, (i32)(c * 8))) : t;
+        out[c] = fmul(L, op1(L, IR_I2F, F, op2(L, IR_IAND, I, sh, ci(L, 0xFF))), k);
+    }
+}
+
+/* ref_sample_level (seviye 0) ile aynı aritmetik */
 static void lower_sample(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, IrRef out[4]) {
     IrRef wf = op1(L, IR_I2F, F, tex_field(L, g, TEX_OFF_W));
     IrRef hf = op1(L, IR_I2F, F, tex_field(L, g, TEX_OFF_H));
     IrRef ix = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, u, wf)));
     IrRef iy = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, v, hf)));
     IrRef idx = texel_index_clamped(L, g, ix, iy, (g->attrs & ATTR_CLAMP) != 0);
-    IrRef t = ir_emit(L->f, IR_TEXEL_LOAD, I, idx, 0, 0, g->offset);
-    IrRef k = cf(L, 1.0f / 255.0f);
+    unpack_texel(L, ir_emit(L->f, IR_TEXEL_LOAD, I, idx, 0, 0, g->offset), out);
+}
+
+/* son geçerli seviye: min(max(levels, 1), TEX_MAX_LEVELS) - 1 */
+static IrRef last_level(Lower* L, const GlobalDecl* g) {
+    IrRef n = op2(L, IR_IMAX, I, tex_field(L, g, TEX_OFF_LEVELS), ci(L, 1));
+    return op2(L, IR_ISUB, I, op2(L, IR_IMIN, I, n, ci(L, TEX_MAX_LEVELS)), ci(L, 1));
+}
+
+/* ref_mip_level ile aynı: rho² = max(|d(uv)/dx|², |d(uv)/dy|²) texel cinsinden, seviye = floor(log2(rho))
+ * üs alanından tamsayıyla; NaN → 0; [0, son seviye]'ye kenetli. Türevler quad-sabit → sonuç da. */
+static IrRef lower_mip_level(Lower* L, const GlobalDecl* g, IrRef u, IrRef v) {
+    IrRef fw = op1(L, IR_I2F, F, tex_field(L, g, TEX_OFF_W));
+    IrRef fh = op1(L, IR_I2F, F, tex_field(L, g, TEX_OFF_H));
+    IrRef dudx = fmul(L, op1(L, IR_DERIV_X, F, u), fw);
+    IrRef dvdx = fmul(L, op1(L, IR_DERIV_X, F, v), fh);
+    IrRef dudy = fmul(L, op1(L, IR_DERIV_Y, F, u), fw);
+    IrRef dvdy = fmul(L, op1(L, IR_DERIV_Y, F, v), fh);
+    IrRef px2 = fadd(L, fmul(L, dudx, dudx), fmul(L, dvdx, dvdx));
+    IrRef py2 = fadd(L, fmul(L, dudy, dudy), fmul(L, dvdy, dvdy));
+    IrRef rho2 = op2(L, IR_FMAX, F, px2, py2);
+    IrRef bits = op1(L, IR_BITCAST_F2I, I, rho2);
+    IrRef e = op2(L, IR_ISUB, I, op2(L, IR_IAND, I, op2(L, IR_ISHRU, I, bits, ci(L, 23)), ci(L, 0xFF)), ci(L, 127));
+    IrRef lvl = op2(L, IR_IMAX, I, op2(L, IR_ISHR, I, e, ci(L, 1)), ci(L, 0));
+    lvl = op2(L, IR_IMIN, I, lvl, last_level(L, g));
+    return sel(L, I, op2(L, IR_FNE, I, rho2, rho2), ci(L, 0), lvl);
+}
+
+/* seviye k'nın boyutu ve px içindeki başlangıcı (k zaten [0, son seviye] içinde) */
+typedef struct LevelRefs {
+    IrRef wk, hk, base;
+} LevelRefs;
+
+static LevelRefs level_refs(Lower* L, const GlobalDecl* g, IrRef k) {
+    LevelRefs r;
+    r.wk = op2(L, IR_IMAX, I, op2(L, IR_ISHRU, I, tex_field(L, g, TEX_OFF_W), k), ci(L, 1));
+    r.hk = op2(L, IR_IMAX, I, op2(L, IR_ISHRU, I, tex_field(L, g, TEX_OFF_H), k), ci(L, 1));
+    r.base = ir_emit(L->f, IR_TEX_WORD, I, op2(L, IR_IADD, I, k, ci(L, TEX_WORD_LVOFS)), 0, 0, g->offset);
+    return r;
+}
+
+/* @clamp: [0, n-1]'e kenetle; aksi wrap (n 2'nin kuvveti) */
+static IrRef wrap_or_clamp(Lower* L, const GlobalDecl* g, IrRef i, IrRef n) {
+    IrRef m = op2(L, IR_ISUB, I, n, ci(L, 1));
+    if (g->attrs & ATTR_CLAMP) return op2(L, IR_IMIN, I, op2(L, IR_IMAX, I, i, ci(L, 0)), m);
+    return op2(L, IR_IAND, I, i, m);
+}
+
+static IrRef load_at(Lower* L, const GlobalDecl* g, const LevelRefs* lv, IrRef ix, IrRef iy) {
+    IrRef idx = op2(L, IR_IADD, I, op2(L, IR_IADD, I, op2(L, IR_IMUL, I, iy, lv->wk), ix), lv->base);
+    return ir_emit(L->f, IR_TEXEL_LOAD, I, idx, 0, 0, g->offset);
+}
+
+/* ref_sample_level ile aynı aritmetik (en yakın komşu) */
+static IrRef lower_texel_at(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, IrRef k) {
+    LevelRefs lv = level_refs(L, g, k);
+    IrRef ix = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, u, op1(L, IR_I2F, F, lv.wk))));
+    IrRef iy = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, v, op1(L, IR_I2F, F, lv.hk))));
+    return load_at(L, g, &lv, wrap_or_clamp(L, g, ix, lv.wk), wrap_or_clamp(L, g, iy, lv.hk));
+}
+
+/* ref_sample_bilinear ile aynı aritmetik */
+static void lower_bilinear_at(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, IrRef k, IrRef out[4]) {
+    LevelRefs lv = level_refs(L, g, k);
+    IrRef x = fsub(L, fmul(L, u, op1(L, IR_I2F, F, lv.wk)), cf(L, 0.5f));
+    IrRef y = fsub(L, fmul(L, v, op1(L, IR_I2F, F, lv.hk)), cf(L, 0.5f));
+    IrRef fx = op1(L, IR_FFLOOR, F, x), fy = op1(L, IR_FFLOOR, F, y);
+    IrRef ax = fsub(L, x, fx), ay = fsub(L, y, fy);
+    IrRef x0 = op1(L, IR_F2I, I, fx), y0 = op1(L, IR_F2I, I, fy);
+    IrRef x1 = op2(L, IR_IADD, I, x0, ci(L, 1)), y1 = op2(L, IR_IADD, I, y0, ci(L, 1));
+    x0 = wrap_or_clamp(L, g, x0, lv.wk);
+    x1 = wrap_or_clamp(L, g, x1, lv.wk);
+    y0 = wrap_or_clamp(L, g, y0, lv.hk);
+    y1 = wrap_or_clamp(L, g, y1, lv.hk);
+    IrRef c00[4], c10[4], c01[4], c11[4];
+    unpack_texel(L, load_at(L, g, &lv, x0, y0), c00);
+    unpack_texel(L, load_at(L, g, &lv, x1, y0), c10);
+    unpack_texel(L, load_at(L, g, &lv, x0, y1), c01);
+    unpack_texel(L, load_at(L, g, &lv, x1, y1), c11);
     for (u32 c = 0; c < 4; c++) {
-        IrRef sh = c ? op2(L, IR_ISHRU, I, t, ci(L, (i32)(c * 8))) : t;
-        out[c] = fmul(L, op1(L, IR_I2F, F, op2(L, IR_IAND, I, sh, ci(L, 0xFF))), k);
+        IrRef top = fadd(L, c00[c], fmul(L, fsub(L, c10[c], c00[c]), ax));
+        IrRef bot = fadd(L, c01[c], fmul(L, fsub(L, c11[c], c01[c]), ax));
+        out[c] = fadd(L, top, fmul(L, fsub(L, bot, top), ay));
     }
+}
+
+/* örnekleme: filtre özniteliğe göre */
+static void lower_sample_lod(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, IrRef k, IrRef out[4]) {
+    if (g->attrs & ATTR_BILINEAR) lower_bilinear_at(L, g, u, v, k, out);
+    else unpack_texel(L, lower_texel_at(L, g, u, v, k), out);
 }
 
 static u32 lower_builtin(Lower* L, Node* e, IrRef out[4]) {
@@ -175,6 +309,21 @@ static u32 lower_builtin(Lower* L, Node* e, IrRef out[4]) {
     case BI_COS:
         for (u32 i = 0; i < rn; i++) out[i] = lower_sin(L, fadd(L, av[0][i], cf(L, M_PI_F * 0.5f)));
         return rn;
+    case BI_EXP2:
+        for (u32 i = 0; i < rn; i++) out[i] = lower_exp2(L, av[0][i]);
+        return rn;
+    case BI_EXP:
+        for (u32 i = 0; i < rn; i++) out[i] = lower_exp2(L, fmul(L, av[0][i], cf(L, 1.44269504f)));
+        return rn;
+    case BI_LOG2:
+        for (u32 i = 0; i < rn; i++) out[i] = lower_log2(L, av[0][i]);
+        return rn;
+    case BI_LOG:
+        for (u32 i = 0; i < rn; i++) out[i] = fmul(L, lower_log2(L, av[0][i]), cf(L, 0.693147181f));
+        return rn;
+    case BI_POW:
+        for (u32 i = 0; i < rn; i++) out[i] = lower_exp2(L, fmul(L, comp(av[1], an[1], i), lower_log2(L, av[0][i])));
+        return rn;
     case BI_MIX:
         for (u32 i = 0; i < rn; i++) {
             out[i] = fadd(L, av[0][i], fmul(L, fsub(L, av[1][i], av[0][i]), comp(av[2], an[2], i)));
@@ -234,9 +383,27 @@ static u32 lower_builtin(Lower* L, Node* e, IrRef out[4]) {
         for (u32 i = 0; i < rn; i++) out[i] = sel(L, t, av[0][0], av[1][i], av[2][i]);
         return rn;
     }
-    case BI_SAMPLE:
-        lower_sample(L, args[0]->sym->g, av[1][0], av[1][1], out);
+    case BI_SAMPLE: {
+        const GlobalDecl* g = args[0]->sym->g;
+        if (g->attrs & ATTR_MIPMAP) {
+            lower_sample_lod(L, g, av[1][0], av[1][1], lower_mip_level(L, g, av[1][0], av[1][1]), out);
+        } else if (g->attrs & ATTR_BILINEAR) {
+            lower_bilinear_at(L, g, av[1][0], av[1][1], ci(L, 0), out);
+        } else {
+            lower_sample(L, g, av[1][0], av[1][1], out);
+        }
         return 4;
+    }
+    case BI_SAMPLE_LEVEL: {
+        /* lod < 0 → 0, lod > son → son (ref_sample_level u32 aldığı için negatifi son seviyeye götürür; burada 0) */
+        const GlobalDecl* g = args[0]->sym->g;
+        IrRef k = op2(L, IR_IMIN, I, op2(L, IR_IMAX, I, av[2][0], ci(L, 0)), last_level(L, g));
+        lower_sample_lod(L, g, av[1][0], av[1][1], k, out);
+        return 4;
+    }
+    case BI_MIP_LEVEL:
+        out[0] = lower_mip_level(L, args[0]->sym->g, av[1][0], av[1][1]);
+        return 1;
     case BI_TEXEL_FETCH: {
         const GlobalDecl* g = args[0]->sym->g;
         IrRef idx = texel_index_clamped(L, g, av[1][0], av[2][0], TRUE);
@@ -340,6 +507,22 @@ static u32 lower_expr(Lower* L, Node* e, IrRef out[4]) {
     }
     case NK_BINARY: {
         IrRef a[4], b[4];
+        if (e->a->type.base == TB_MAT) {
+            /* mat4_mul_v4 / mat3_mul_v3 ile aynı sıra: satır r = ((m[r]·v0 + m[n+r]·v1) + ...) */
+            const GlobalDecl* g = e->a->sym->g;
+            u32 n = e->a->type.n;
+            lower_expr(L, e->b, b);
+            for (u32 r = 0; r < n; r++) {
+                IrRef acc = 0;
+                for (u32 c = 0; c < n; c++) {
+                    IrRef m = ir_emit(L->f, IR_UNIFORM, F, 0, 0, 0, g->offset + 4 * (c * n + r));
+                    IrRef t = fmul(L, m, b[c]);
+                    acc = c ? fadd(L, acc, t) : t;
+                }
+                out[r] = acc;
+            }
+            return n;
+        }
         u32 na = lower_expr(L, e->a, a);
         u32 nb = lower_expr(L, e->b, b);
         return lower_binary_vals(L, e->op, e->type, e->a->type, a, na, b, nb, out);
@@ -398,12 +581,17 @@ static void lower_stmt(Lower* L, Node* st) {
         IrRef (*before)[4] = (IrRef(*)[4])arena_alloc(L->a, sizeof(IrRef) * 4 * (n ? n : 1), 4);
         IrRef (*then_v)[4] = (IrRef(*)[4])arena_alloc(L->a, sizeof(IrRef) * 4 * (n ? n : 1), 4);
         for (u32 i = 0; i < n; i++) mem_copy(before[i], L->live[i]->vals, sizeof(IrRef) * 4);
+        IrRef outer = L->cond;
+        IrRef not_c = op2(L, IR_IXOR, I, c[0], ci(L, -1));
+        L->cond = outer ? op2(L, IR_IAND, I, outer, c[0]) : c[0];
         lower_block(L, st->b);
         for (u32 i = 0; i < n; i++) {
             mem_copy(then_v[i], L->live[i]->vals, sizeof(IrRef) * 4);
             mem_copy(L->live[i]->vals, before[i], sizeof(IrRef) * 4);
         }
+        L->cond = outer ? op2(L, IR_IAND, I, outer, not_c) : not_c;
         if (st->c) lower_block(L, st->c);
+        L->cond = outer;
         for (u32 i = 0; i < n; i++) {
             Sym* y = L->live[i];
             for (u32 k = 0; k < y->type.n; k++) {
@@ -435,6 +623,12 @@ static void lower_stmt(Lower* L, Node* st) {
     case NK_BLOCK:
         lower_block(L, st);
         return;
+    case NK_DISCARD: {
+        /* SPMD: kod akmaya devam eder; yalnızca etkin yoldaki lane'ler atıldı olarak işaretlenir */
+        IrRef m = L->cond ? L->cond : ci(L, -1);
+        L->kill = L->kill ? op2(L, IR_IOR, I, L->kill, m) : m;
+        return;
+    }
     default:
         fail(L, st, "deyim lower edilemedi");
         return;
@@ -493,6 +687,7 @@ b32 lower_module(Arena* a, Module* m, const SemaResult* s, IrFunc* f, MatokiErro
     lower_fn(&L, s->frag, NULL, color);
     if (err->failed) return FALSE;
     f->out = pack_color(&L, color);
+    f->kill = L.kill;
     if (f->overflow) {
         matoki_error(err, s->frag->line, s->frag->col, "IR kapasitesi aşıldı (shader çok büyük)", NULL, 0);
         return FALSE;

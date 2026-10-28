@@ -22,6 +22,42 @@ u32 ref_sample_level(const Texture* t, f32 u, f32 v, u32 level) {
     return base[(u32)iy * wk + (u32)ix];
 }
 
+static inline i32 wrap_or_clamp(i32 i, u32 n, u32 flags) {
+    if (flags & TEX_FLAG_CLAMP) return CLAMP(i, 0, (i32)n - 1);
+    return i & (i32)(n - 1);
+}
+
+/* Matoki @bilinear ile aynı sıra: x = u·wk - 0.5, köşe ağırlıkları kesirli kısım,
+ * kanal başına önce yatay sonra dikey lerp (a + (b - a)·t), kanallar ×(1/255). */
+void ref_sample_bilinear(const Texture* t, f32 u, f32 v, u32 level, f32 out[4]) {
+    u32 levels = t->levels ? t->levels : 1;
+    if (levels > TEX_MAX_LEVELS) levels = TEX_MAX_LEVELS;
+    if (level >= levels) level = levels - 1;
+    u32 wk = img_mip_dim(t->w, level), hk = img_mip_dim(t->h, level);
+    const u32* base = t->px + t->lv_ofs[level];
+    f32 x = u * (f32)wk - 0.5f;
+    f32 y = v * (f32)hk - 0.5f;
+    f32 fx = m_floorf(x), fy = m_floorf(y);
+    f32 ax = x - fx, ay = y - fy;
+    i32 x0 = m_f2i_sat(fx), y0 = m_f2i_sat(fy);
+    i32 x1 = (i32)((u32)x0 + 1u), y1 = (i32)((u32)y0 + 1u);
+    x0 = wrap_or_clamp(x0, wk, t->flags);
+    x1 = wrap_or_clamp(x1, wk, t->flags);
+    y0 = wrap_or_clamp(y0, hk, t->flags);
+    y1 = wrap_or_clamp(y1, hk, t->flags);
+    u32 c00 = base[(u32)y0 * wk + (u32)x0], c10 = base[(u32)y0 * wk + (u32)x1];
+    u32 c01 = base[(u32)y1 * wk + (u32)x0], c11 = base[(u32)y1 * wk + (u32)x1];
+    const f32 k = 1.0f / 255.0f;
+    for (u32 ch = 0; ch < 4; ch++) {
+        u32 s = ch * 8;
+        f32 a00 = (f32)(i32)((c00 >> s) & 0xFF) * k, a10 = (f32)(i32)((c10 >> s) & 0xFF) * k;
+        f32 a01 = (f32)(i32)((c01 >> s) & 0xFF) * k, a11 = (f32)(i32)((c11 >> s) & 0xFF) * k;
+        f32 top = a00 + (a10 - a00) * ax;
+        f32 bot = a01 + (a11 - a01) * ax;
+        out[ch] = top + (bot - top) * ay;
+    }
+}
+
 static inline f32 wasm_f32_max(f32 a, f32 b) {
     if (a != a) return a;
     if (b != b) return b;

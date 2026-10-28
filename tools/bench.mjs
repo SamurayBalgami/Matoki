@@ -77,12 +77,12 @@ for (let v = 1; v <= nViews; v++) {
     const [med, best, hash] = measure(v, 1, m, 0);
     console.log(`| ${v} | flat | ${RASTER_MODES[m]} | ${med} | ${best} | ${hash} |`);
   }
+  // lit.mtk mip'li ve mip'siz C ile bit-bit aynı: matoki hash'i C satırlarıyla aynı olmalı
   for (let s = 0; s < SHADER_MODES.length; s++) {
-    if (s === MATOKI) continue;
+    if (s === MATOKI && !hasMatoki) continue;
     const [med, best, hash] = measure(v, 0, bestRaster, s);
     console.log(`| ${v} | ${SHADER_MODES[s]} | ${RASTER_MODES[bestRaster]} | ${med} | ${best} | ${hash} |`);
   }
-  // Matoki lit.mtk henüz mip'siz: C SIMD ile mip kapalıyken karşılaştır (hash'ler aynı olmalı)
   if (hasMatoki) {
     for (const s of [2, MATOKI]) {
       const [med, best, hash] = measure(v, 0, bestRaster, s, 0);

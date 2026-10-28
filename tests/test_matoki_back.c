@@ -71,7 +71,7 @@ static void build_random(IrFunc* f, u64 seed) {
 
     u32 steps = 20 + rng_u32(&r) % 110;
     for (u32 st = 0; st < steps; st++) {
-        u32 kind = rng_u32(&r) % 13;
+        u32 kind = rng_u32(&r) % 14;
         switch (kind) {
         case 0: case 1: {   /* f ikili */
             IrOp op = (IrOp)(IR_FADD + rng_u32(&r) % (IR_FMAX - IR_FADD + 1));
@@ -123,7 +123,13 @@ static void build_random(IrFunc* f, u64 seed) {
         case 10: case 11:   /* türevler */
             push_f(&p, ir_emit(f, (rng_u32(&r) & 1) ? IR_DERIV_X : IR_DERIV_Y, IR_T_F32, pf(&r, &p), 0, 0, 0));
             break;
-        default: {          /* doku okuma (indeks 0..255) */
+        case 12: {          /* doku sözcüğü (mip ofset tablosu, sözcük 8..23) */
+            IrRef w = ir_emit(f, IR_IAND, IR_T_I32, pi(&r, &p), ir_const_i(f, 15), 0, 0);
+            w = ir_emit(f, IR_IADD, IR_T_I32, w, ir_const_i(f, TEX_WORD_LVOFS), 0, 0);
+            push_i(&p, ir_emit(f, IR_TEX_WORD, IR_T_I32, w, 0, 0, UNI_TEX_OFS));
+            break;
+        }
+        default: {          /* doku okuma (indeks 0..255; indeks quad-sabitse tek okuma yolu) */
             IrRef idx = ir_emit(f, IR_IAND, IR_T_I32, pi(&r, &p), ir_const_i(f, 255), 0, 0);
             push_i(&p, ir_emit(f, IR_TEXEL_LOAD, IR_T_I32, idx, 0, 0, UNI_TEX_OFS));
             break;
@@ -144,7 +150,7 @@ static void random_quad(Rng* r, ShadeQuad* q) {
     q->x = (i32)(rng_u32(r) % 4096) - 1024;
     q->y = (i32)(rng_u32(r) % 4096) - 1024;
     q->mask = 0xF;
-    q->_pad = 0;
+    q->kill = 0;
     for (u32 l = 0; l < 4; l++) {
         q->z[l] = m_bits_f32(rand_f_bits(r));
         for (u32 s = 0; s < SHADE_MAX_VARS; s++) q->var[s][l] = m_bits_f32(rand_f_bits(r));
@@ -223,6 +229,7 @@ TEST(matoki_diff_eval_vs_codegen_500) {
     tex->levels = 1;
     Rng tr = rng_make(99);
     for (u32 i = 0; i < 256; i++) tex->px[i] = rng_u32(&tr);
+    for (u32 i = 0; i < TEX_MAX_LEVELS; i++) tex->lv_ofs[i] = rng_u32(&tr);
     u8* uni = (u8*)arena_alloc(a, UNI_SIZE, 16);
     ShadeQuad* quads = ARENA_ARRAY(a, ShadeQuad, 16);
     Arena scratch;

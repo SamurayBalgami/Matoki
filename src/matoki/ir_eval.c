@@ -44,6 +44,11 @@ void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[
             for (u32 l = 0; l < 4; l++) r[l] = tex->px[v[in->a][l]];
             break;
         }
+        case IR_TEX_WORD: {
+            const u32* tex = *(const u32* const*)(uni + in->imm);
+            for (u32 l = 0; l < 4; l++) r[l] = tex[v[in->a][l]];
+            break;
+        }
         case IR_DERIV_X:
         case IR_DERIV_Y: {
             if (f->ins[in->a].uniform) {
@@ -66,6 +71,12 @@ void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[
         }
     }
     for (u32 l = 0; l < 4; l++) out[l] = v[f->out][l];
+    if (f->kill) {
+        /* i32x4.bitmask ile aynı: her lane'in işaret biti; q raster'da yazılabilir (shade_abi.h) */
+        u32 bits = 0;
+        for (u32 l = 0; l < 4; l++) bits |= (v[f->kill][l] >> 31) << l;
+        ((ShadeQuad*)q)->kill = bits;
+    }
     arena_reset(scratch, mark);
 }
 

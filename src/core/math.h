@@ -47,6 +47,13 @@ f32 m_sinf(f32 x);
 f32 m_cosf(f32 x);
 f32 m_tanf(f32 x);
 f32 m_atan2f(f32 y, f32 x);   /* minimax polinom, |hata| < 2e-5 rad */
+/* Üstel / logaritma; Matoki exp2/log2/exp/log/pow ile BİT-BİT aynı işlem sırası (göreli hata ~2e-7).
+ * exp2: x [-150, 128]'e kenetlenir (→ 0 / inf); log2: x<0 → NaN, ±0 ve denormal → -inf. */
+f32 m_exp2f(f32 x);
+f32 m_log2f(f32 x);
+static inline f32 m_expf(f32 x) { return m_exp2f(x * 1.44269504f); }
+static inline f32 m_logf(f32 x) { return m_log2f(x) * 0.693147181f; }
+static inline f32 m_powf(f32 x, f32 y) { return m_exp2f(y * m_log2f(x)); }
 
 /* ---- Vec3 ---- */
 static inline Vec3 v3(f32 x, f32 y, f32 z) { Vec3 r = { x, y, z }; return r; }

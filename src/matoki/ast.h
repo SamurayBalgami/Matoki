@@ -6,14 +6,16 @@
 #include "core/arena.h"
 #include "matoki/lexer.h"
 
-/* Tip: temel tür + bileşen sayısı. vec3 = {TB_FLOAT, 3}, i32 = {TB_INT, 1}. */
+/* Tip: temel tür + bileşen sayısı. vec3 = {TB_FLOAT, 3}, i32 = {TB_INT, 1}.
+ * Matris: {TB_MAT, 3|4} = mat3/mat4 (n = boyut), yalnızca uniform ve yalnızca 'M * v' içinde. */
 enum {
     TB_ERROR = 0,
     TB_VOID,
     TB_BOOL,
     TB_INT,
     TB_FLOAT,
-    TB_TEX
+    TB_TEX,
+    TB_MAT
 };
 
 typedef struct Type {
@@ -28,7 +30,7 @@ typedef enum NodeKind {
     /* ifadeler */
     NK_INT, NK_FLOAT, NK_BOOL, NK_NAME, NK_UNARY, NK_BINARY, NK_CALL, NK_SWIZZLE,
     /* deyimler */
-    NK_LET, NK_VAR, NK_ASSIGN, NK_IF, NK_FOR, NK_RETURN, NK_EXPR, NK_BLOCK
+    NK_LET, NK_VAR, NK_ASSIGN, NK_IF, NK_FOR, NK_RETURN, NK_EXPR, NK_BLOCK, NK_DISCARD
 } NodeKind;
 
 struct Sym;

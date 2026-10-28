@@ -1,5 +1,5 @@
 // shaders/lit.mtk — doku + Lambert + yarım küre ortam ışığı + doğrusal sis.
-// C referansı shade_lit_tex (src/raster/ref_shaders.c) ile mip kapalıyken BİT-BİT aynı:
+// C referansı shade_lit_tex (src/raster/ref_shaders.c) ile mip açık da kapalı da BİT-BİT aynı:
 // işlem sırası ve NaN davranışı birebir korunur (maxc/clampc, norm_safe).
 // Uniform sırası ve tipleri LitUniforms struct'ıyla aynı → aynı uniform bloğu iki shader'a da verilir.
 
@@ -11,7 +11,7 @@ uniform fog_start: f32;
 uniform fog_color: vec3;
 uniform fog_end: f32;
 uniform eye: vec3;
-uniform use_mip: i32;       // henüz kullanılmıyor (@mipmap M8 Faz 2)
+uniform use_mip: i32;       // 0 → hep seviye 0
 uniform tint: vec3;
 
 varying wpos: vec3;         // yuva 0..2
@@ -29,7 +29,8 @@ fn norm_safe(v: vec3) -> vec3 {
 }
 
 fn frag() -> vec4 {
-    let texel = sample(tex, uv);
+    let lod = select(use_mip != 0, mip_level(tex, uv), 0);
+    let texel = sample_level(tex, uv, lod);
     let n = norm_safe(nrm);
     let ndl = maxc(dot(n, to_light), 0.0);
     let hemi = ambient * (0.75 + 0.25 * n.y);

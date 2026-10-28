@@ -12,8 +12,8 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 4b | Shader maliyeti: mip seviye tablosu + SIMD C lit shader | ✅ lit kare 1.7–2.5× |
 | 4c | SIMD vertex aşaması + üçgen kurulumu, hızlı fb_clear (artık raster tarafı baskın) | ⏳ |
 | 5 | **Matoki** v0: lexer → parser → sema → IR (katlama + CSE) → wasm SIMD codegen, ir_eval, diferansiyel test, JIT | ✅ (`docs/MATOKI.md`) |
-| 5b | Matoki: uniform değerlerin skaler hesaplanması, uniform özelleştirme + varyant önbelleği, mat3/mat4, discard | ⏳ |
-| 6 | M8 Faz 2'nin Matoki kısmı: dFdx/dFdy/fwidth ✅, texel_fetch/bitcast ✅; @mipmap, sample_level, @bilinear | ⏳ (C referansı hazır) |
+| 5b | Matoki: mat3/mat4 ✅, discard ✅, exp/log/pow ✅; uniform değerlerin çizim başına hesaplanması, uniform özelleştirme + varyant önbelleği | ⏳ |
+| 6 | M8 Faz 2'nin Matoki kısmı: dFdx/dFdy/fwidth, texel_fetch/bitcast, @mipmap, mip_level, sample_level, @bilinear | ✅ (C ile bit-bit) |
 | 7 | PNG (inflate/deflate), JSON, glTF/GLB, OBJ, .mmsh (M8 Faz 3) | ⏳ |
 | 8 | Bitmap font + immediate-mode UI | ⏳ |
 | 9 | İş sistemi + worker'lar + paralel raster (M6_2) | ⏳ |
@@ -28,4 +28,7 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 13e | M9 Faz 6: kısıt grafiği renklendirmesi + SIMD temas çözücüsü (skalerle bit-bit) | ✅ |
 | 13f | M9 Faz 7: dinamik dünya BVH'si (geniş faz / raycast / CCD / yumuşak aday), SAP ile bit-bit eşit | ✅ |
 | 13g | M9 Faz 8: kumaş öz-çarpışması + rijit ↔ kumaş teması (mermi bayrakta yakalanır) | ✅ |
-| 13h | M9 Faz 9: SIMD dar faz, kinematik gövdeler, öz-çarpışma komşu listesi, kumaş yırtılması | ⏳ |
+| 13h | M9 Faz 9: SIMD dar faz, kinematik gövdeler, öz-çarpışma komşu listesi, kumaş yırtılması | ⏳ (M10 sonrası) |
+| 14 | M10 Faz 1: tarayıcıda kare profili (`3d.html?prof`) — boyama baskın | ✅ (`tasks/M10_temel.md`) |
+| 14b | M10 Faz 2: Matoki eksikleri (mip, bilinear, discard, matris, exp/log/pow); lit.mtk C ile bit-bit | ✅ |
+| 14c | M10 Faz 3: render çekirdeği (4c) + paralel raster (9) | ⏳ |

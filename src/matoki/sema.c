@@ -20,11 +20,13 @@ static const struct { const char* name; Builtin bi; } BUILTINS[] = {
     { "abs", BI_ABS }, { "min", BI_MIN }, { "max", BI_MAX }, { "clamp", BI_CLAMP },
     { "floor", BI_FLOOR }, { "ceil", BI_CEIL }, { "fract", BI_FRACT }, { "trunc", BI_TRUNC }, { "round", BI_ROUND },
     { "sqrt", BI_SQRT }, { "sin", BI_SIN }, { "cos", BI_COS },
+    { "exp2", BI_EXP2 }, { "log2", BI_LOG2 }, { "exp", BI_EXP }, { "log", BI_LOG }, { "pow", BI_POW },
     { "mix", BI_MIX }, { "step", BI_STEP }, { "smoothstep", BI_SMOOTHSTEP }, { "mod", BI_MOD },
     { "dot", BI_DOT }, { "cross", BI_CROSS }, { "length", BI_LENGTH }, { "distance", BI_DISTANCE },
     { "normalize", BI_NORMALIZE }, { "reflect", BI_REFLECT },
     { "select", BI_SELECT },
     { "sample", BI_SAMPLE }, { "texel_fetch", BI_TEXEL_FETCH }, { "tex_size", BI_TEX_SIZE },
+    { "sample_level", BI_SAMPLE_LEVEL }, { "mip_level", BI_MIP_LEVEL },
     { "bitcast_f32", BI_BITCAST_F32 }, { "bitcast_i32", BI_BITCAST_I32 },
     { "dFdx", BI_DFDX }, { "dFdy", BI_DFDY }, { "fwidth", BI_FWIDTH },
     { "frag_coord", BI_FRAG_COORD },
@@ -44,6 +46,7 @@ static const char* type_name(Type t) {
     case TB_BOOL: return "bool";
     case TB_INT: return "i32";
     case TB_TEX: return "texture2d";
+    case TB_MAT: return t.n == 3 ? "mat3" : "mat4";
     case TB_FLOAT:
         switch (t.n) {
         case 1: return "f32";
@@ -158,6 +161,13 @@ static Type sema_binary(Sema* s, Node* e) {
     Type ta = sema_expr(s, e->a);
     Type tb = sema_expr(s, e->b);
     if (failed(s)) return ta;
+    if (ta.base == TB_MAT || tb.base == TB_MAT) {
+        /* matris yalnızca soldan vektörle çarpılır: mat4 * vec4, mat3 * vec3 (sütun-öncelikli) */
+        if (e->op != T_STAR || ta.base != TB_MAT || !is_f(tb) || tb.n != ta.n) {
+            return err_types(s, e, "matris yalnızca 'M * v' biçiminde kullanılır (mat4 * vec4, mat3 * vec3)", ta, tb);
+        }
+        return type_make(TB_FLOAT, ta.n);
+    }
     switch (e->op) {
     case T_PLUS: case T_MINUS: case T_STAR: case T_SLASH:
         return arith_type(s, e, e->a, e->b);
@@ -263,6 +273,7 @@ static Type sema_builtin(Sema* s, Node* call, Builtin bi, Node** args, u32 n) {
         }
         return args[0]->type;
     case BI_FLOOR: case BI_CEIL: case BI_FRACT: case BI_TRUNC: case BI_ROUND: case BI_SQRT: case BI_SIN: case BI_COS:
+    case BI_EXP2: case BI_LOG2: case BI_EXP: case BI_LOG:
     case BI_NORMALIZE: case BI_DFDX: case BI_DFDY: case BI_FWIDTH:
         if (!expect_args(s, call, n, 1) || !all_float(s, call, args, 1)) return F1;
         return args[0]->type;
@@ -284,9 +295,9 @@ static Type sema_builtin(Sema* s, Node* call, Builtin bi, Node** args, u32 n) {
             if (args[i]->type.n != 1 && args[i]->type.n != args[2]->type.n) return err_types(s, call, "smoothstep boyut uyuşmazlığı", args[i]->type, args[2]->type);
         }
         return args[2]->type;
-    case BI_MOD:
+    case BI_MOD: case BI_POW:
         if (!expect_args(s, call, n, 2) || !all_float(s, call, args, 2)) return F1;
-        if (args[1]->type.n != 1 && args[1]->type.n != args[0]->type.n) return err_types(s, call, "mod boyut uyuşmazlığı", args[0]->type, args[1]->type);
+        if (args[1]->type.n != 1 && args[1]->type.n != args[0]->type.n) return err_types(s, call, "mod/pow boyut uyuşmazlığı", args[0]->type, args[1]->type);
         return args[0]->type;
     case BI_DOT: case BI_DISTANCE:
         if (!expect_args(s, call, n, 2) || !all_float(s, call, args, 2)) return F1;
@@ -315,10 +326,18 @@ static Type sema_builtin(Sema* s, Node* call, Builtin bi, Node** args, u32 n) {
         if (!expect_args(s, call, n, 2) || !is_tex_arg(s, args[0])) return F1;
         coerce_float(args[1]);
         if (!type_eq(args[1]->type, type_make(TB_FLOAT, 2))) return err_types(s, call, "sample(tex, uv): uv vec2 olmalı", args[1]->type, type_make(TB_ERROR, 0));
-        if (args[0]->sym->g->attrs & (ATTR_MIPMAP | ATTR_BILINEAR)) {
-            return err_at(s, call, "@mipmap / @bilinear örnekleme henüz yok (M8 Faz 2)");
-        }
         return type_make(TB_FLOAT, 4);
+    case BI_SAMPLE_LEVEL:
+        if (!expect_args(s, call, n, 3) || !is_tex_arg(s, args[0])) return F1;
+        coerce_float(args[1]);
+        if (!type_eq(args[1]->type, type_make(TB_FLOAT, 2))) return err_types(s, call, "sample_level(tex, uv, lod): uv vec2 olmalı", args[1]->type, type_make(TB_ERROR, 0));
+        if (!is_is(args[2]->type)) return err_at(s, call, "sample_level(tex, uv, lod): lod i32 olmalı");
+        return type_make(TB_FLOAT, 4);
+    case BI_MIP_LEVEL:
+        if (!expect_args(s, call, n, 2) || !is_tex_arg(s, args[0])) return F1;
+        coerce_float(args[1]);
+        if (!type_eq(args[1]->type, type_make(TB_FLOAT, 2))) return err_types(s, call, "mip_level(tex, uv): uv vec2 olmalı", args[1]->type, type_make(TB_ERROR, 0));
+        return type_make(TB_INT, 1);
     case BI_TEXEL_FETCH:
         if (!expect_args(s, call, n, 3) || !is_tex_arg(s, args[0])) return F1;
         if (!is_is(args[1]->type) || !is_is(args[2]->type)) return err_at(s, call, "texel_fetch(tex, x: i32, y: i32)");
@@ -542,6 +561,8 @@ static void sema_stmt(Sema* s, Node* st) {
     case NK_BLOCK:
         sema_block(s, st);
         return;
+    case NK_DISCARD:
+        return;
     default:
         err_at(s, st, "deyim bekleniyor");
         return;
@@ -623,10 +644,10 @@ b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err) {
             }
             if (g->type.base != TB_TEX && g->attrs) matoki_error(err, g->line, g->col, "öznitelik yalnızca texture2d için:", g->name, g->name_len);
             g->offset = uofs;
-            uofs += g->type.base == TB_TEX ? 4u : 4u * g->type.n;
+            uofs += g->type.base == TB_TEX ? 4u : g->type.base == TB_MAT ? 4u * g->type.n * g->type.n : 4u * g->type.n;
         } else {
             if (g->type.base != TB_FLOAT) {
-                matoki_error(err, g->line, g->col, "varying f32/vecN olmalı:", g->name, g->name_len);
+                matoki_error(err, g->line, g->col, "varying f32/vecN olmalı (matris yalnızca uniform):", g->name, g->name_len);
                 break;
             }
             if (g->slot >= 0) vslot = (u32)g->slot;

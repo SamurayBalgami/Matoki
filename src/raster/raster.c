@@ -280,7 +280,7 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
     const EdgeEq* e2 = &t->e[2];
 
     ShadeQuad q;
-    q._pad = 0;
+    q.kill = 0;
     u32 out[4];
 
     i64 row0 = edge_at(e0, minx, miny), row1 = edge_at(e1, minx, miny), row2 = edge_at(e2, minx, miny);
@@ -326,7 +326,9 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
                 f32 w = 1.0f / attr_eval(&t->w, lfx, lfy);
                 for (u32 i = 0; i < nv; i++) q.var[i][l] = attr_eval(&t->v[i], lfx, lfy) * w;
             }
+            q.kill = 0;
             t->shade(&q, t->uniforms, out);
+            pass &= ~q.kill;
 
             for (u32 l = 0; l < 4; l++) {
                 if (!(pass & (1u << l))) continue;

@@ -15,6 +15,7 @@ typedef enum TokKind {
     T_AMP, T_PIPE, T_CARET, T_SHL, T_SHR, T_TILDE,
     /* anahtar sözcükler */
     T_FN, T_LET, T_VAR, T_IF, T_ELSE, T_FOR, T_IN, T_RETURN, T_UNIFORM, T_VARYING, T_TRUE, T_FALSE,
+    T_DISCARD,
     T_COUNT
 } TokKind;
 

@@ -15,8 +15,6 @@ void  img_build_mips(u32* px, u32 w, u32 h, u32 levels);
 
 /* Önceden hesaplanmış mip seviyesi bilgisi (Texture ABI'sine dokunmadan, shader uniform'larında tutulur).
  * Örnekleme sıcak yolunda img_mip_offset döngüsünü ortadan kaldırır. */
-#define TEX_MAX_LEVELS 16
-
 typedef struct TexLevel {
     const u32* px;     /* seviyenin ilk texel'i */
     u32        w, h;
@@ -30,5 +28,7 @@ u32 tex_level_table(const Texture* t, TexLevel* out);
  * içerik doldurulduktan sonra img_build_mips(t->px, t->w, t->h, t->levels) çağrılmalı. */
 Texture* tex_create(Arena* a, u32 w, u32 h, u32 flags);
 void     tex_build_mips(Texture* t);
+/* lv_ofs tablosunu w, h, levels'tan doldurur (tex_create çağırır; elle kurulan dokular için) */
+void     tex_fill_level_offsets(Texture* t);
 
 #endif

@@ -65,7 +65,7 @@ TEST(shade_lit_variants_bit_exact) {
         q.x = (i32)(rng_u32(&rng) % 640);
         q.y = (i32)(rng_u32(&rng) % 360);
         q.mask = rng_u32(&rng) & 0xF;
-        q._pad = 0;
+        q.kill = 0;
         /* uv: komşu lane'ler arası türev ölçeği rastgele → farklı mip seviyeleri */
         f32 scale = rng_range(&rng, 0.0f, 0.2f) * (f32)(1u << (rng_u32(&rng) % 6));
         f32 u0 = special(&rng, -20, 20), v0 = special(&rng, -20, 20);

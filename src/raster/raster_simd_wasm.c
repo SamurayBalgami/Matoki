@@ -65,7 +65,7 @@ void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
     }
 
     ShadeQuad q;
-    q._pad = 0;
+    q.kill = 0;
     u32 out[4];
     u32 quads = 0, pixels = 0;
 
@@ -127,7 +127,13 @@ void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
             for (u32 i = 0; i < nv; i++) {
                 wasm_v128_store(q.var[i], wasm_f32x4_mul(plane4(va[i], vb[i], vc[i], fxv, fyv), wv));
             }
+            q.kill = 0;
             t->shade(&q, t->uniforms, out);
+            pass &= ~q.kill;
+            if (!pass) {   /* tümü atıldı: gölgelendi ama yazılacak piksel yok */
+                quads++;
+                continue;
+            }
 
             if (inner) {
                 v128_t ov = wasm_v128_load(out);

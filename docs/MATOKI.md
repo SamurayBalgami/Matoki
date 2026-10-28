@@ -39,7 +39,8 @@ Gerçek bir örnek: [`shaders/lit.mtk`](../shaders/lit.mtk) — C referansı `sh
 | Sözdizimi | Anlam |
 |---|---|
 | `uniform ad: tip;` | Tüm quad için sabit. Uniform bloğunda bildirim sırasıyla, 4 bayt hizalı ve boşluksuz yerleşir: `f32`/`i32` 4 bayt, `vecN` 4N bayt, `texture2d` 4 bayt (`Texture*`, wasm32). `bool` uniform yok (`i32` kullanın). |
-| `uniform t: texture2d @clamp;` | Doku. `@clamp` verilmezse wrap (genişlik/yükseklik 2'nin kuvveti olmalı). `@mipmap` ve `@bilinear` ayrıştırılır ama henüz hata verir (M8 Faz 2). |
+| `uniform t: texture2d @clamp;` | Doku. `@clamp` verilmezse wrap (genişlik/yükseklik 2'nin kuvveti olmalı). `@mipmap`: `sample` seviyeyi quad türevlerinden seçer. `@bilinear`: seviye içinde çift doğrusal filtre. Öznitelikler birleşebilir. |
+| `uniform M: mat4;` / `mat3` | Sütun-öncelikli matris (C `Mat4`/`Mat3` ile aynı yerleşim, 64 / 36 bayt). Yalnızca `M * v` içinde kullanılır. |
 | `varying ad: f32 / vecN;` | Rasterizer'dan gelen interpole değer. Ardışık yuvalara yerleşir; `@slot(N)` ile başlangıç yuvası seçilir. Toplam ≤ 16 yuva. |
 | `fn ad(p: tip, ...) -> tip { ... }` | Fonksiyon. Her çağrıda satır içine alınır; özyineleme yasak. Gövde `return <ifade>;` ile bitmeli, başka yerde `return` olamaz. |
 | `fn frag() -> vec4` | Giriş noktası. Dönen `vec4` (0..1) `clamp → ×255 + 0.5 → kesme` ile RGBA8'e paketlenir (`pack_rgb` ile aynı). |
@@ -49,7 +50,9 @@ yazılırsa (örnek: `LitUniforms` ↔ `lit.mtk`) aynı uniform bloğu hem C hem
 
 ## Tipler ve ifadeler
 
-- Tipler: `f32`, `i32`, `bool`, `vec2`, `vec3`, `vec4`, `texture2d` (yalnızca uniform).
+- Tipler: `f32`, `i32`, `bool`, `vec2`, `vec3`, `vec4`; yalnızca uniform: `texture2d`, `mat3`, `mat4`.
+- Matris: `M * v` (`mat4 * vec4`, `mat3 * vec3`) → vektör; sıra `mat4_mul_v4` ile aynı (bit-bit). Matris yerele,
+  parametreye atanamaz; `M * M`, `v * M`, transpoz yok (D25).
 - Literaller: `1.5`, `2e-3`, `7`, `0xFF`, `true`. Tamsayı literali f32 beklenen yerde f32'ye döner
   (`x * 2` geçerli); başka örtük dönüşüm yok (`f32(i)`, `i32(x)` kullanın).
 - Yereller: `let x = e;` (değişmez), `var x = e;` / `var x: vec3;` (sıfırla başlar). Gölgeleme serbest.
@@ -66,6 +69,9 @@ yazılırsa (örnek: `LitUniforms` ↔ `lit.mtk`) aynı uniform bloğu hem C hem
   çalıştırılır, değişen yereller `select` ile birleştirilir. Yan etki olmadığı için bu, sonucu değiştirmez.
 - `for i in A..B { }`: A ve B tamsayı sabiti, en fazla 1024 tur. Derleme anında tamamen açılır; `i` bir `i32` sabitidir.
 - Satır içi çağrı + açılan döngü toplamı 4096 ile sınırlı ("shader çok büyük" hatası).
+- `discard;`: o anki yolda (iç içe if koşullarının hepsi doğru olan lane'ler) pikseli atar; renk ve derinlik
+  yazılmaz. SPMD gereği kod akmaya devam eder; `discard`'dan sonraki atamalar zararsızdır. Fonksiyon içinde de
+  geçerlidir (çağrı yerinin yolu sayılır). Raster sözleşmesi: `ShadeQuad.kill` (D24).
 
 ## Yerleşikler
 
@@ -76,10 +82,13 @@ yazılırsa (örnek: `LitUniforms` ↔ `lit.mtk`) aynı uniform bloğu hem C hem
 | `abs min max clamp` | f32/vecN (ikinci/üçüncü argüman skaler olabilir) veya i32 |
 | `floor ceil trunc round fract sqrt` | `round` = en yakın çift |
 | `sin cos` | `m_sinf` / `m_cosf` (C) ile **bit-bit aynı** polinom |
+| `exp2 log2 exp log pow` | `m_exp2f` / `m_log2f` (C) ile bit-bit aynı, göreli hata ~1e-6. `log2(x<0)` = NaN, `log2(0)` = -inf, `exp2` [-150, 128]'e kenetli; `pow(x, y)` = `exp2(y·log2 x)` (y skaler veya aynı boyut) |
 | `mix(a, b, t) step(e, x) smoothstep(e0, e1, x) mod(x, y)` | GLSL anlamı; `mix = a + (b - a) * t` |
 | `dot cross length distance normalize reflect` | `normalize` sıfır vektörde NaN verir (GLSL gibi) |
 | `select(c: bool, a, b)` | dalsız seçim; her tipte |
-| `sample(tex, uv: vec2) -> vec4` | en yakın komşu, seviye 0, wrap / `@clamp`; RGBA 0..1 |
+| `sample(tex, uv: vec2) -> vec4` | RGBA 0..1; wrap / `@clamp`. Varsayılan en yakın komşu, seviye 0. `@mipmap` → seviye `mip_level`'dan (`ref_sample_tex_mip` ile bit-bit), `@bilinear` → `ref_sample_bilinear` ile bit-bit |
+| `sample_level(tex, uv, lod: i32) -> vec4` | verilen seviye (`[0, son]`'a kenetli; negatif → 0), dokunun filtre özniteliğiyle |
+| `mip_level(tex, uv) -> i32` | `ref_mip_level` kuralı: `floor(log2(ρ))`, ρ = texel/piksel (quad türevleri); quad içinde sabit |
 | `texel_fetch(tex, x: i32, y: i32) -> i32` | ham texel (0xAABBGGRR); koordinatlar kenetlenir |
 | `tex_size(tex) -> vec2` | (genişlik, yükseklik) |
 | `bitcast_f32(i32)`, `bitcast_i32(f32)` | bit düzeyinde yeniden yorum (gölge haritası derinliği vb.) |
@@ -98,8 +107,21 @@ kurulum sırasında yapılır.
 - **Tek belirsizlik NaN yük/işaret bitleridir:** wasm bunları sabitlemez. Test, float→int bitcast öncesinde
   NaN'ı kanonikleştirir. `select`'in F32 maskesi tam olmalıdır (lower yalnızca bunu üretir).
 
+## Performans (lit.mtk ↔ C SIMD shader, aynı çıktı)
+
+640×360, node, en iyi kare süresi (ms, 3 tur); ayrıntı `tasks/M10_temel.md`:
+
+| görünüm | C SIMD | Matoki |
+|---|---|---|
+| 1 başlangıç | 7.08 | 7.17 |
+| 2 ızgara içi | 7.87 | 8.37 |
+| 3 uzaktan | 5.36 | 5.45 |
+| 4 mip zemini | 3.32 | 3.23 |
+
+Fark mip seviyesi hesabından: C onu quad başına skaler yapar, Matoki v128 türev + üs alanı işlemleriyle.
+
 ## Henüz olmayanlar
 
-`@mipmap` / `@bilinear` / `sample_level` (M8 Faz 2), `mat3`/`mat4` uniform'ları ve `mat * vec`, `discard`,
-`exp`/`log`/`pow`, uniform dizileri, uniform değerlerin skaler hesaplanması (şu an her şey v128),
-uniform özelleştirme ve varyant önbelleği, vertex shader'ları.
+Seviyeler arası (trilinear) filtre, tam matris değerleri (yerel, `M * M`), uniform dizileri, uniform'dan türeyen
+değerlerin çizim başına bir kez hesaplanması (şu an quad başına, v128), uniform özelleştirme ve varyant önbelleği,
+vertex shader'ları.

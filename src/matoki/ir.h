@@ -19,6 +19,7 @@ typedef enum IrOp {
     IR_FRAG_Z,      /* q.z[lane] */
     IR_TEX_FIELD,   /* imm = tex_ofs | (alan_ofs << 16): *(u32*)(*(Texture**)(uni + tex_ofs) + alan_ofs) (I32) */
     IR_TEXEL_LOAD,  /* a = indeks (I32), imm = tex_ofs: px[a[lane]] (I32) */
+    IR_TEX_WORD,    /* a = u32 indeksi (I32), imm = tex_ofs: ((u32*)tex)[a[lane]] (I32; mip ofset tablosu) */
     /* f32 aritmetik (IEEE, wasm f32x4 semantiği) */
     IR_FADD, IR_FSUB, IR_FMUL, IR_FDIV,
     IR_FMIN, IR_FMAX,                  /* wasm min/max: NaN yayılır, -0 < +0 */
@@ -37,7 +38,8 @@ typedef enum IrOp {
     IR_F2I,         /* doygun kesme (NaN → 0) */
     IR_I2F,         /* işaretli dönüştürme, en yakına yuvarlama */
     IR_BITCAST_F2I, IR_BITCAST_I2F,
-    IR_DERIV_X,     /* kaba: tüm lane'lere v[1] - v[0] (F32); işlenen uniform ise sabit 0 */
+    IR_DERIV_X,     /* kaba: tüm lane'lere v[1] - v[0] (F32); işlenen uniform ise sabit 0.
+                     * Sonuç lane'ler arasında aynıdır → uniform bayrağı 1 (quad-sabit). */
     IR_DERIV_Y,     /* kaba: tüm lane'lere v[2] - v[0] */
     IR_OP_COUNT
 } IrOp;
@@ -49,7 +51,8 @@ typedef u32 IrRef;
 typedef struct IrInst {
     u8  op;
     u8  type;
-    u8  uniform;    /* değer tüm lane'lerde aynı mı (codegen ileride skaler hesaplayabilir) */
+    u8  uniform;    /* değer quad'ın tüm lane'lerinde aynı mı (uniform'lar, sabitler, türevler ve
+                     * bunlardan türeyenler); codegen kaydırma/okuma için tek lane kullanabilir */
     u8  live;       /* opt: çıktıya ulaşıyor mu */
     u32 a, b, c;
     u32 imm;
@@ -61,6 +64,7 @@ typedef struct IrFunc {
     u32*    htab;       /* CSE karma tablosu (ref'ler) */
     u32     hcap;
     IrRef   out;        /* paketlenmiş renk (I32) */
+    IrRef   kill;       /* discard maskesi (I32 tam maske) → ShadeQuad.kill bitleri; 0 = discard yok */
     b32     overflow;
     b32     no_fold;    /* test: sabit katlama + CSE kapalı (optimize öncesi karşılaştırması) */
     u32     folded, cse_hits;

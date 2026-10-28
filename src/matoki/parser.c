@@ -85,7 +85,7 @@ static b32 parse_type(Parser* p, Type* out) {
     static const struct { const char* s; u8 base, n; } TYPES[] = {
         { "f32", TB_FLOAT, 1 }, { "i32", TB_INT, 1 }, { "bool", TB_BOOL, 1 },
         { "vec2", TB_FLOAT, 2 }, { "vec3", TB_FLOAT, 3 }, { "vec4", TB_FLOAT, 4 },
-        { "texture2d", TB_TEX, 1 },
+        { "texture2d", TB_TEX, 1 }, { "mat3", TB_MAT, 3 }, { "mat4", TB_MAT, 4 },
     };
     for (u32 i = 0; i < ARRAY_COUNT(TYPES); i++) {
         if (tok_is(t, TYPES[i].s)) {
@@ -94,7 +94,7 @@ static b32 parse_type(Parser* p, Type* out) {
             return TRUE;
         }
     }
-    error_at(p, t, "tip bekleniyor (f32, i32, bool, vec2, vec3, vec4, texture2d), bulunan:");
+    error_at(p, t, "tip bekleniyor (f32, i32, bool, vec2, vec3, vec4, mat3, mat4, texture2d), bulunan:");
     return FALSE;
 }
 
@@ -326,6 +326,12 @@ static Node* parse_stmt(Parser* p) {
         advance(p);
         Node* n = node_new(p, NK_RETURN, t);
         if (!at(p, T_SEMI)) n->a = parse_expr(p);
+        expect(p, T_SEMI, "';'");
+        return n;
+    }
+    case T_DISCARD: {
+        advance(p);
+        Node* n = node_new(p, NK_DISCARD, t);
         expect(p, T_SEMI, "';'");
         return n;
     }
