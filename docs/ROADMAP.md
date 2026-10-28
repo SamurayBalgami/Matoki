@@ -12,7 +12,7 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 4b | Shader maliyeti: mip seviye tablosu + SIMD C lit shader | ✅ lit kare 1.7–2.5× |
 | 4c | SIMD vertex aşaması + üçgen kurulumu, hızlı fb_clear (artık raster tarafı baskın) | ⏳ |
 | 5 | **Matoki** v0: lexer → parser → sema → IR (katlama + CSE) → wasm SIMD codegen, ir_eval, diferansiyel test, JIT | ✅ (`docs/MATOKI.md`) |
-| 5b | Matoki: mat3/mat4 ✅, discard ✅, exp/log/pow ✅; uniform değerlerin çizim başına hesaplanması, uniform özelleştirme + varyant önbelleği | ⏳ |
+| 5b | Matoki: mat3/mat4 ✅, discard ✅, exp/log/pow ✅, önsöz (çizim başına) ✅, skaler quad-sabitler ✅; uniform özelleştirme + varyant önbelleği | ⏳ |
 | 6 | M8 Faz 2'nin Matoki kısmı: dFdx/dFdy/fwidth, texel_fetch/bitcast, @mipmap, mip_level, sample_level, @bilinear | ✅ (C ile bit-bit) |
 | 7 | PNG (inflate/deflate), JSON, glTF/GLB, OBJ, .mmsh (M8 Faz 3) | ⏳ |
 | 8 | Bitmap font + immediate-mode UI | ⏳ |
@@ -31,4 +31,5 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 13h | M9 Faz 9: SIMD dar faz, kinematik gövdeler, öz-çarpışma komşu listesi, kumaş yırtılması | ⏳ (M10 sonrası) |
 | 14 | M10 Faz 1: tarayıcıda kare profili (`3d.html?prof`) — boyama baskın | ✅ (`tasks/M10_temel.md`) |
 | 14b | M10 Faz 2: Matoki eksikleri (mip, bilinear, discard, matris, exp/log/pow); lit.mtk C ile bit-bit | ✅ |
-| 14c | M10 Faz 3: render çekirdeği (4c) + paralel raster (9) | ⏳ |
+| 14c | M10 Faz 3: Matoki demo varsayılanı (önsöz, skaler quad-sabitler, seviye tabloları); C ile bit-bit | ✅ |
+| 14d | M10 Faz 4: render çekirdeği (4c) + paralel raster (9) | ⏳ |

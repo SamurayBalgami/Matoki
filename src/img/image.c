@@ -68,7 +68,14 @@ Texture* tex_create(Arena* a, u32 w, u32 h, u32 flags) {
 void tex_fill_level_offsets(Texture* t) {
     u32 levels = t->levels ? t->levels : 1;
     if (levels > TEX_MAX_LEVELS) levels = TEX_MAX_LEVELS;
-    for (u32 k = 0; k < TEX_MAX_LEVELS; k++) t->lv_ofs[k] = (u32)img_mip_offset(t->w, t->h, k < levels ? k : levels - 1);
+    for (u32 k = 0; k < TEX_MAX_LEVELS; k++) {
+        u32 kk = k < levels ? k : levels - 1;
+        t->lv_ofs[k] = (u32)img_mip_offset(t->w, t->h, kk);
+        t->lv_w[k] = img_mip_dim(t->w, kk);
+        t->lv_h[k] = img_mip_dim(t->h, kk);
+        t->lv_fw[k] = (f32)t->lv_w[k];
+        t->lv_fh[k] = (f32)t->lv_h[k];
+    }
 }
 
 u32 tex_level_table(const Texture* t, TexLevel* out) {

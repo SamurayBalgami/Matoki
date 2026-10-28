@@ -356,3 +356,60 @@ TEST(matoki_bilinear_matches_ref) {
     ref_sample_bilinear(two, 0.5f, 0.5f, 0, o);
     CHECK_NEAR(o[0], 0.5f, 1e-6f);
 }
+TEST(matoki_prelude_through_raster) {
+    /* Aynı shader, iki ayrı uniform bloğu; üçgenler aynı karoda iç içe gönderilir (A, B, A).
+     * Renk tamamen uniform'dan türer (önsöze alınır) → raster önsözü her (önsöz, uniforms) değişiminde
+     * yeniden çağırmazsa yanlış renk görünür. Ayrıca discard yolu da hızlı gövdede. */
+    Prog r;
+    prog_init(t_, &r,
+              "uniform c: vec3;\nuniform k: f32;\n"
+              "fn frag() -> vec4 {\n"
+              "  let s = 1.0 / max(k, 0.5);\n"
+              "  if (frag_coord().y < 2.0) { discard; }\n"
+              "  return vec4(c * s, 1.0);\n"
+              "}\n");
+    if (!r.ok) return;
+    CHECK(r.p.wasm.hoisted > 0);
+    enum { W = 16, H = 16 };
+    struct { f32 c[3]; f32 k; } ua = { { 0.5f, 0.0f, 0.0f }, 1.0f }, ub = { { 0.0f, 0.25f, 0.0f }, 0.5f };
+    u32 want_a = 0xFF000080u, want_b = 0xFF008000u;   /* (0.5/1, 0, 0) ve (0, 0.25/0.5, 0) */
+    for (u32 mode = 0; mode < RASTER_MODE_COUNT; mode++) {
+        u32 color[W * H];
+        Framebuffer fb = { color, NULL, W, H };
+        fb_clear(&fb, 0xFF00FF00u, 1.0f);
+        Raster rs;
+        raster_init(&rs, &fb);
+        raster_set_mode(&rs, (RasterMode)mode);
+        raster_set_cull(&rs, CULL_NONE);
+        raster_set_depth(&rs, FALSE, FALSE, DEPTH_ALWAYS);
+        Arena bins;
+        arena_init(&bins, arena_alloc(test_arena(), 1 << 20, 16), 1 << 20);
+        raster_begin(&rs, &bins);
+        RasterVert v[4];
+        mem_zero(v, sizeof(v));
+        const f32 xs[3][2] = { { 0, 6 }, { 5, 11 }, { 10, 16 } };   /* üç dikey şerit: A, B, A */
+        for (u32 s = 0; s < 3; s++) {
+            raster_set_shader(&rs, r.p.fn_fast, s == 1 ? (const void*)&ub : (const void*)&ua, 0);
+            raster_set_prelude(&rs, r.p.prelude);
+            v[0].x = xs[s][0]; v[0].y = 0;
+            v[1].x = xs[s][1]; v[1].y = 0;
+            v[2].x = xs[s][1]; v[2].y = H;
+            v[3].x = xs[s][0]; v[3].y = H;
+            for (u32 k = 0; k < 4; k++) v[k].inv_w = 1.0f;
+            raster_triangle(&rs, &v[0], &v[1], &v[2]);
+            raster_triangle(&rs, &v[0], &v[2], &v[3]);
+        }
+        raster_flush(&rs);
+        u32 bad = 0;
+        for (i32 y = 0; y < H; y++) {
+            for (i32 x = 0; x < W; x++) {
+                /* şeritler çakışır: x = 5'te B ilk A'nın, x = 10'da ikinci A B'nin üstüne çizilir */
+                u32 want = y < 2 ? 0xFF00FF00u : (x >= 5 && x < 10) ? want_b : want_a;
+                if (color[y * W + x] != want) bad++;
+            }
+        }
+        CHECK(bad == 0);
+        CHECK(rs.stats.preludes >= 3);
+        test_note("önsöz çağrısı", rs.stats.preludes, 0);
+    }
+}

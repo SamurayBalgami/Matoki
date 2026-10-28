@@ -23,8 +23,10 @@ const env = {
     try {
       const code = new Uint8Array(mem.buffer, p, n).slice();
       const inst = new WebAssembly.Instance(new WebAssembly.Module(code), { env: { memory: mem } });
-      const idx = table.grow(1);
-      table.set(idx, inst.exports.shade);
+      // shade, prelude, shade_fast (olanlar) ardışık indekslere — jit_wasm.c bu sırayı varsayar
+      const fns = ['shade', 'prelude', 'shade_fast'].map((k) => inst.exports[k]).filter(Boolean);
+      const idx = table.grow(fns.length);
+      fns.forEach((fn, k) => table.set(idx + k, fn));
       return idx;
     } catch (e) {
       console.error('plat_jit_instantiate', e);
@@ -38,7 +40,7 @@ const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected',
   'triEmitted', 'triBack', 'triDegen', 'triDrawn', 'quads', 'pixels', 'frameUs', 'arenaKb', 'camX', 'camY', 'camZ',
   'rasterMode', 'binItems', 'binFull', 'shaderMode', 'physBodies', 'physContacts', 'physUs', 'physSteps', 'physAwake',
   'playMode', 'carKmh', 'carWheels', 'charGrounded', 'softParticles', 'softUs', 'softContacts',
-  'clearUs', 'geoUs', 'flushUs', 'totalUs'];
+  'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes'];
 // ?prof: kareler rAF yerine art arda, sabit 1/60 sn adımla sürülür (vsync ve gizli sekmeden bağımsız);
 // her sahnede 60 kare ısınma + 180 kare ölçüm, aşama ortalamaları konsola ve window.__prof'a
 const PROF = new URLSearchParams(location.search).has('prof');

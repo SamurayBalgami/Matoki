@@ -19,6 +19,7 @@ typedef struct EdgeEq {
 
 typedef struct TriSetup {
     ShadeFn     shade;
+    PreludeFn   prelude;                  /* NULL olabilir */
     const void* uniforms;
     u32         var_count;
     u8          depth_test, depth_write, depth_func, drawn;

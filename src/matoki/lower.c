@@ -183,14 +183,22 @@ static IrRef lower_mip_level(Lower* L, const GlobalDecl* g, IrRef u, IrRef v) {
 
 /* seviye k'nın boyutu ve px içindeki başlangıcı (k zaten [0, son seviye] içinde) */
 typedef struct LevelRefs {
-    IrRef wk, hk, base;
+    IrRef wk, hk, fw, fh, base;
 } LevelRefs;
+
+/* Dokunun seviye tablolarından (D23): k'ya bağlı tüm değerler birbirinden bağımsız tek okumalar →
+ * "k → kaydır → max → dönüştür" seri zinciri yok (wk = max(w >> k, 1) ile aynı değerler). */
+static IrRef tex_word(Lower* L, const GlobalDecl* g, IrRef k, i32 table) {
+    return ir_emit(L->f, IR_TEX_WORD, I, op2(L, IR_IADD, I, k, ci(L, table)), 0, 0, g->offset);
+}
 
 static LevelRefs level_refs(Lower* L, const GlobalDecl* g, IrRef k) {
     LevelRefs r;
-    r.wk = op2(L, IR_IMAX, I, op2(L, IR_ISHRU, I, tex_field(L, g, TEX_OFF_W), k), ci(L, 1));
-    r.hk = op2(L, IR_IMAX, I, op2(L, IR_ISHRU, I, tex_field(L, g, TEX_OFF_H), k), ci(L, 1));
-    r.base = ir_emit(L->f, IR_TEX_WORD, I, op2(L, IR_IADD, I, k, ci(L, TEX_WORD_LVOFS)), 0, 0, g->offset);
+    r.wk = tex_word(L, g, k, TEX_WORD_LVW);
+    r.hk = tex_word(L, g, k, TEX_WORD_LVH);
+    r.fw = op1(L, IR_BITCAST_I2F, F, tex_word(L, g, k, TEX_WORD_LVFW));
+    r.fh = op1(L, IR_BITCAST_I2F, F, tex_word(L, g, k, TEX_WORD_LVFH));
+    r.base = tex_word(L, g, k, TEX_WORD_LVOFS);
     return r;
 }
 
@@ -209,16 +217,16 @@ static IrRef load_at(Lower* L, const GlobalDecl* g, const LevelRefs* lv, IrRef i
 /* ref_sample_level ile aynı aritmetik (en yakın komşu) */
 static IrRef lower_texel_at(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, IrRef k) {
     LevelRefs lv = level_refs(L, g, k);
-    IrRef ix = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, u, op1(L, IR_I2F, F, lv.wk))));
-    IrRef iy = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, v, op1(L, IR_I2F, F, lv.hk))));
+    IrRef ix = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, u, lv.fw)));
+    IrRef iy = op1(L, IR_F2I, I, op1(L, IR_FFLOOR, F, fmul(L, v, lv.fh)));
     return load_at(L, g, &lv, wrap_or_clamp(L, g, ix, lv.wk), wrap_or_clamp(L, g, iy, lv.hk));
 }
 
 /* ref_sample_bilinear ile aynı aritmetik */
 static void lower_bilinear_at(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, IrRef k, IrRef out[4]) {
     LevelRefs lv = level_refs(L, g, k);
-    IrRef x = fsub(L, fmul(L, u, op1(L, IR_I2F, F, lv.wk)), cf(L, 0.5f));
-    IrRef y = fsub(L, fmul(L, v, op1(L, IR_I2F, F, lv.hk)), cf(L, 0.5f));
+    IrRef x = fsub(L, fmul(L, u, lv.fw), cf(L, 0.5f));
+    IrRef y = fsub(L, fmul(L, v, lv.fh), cf(L, 0.5f));
     IrRef fx = op1(L, IR_FFLOOR, F, x), fy = op1(L, IR_FFLOOR, F, y);
     IrRef ax = fsub(L, x, fx), ay = fsub(L, y, fy);
     IrRef x0 = op1(L, IR_F2I, I, fx), y0 = op1(L, IR_F2I, I, fy);

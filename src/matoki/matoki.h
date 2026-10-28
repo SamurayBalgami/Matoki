@@ -15,7 +15,9 @@ typedef struct MatokiProgram {
     SemaResult sema;
     IrFunc     ir;
     WasmModule wasm;
-    ShadeFn    fn;          /* matoki_jit sonrası */
+    ShadeFn    fn;          /* matoki_jit sonrası; tek başına doğru */
+    PreludeFn  prelude;     /* çizim önsözü (uniform'dan türeyenler → önbellek) */
+    ShadeFn    fn_fast;     /* prelude(uniforms) sonrasında aynı uniforms ile; raster'ın yolu */
     u32        ir_total;    /* oluşturulan komut sayısı */
     u32        ir_live;     /* DCE sonrası canlı komut */
 } MatokiProgram;
@@ -27,7 +29,8 @@ typedef struct MatokiOptions {
 
 b32 matoki_compile(Arena* a, const char* src, u32 len, const MatokiOptions* opt, MatokiProgram* p, MatokiError* err);
 b32 matoki_codegen(Arena* a, MatokiProgram* p, MatokiError* err);
-b32 matoki_jit(Arena* a, MatokiProgram* p, MatokiError* err);   /* codegen + yükleme */
+/* codegen + yükleme. Önsöz önbelleği a'dan ayrılır: a, shader kullanıldıkça yaşamalı. */
+b32 matoki_jit(Arena* a, MatokiProgram* p, MatokiError* err);
 
 const GlobalDecl* matoki_find_uniform(const MatokiProgram* p, const char* name);
 const GlobalDecl* matoki_find_varying(const MatokiProgram* p, const char* name);

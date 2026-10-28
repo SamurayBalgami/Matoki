@@ -45,6 +45,7 @@ enum {
     ST_PLAY_MODE, ST_CAR_KMH, ST_CAR_WHEELS, ST_CHAR_GROUNDED,
     ST_SOFT_PARTICLES, ST_SOFT_US, ST_SOFT_CONTACTS,
     ST_CLEAR_US, ST_GEO_US, ST_FLUSH_US, ST_TOTAL_US,   /* kare profili (µs) */
+    ST_PRELUDES,                                         /* çizim önsözü çağrısı */
     ST_COUNT
 };
 
@@ -98,6 +99,7 @@ typedef struct Demo {
     f64 soft_ms;
     f32 soft_time;       /* simülasyon zamanı (rüzgâr) */
     b32 flat;           /* ölçüm: tüm materyaller shade_flat */
+    b32 capture;        /* ölçüm: lit materyaller quad yakalayıcıdan geçer (engine_capture_view) */
     i32 shader_mode;     /* SHADER_* */
     Material m_flat;
     u32 stats[ST_COUNT];
@@ -118,11 +120,18 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     lit_uniforms_prepare(u);
 }
 
-/* lit shader uygulaması (ölçüm ve A/B için); ilk üçü bit-bit aynı çıktı.
- * SHADER_MATOKI = shaders/lit.mtk JIT'i; mip açık/kapalı C ile bit-bit aynı. */
+/* lit shader uygulaması; dördü de bit-bit aynı çıktı. Varsayılan SHADER_MATOKI = shaders/lit.mtk JIT'i
+ * (önsöz + hızlı gövde); C uygulamaları kâhin ve A/B ölçümü için kalır (L tuşu). */
 enum { SHADER_REF, SHADER_LUT, SHADER_SIMD, SHADER_MATOKI, SHADER_MODE_COUNT };
 
-static ShadeFn g_matoki_lit;
+static void shade_capture(const ShadeQuad* q, const void* uniforms, u32 out[4]);   /* ölçüm, aşağıda */
+static ShadeFn g_matoki_full;
+
+static ShadeFn g_matoki_lit;      /* hızlı yol (önsöz önbelleğini okur) */
+static PreludeFn g_matoki_pre;
+
+/* Matoki'de shader önsözle birlikte gelir; diğerlerinde önsöz yok */
+static PreludeFn lit_prelude_for(i32 mode) { return mode == SHADER_MATOKI && g_matoki_lit ? g_matoki_pre : NULL; }
 
 static ShadeFn lit_shader_for(i32 mode) {
     if (mode == SHADER_MATOKI && g_matoki_lit) return g_matoki_lit;
@@ -160,10 +169,14 @@ static void matoki_lit_init(Arena* a) {
         log_cstr("matoki: lit.mtk uniform yerleşimi LitUniforms ile uyuşmuyor");
         return;
     }
-    g_matoki_lit = p->fn;
+    g_matoki_lit = p->fn_fast;
+    g_matoki_pre = p->prelude;
+    g_matoki_full = p->fn;
     sb_cstr(&sb, "matoki: lit.mtk derlendi + JIT: ");
     sb_u64(&sb, p->ir_live);
-    sb_cstr(&sb, " IR komutu, ");
+    sb_cstr(&sb, " IR komutu (");
+    sb_u64(&sb, p->wasm.hoisted);
+    sb_cstr(&sb, " önsözde), ");
     sb_u64(&sb, p->wasm.len);
     sb_cstr(&sb, " bayt wasm, ");
     sb_f64(&sb, t1 - t0, 2);
@@ -683,8 +696,11 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.phys.allow_sleep = TRUE;
 
     g.mip = TRUE;
+    /* varsayılan Matoki (C ile bit-bit aynı, ölçümde ortalama daha hızlı — tasks/M10_temel.md);
+     * derlenemezse C SIMD'ye düşer */
     g.shader_mode = SHADER_SIMD;
     matoki_lit_init(&g.perm);
+    if (g_matoki_lit) g.shader_mode = SHADER_MATOKI;
     scene_set(1);
     g.ready = TRUE;
     return 1;
@@ -705,10 +721,14 @@ static void set_frame_uniforms(void) {
         all[i]->eye = g.cam.pos;
         all[i]->use_mip = g.mip;
     }
-    ShadeFn fn = lit_shader_for(g.shader_mode);
+    ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
+    PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
     Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
                          &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly };
-    for (u32 i = 0; i < ARRAY_COUNT(mats); i++) mats[i]->shade = fn;
+    for (u32 i = 0; i < ARRAY_COUNT(mats); i++) {
+        mats[i]->shade = fn;
+        mats[i]->prelude = pre;
+    }
 }
 
 static void render_scene1(void) {
@@ -955,6 +975,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_GEO_US] = (u32)((t_geo - t_clear) * 1000.0);
     g.stats[ST_FLUSH_US] = (u32)((t1 - t_geo) * 1000.0);
     g.stats[ST_TOTAL_US] = (u32)((t1 - t_start) * 1000.0);
+    g.stats[ST_PRELUDES] = rs->preludes;
     g.stats[ST_ARENA_KB] = (u32)(g.bins.peak >> 10);
     g.stats[ST_RASTER_MODE] = (u32)g.raster.mode;
     g.stats[ST_BIN_ITEMS] = rs->bin_items;
@@ -1034,6 +1055,177 @@ EXPORT(engine_matoki_ready) i32 engine_matoki_ready(void) { return g_matoki_lit 
 EXPORT(engine_shader_mode_count) i32 engine_shader_mode_count(void) { return SHADER_MODE_COUNT; }
 EXPORT(engine_set_shader_mode) void engine_set_shader_mode(i32 mode) {
     if (mode >= 0 && mode < SHADER_MODE_COUNT) g.shader_mode = mode;
+}
+
+/* ---- shader mikro-ölçümü (tools/bench.mjs --shade) ----
+ * Raster'dan bağımsız: sabit, gerçekçi quad'lar (tutarlı uv → mip 0..5, rastgele normal/konum)
+ * tuğla dokusu + mip açık. Dönüş: quad başına ns; engine_shade_bench_hash çıktıların FNV'si. */
+#define SHADE_BENCH_QUADS 1024
+static ShadeQuad g_bench_quads[SHADE_BENCH_QUADS];
+static u32 g_bench_hash;
+
+EXPORT(engine_shade_bench) f64 engine_shade_bench(i32 mode, i32 iters) {
+    if (!g.ready || mode < 0 || mode >= SHADER_MODE_COUNT) return -1.0;
+    Rng rng = rng_make(0x5AADE);
+    for (u32 i = 0; i < SHADE_BENCH_QUADS; i++) {
+        ShadeQuad* q = &g_bench_quads[i];
+        mem_zero(q, sizeof(*q));
+        q->x = (i32)(rng_u32(&rng) % 640) & ~1;
+        q->y = (i32)(rng_u32(&rng) % 360) & ~1;
+        q->mask = (i % 5 == 0) ? 0x7 : 0xF;
+        f32 s = m_bits_f32((u32)(127 - 8 + (i32)(rng_u32(&rng) % 6)) << 23);
+        f32 u0 = rng_range(&rng, -3, 3), v0 = rng_range(&rng, -3, 3);
+        Vec3 p = v3(rng_range(&rng, -60, 60), rng_range(&rng, 0, 20), rng_range(&rng, -60, 60));
+        Vec3 n = v3(rng_range(&rng, -1, 1), rng_range(&rng, -1, 1), rng_range(&rng, -1, 1));
+        for (u32 l = 0; l < 4; l++) {
+            f32 lx = (f32)(l & 1), ly = (f32)(l >> 1);
+            q->z[l] = 0.5f;
+            q->var[VAR3D_WPOS][l] = p.x + lx * 0.05f;
+            q->var[VAR3D_WPOS + 1][l] = p.y + ly * 0.05f;
+            q->var[VAR3D_WPOS + 2][l] = p.z;
+            q->var[VAR3D_NRM][l] = n.x;
+            q->var[VAR3D_NRM + 1][l] = n.y + lx * 0.01f;
+            q->var[VAR3D_NRM + 2][l] = n.z;
+            q->var[VAR3D_UV][l] = u0 + lx * s;
+            q->var[VAR3D_UV + 1][l] = v0 + ly * s;
+        }
+    }
+    LitUniforms u = g.u_bricks;
+    u.use_mip = TRUE;
+    u.eye = v3(0, 5, 0);
+    ShadeFn fn = lit_shader_for(mode);
+    PreludeFn pre = lit_prelude_for(mode);
+    if (pre) pre(&u);   /* tek çizim: önsöz bir kez (süreye dahil değil; raster'da çizim başına) */
+    u32 out[4];
+    u32 h = 0x811c9dc5u;
+    for (u32 i = 0; i < SHADE_BENCH_QUADS; i++) {
+        fn(&g_bench_quads[i], &u, out);
+        for (u32 l = 0; l < 4; l++) {
+            if (g_bench_quads[i].mask & (1u << l)) h = (h ^ out[l]) * 0x01000193u;
+        }
+    }
+    g_bench_hash = h;
+    f64 t0 = sys_now_ms();
+    for (i32 it = 0; it < iters; it++) {
+        for (u32 i = 0; i < SHADE_BENCH_QUADS; i++) fn(&g_bench_quads[i], &u, out);
+    }
+    f64 t1 = sys_now_ms();
+    return (t1 - t0) * 1e6 / ((f64)iters * SHADE_BENCH_QUADS);
+}
+
+EXPORT(engine_shade_bench_hash) u32 engine_shade_bench_hash(void) { return g_bench_hash; }
+
+/* Gerçek kareden quad yakalama: engine_capture_view(v) bir bench görünümünü çizer ve her 5. quad'ı
+ * (uniform bloğuyla) kaydeder; engine_replay_bench(mode, iters) aynı quad'ları, uniform değiştikçe
+ * önsözü çağırarak (raster gibi) gölgeler. Dönüş: quad başına ns. */
+#define CAPTURE_MAX 8192
+static ShadeQuad* g_cap_q;        /* ilk yakalamada perm arenasından (yalnızca ölçüm) */
+static const void** g_cap_u;
+static u32 g_cap_n, g_cap_seen;
+
+static void shade_capture(const ShadeQuad* q, const void* uniforms, u32 out[4]) {
+    if (g_cap_seen++ % 5 == 0 && g_cap_n < CAPTURE_MAX) {
+        g_cap_q[g_cap_n] = *q;
+        g_cap_u[g_cap_n] = uniforms;
+        g_cap_n++;
+    }
+    shade_lit_tex_lut(q, uniforms, out);
+}
+
+EXPORT(engine_capture_view) u32 engine_capture_view(i32 view) {
+    if (!g_cap_q) {
+        g_cap_q = ARENA_ARRAY(&g.perm, ShadeQuad, CAPTURE_MAX);
+        g_cap_u = ARENA_ARRAY(&g.perm, const void*, CAPTURE_MAX);
+    }
+    engine_bench_view(view);
+    i32 saved = g.shader_mode;
+    g_cap_n = g_cap_seen = 0;
+    g.capture = TRUE;
+    engine_frame(0);
+    g.capture = FALSE;
+    g.shader_mode = saved;
+    return g_cap_n;
+}
+
+static u32 g_replay_preludes;
+
+/* mode == SHADER_MODE_COUNT: Matoki tam gövde (önsöz yok) */
+EXPORT(engine_replay_bench) f64 engine_replay_bench(i32 mode, i32 iters) {
+    if (!g_cap_n || mode < 0 || mode > SHADER_MODE_COUNT) return -1.0;
+    if (mode == SHADER_MODE_COUNT && !g_matoki_full) return -1.0;
+    ShadeFn fn = mode == SHADER_MODE_COUNT ? g_matoki_full : lit_shader_for(mode);
+    PreludeFn pre = mode == SHADER_MODE_COUNT ? NULL : lit_prelude_for(mode);
+    g_replay_preludes = 0;
+    u32 out[4];
+    u32 h = 0x811c9dc5u;
+    f64 t0 = sys_now_ms();
+    for (i32 it = 0; it < iters; it++) {
+        const void* last = NULL;
+        for (u32 i = 0; i < g_cap_n; i++) {
+            if (pre && g_cap_u[i] != last) {
+                pre(g_cap_u[i]);
+                last = g_cap_u[i];
+                if (it == 0) g_replay_preludes++;
+            }
+            fn(&g_cap_q[i], g_cap_u[i], out);
+            if (it == 0) {
+                for (u32 l = 0; l < 4; l++) {
+                    if (g_cap_q[i].mask & (1u << l)) h = (h ^ out[l]) * 0x01000193u;
+                }
+            }
+        }
+    }
+    f64 t1 = sys_now_ms();
+    g_bench_hash = h;
+    return (t1 - t0) * 1e6 / ((f64)iters * g_cap_n);
+}
+
+EXPORT(engine_replay_preludes) u32 engine_replay_preludes(void) { return g_replay_preludes; }
+
+/* ölçüm/teşhis: lit shader'ı verilen kaynakla yeniden derle (uniform yerleşimi aynı olmalı).
+ * engine_scratch(n) kaynağın yazılacağı belleği verir. Başarı → 1. */
+static char* g_src_buf;
+EXPORT(engine_scratch) char* engine_scratch(u32 n) {
+    g_src_buf = (char*)arena_alloc(&g.perm, n + 1, 1);
+    return g_src_buf;
+}
+
+EXPORT(engine_set_codegen_scalar) void engine_set_codegen_scalar(i32 on) { codegen_set_scalar(on != 0); }
+
+EXPORT(engine_matoki_recompile) i32 engine_matoki_recompile(u32 len) {
+    MatokiProgram* p = ARENA_NEW(&g.perm, MatokiProgram);
+    MatokiError e;
+    if (!matoki_compile(&g.perm, g_src_buf, len, NULL, p, &e) || !matoki_jit(&g.perm, p, &e)) {
+        char buf[300];
+        StrBuf sb;
+        sb_init(&sb, buf, sizeof(buf));
+        sb_cstr(&sb, "matoki yeniden derleme: ");
+        matoki_format_error(&e, &sb);
+        log_sb(&sb);
+        return 0;
+    }
+    g_matoki_lit = p->fn_fast;
+    g_matoki_pre = p->prelude;
+    g_matoki_full = p->fn;
+    return 1;
+}
+
+/* teşhis: yakalanan quad'larda varying sınıfları; kind 0 = denormal, 1 = inf/NaN, 2 = |x| > 1e6 */
+EXPORT(engine_capture_census) u32 engine_capture_census(i32 kind) {
+    u32 n = 0;
+    for (u32 i = 0; i < g_cap_n; i++) {
+        b32 hit = FALSE;
+        for (u32 v = 0; v < VAR3D_COUNT && !hit; v++) {
+            for (u32 l = 0; l < 4; l++) {
+                u32 b = m_f32_bits(g_cap_q[i].var[v][l]);
+                u32 e = (b >> 23) & 0xFF;
+                f32 x = g_cap_q[i].var[v][l];
+                if ((kind == 0 && e == 0 && (b & 0x7FFFFF)) || (kind == 1 && e == 255) || (kind == 2 && e != 255 && m_absf(x) > 1e6f)) hit = TRUE;
+            }
+        }
+        n += hit;
+    }
+    return n;
 }
 
 EXPORT(engine_raster_mode_count) i32 engine_raster_mode_count(void) { return RASTER_MODE_COUNT; }

@@ -52,6 +52,7 @@ typedef struct RasterStats {
     u32 bin_items;        /* (üçgen, karo) çiftleri */
     u32 bin_full;         /* bunlardan tam kaplananlar (kenar testi atlanan) */
     u32 flushes;          /* arena dolduğu için yapılan ara flush'lar dahil */
+    u32 preludes;         /* çağrılan çizim önsözü sayısı */
 } RasterStats;
 
 typedef enum RasterMode {
@@ -65,6 +66,7 @@ struct Bin;
 typedef struct Raster {
     Framebuffer* fb;
     ShadeFn      shade;
+    PreludeFn    prelude;
     const void*  uniforms;
     u32          var_count;
     b32          depth_test;
@@ -84,7 +86,9 @@ typedef struct Raster {
 void fb_clear(Framebuffer* fb, u32 color, f32 depth);
 
 void raster_init(Raster* r, Framebuffer* fb);
-void raster_set_shader(Raster* r, ShadeFn fn, const void* uniforms, u32 var_count);
+void raster_set_shader(Raster* r, ShadeFn fn, const void* uniforms, u32 var_count);   /* önsözü sıfırlar */
+/* Sonraki üçgenlerin önsözü: flush sırasında (önsöz, uniforms) çifti değiştikçe gölgelemeden önce çağrılır. */
+void raster_set_prelude(Raster* r, PreludeFn fn);
 void raster_set_depth(Raster* r, b32 test, b32 write, DepthFunc func);
 void raster_set_cull(Raster* r, CullMode mode);
 void raster_set_mode(Raster* r, RasterMode mode);

@@ -107,21 +107,28 @@ kurulum sırasında yapılır.
 - **Tek belirsizlik NaN yük/işaret bitleridir:** wasm bunları sabitlemez. Test, float→int bitcast öncesinde
   NaN'ı kanonikleştirir. `select`'in F32 maskesi tam olmalıdır (lower yalnızca bunu üretir).
 
-## Performans (lit.mtk ↔ C SIMD shader, aynı çıktı)
+## Üretilen modül: shade, prelude, shade_fast (D26)
 
-640×360, node, en iyi kare süresi (ms, 3 tur); ayrıntı `tasks/M10_temel.md`:
+- **Çizim-sabitler önsözde:** yalnızca uniform/doku/sabitten türeyen pahalı değerler `prelude(uniforms)`'da bir
+  kez hesaplanıp önbelleğe yazılır; `shade_fast` onları okur. Raster önsözü (önsöz, uniforms) değiştikçe çağırır.
+- **Quad-sabitler skaler:** türevler ve onlardan türeyenler (mip seviyesi, seviye boyutları) wasm skaler
+  yerellerinde; vektöre gerektiğinde bir kez yayılır.
+- `shade` tek başına doğrudur (testler, araçlar); `shade_fast` yalnızca aynı uniform'larla `prelude`'dan sonra.
 
-| görünüm | C SIMD | Matoki |
+## Performans (lit.mtk ↔ C SIMD shader, aynı çıktı) — Matoki demo varsayılanı
+
+Kare süresi oranı Matoki / C (eşli ölçüm `node tools/bench.mjs --pair`, iki tur; < 1 Matoki hızlı):
+
+| görünüm | 640×360 | 1280×720 |
 |---|---|---|
-| 1 başlangıç | 7.08 | 7.17 |
-| 2 ızgara içi | 7.87 | 8.37 |
-| 3 uzaktan | 5.36 | 5.45 |
-| 4 mip zemini | 3.32 | 3.23 |
+| 1 başlangıç | 0.974 / 0.942 | 0.919 / 0.978 |
+| 2 ızgara içi (mip hep 0) | 1.023 / 1.029 | 1.035 / 1.061 |
+| 3 uzaktan | 0.966 / 0.930 | 0.980 / 0.995 |
+| 4 mip zemini | 0.918 / 0.890 | 0.951 / 0.987 |
 
-Fark mip seviyesi hesabından: C onu quad başına skaler yapar, Matoki v128 türev + üs alanı işlemleriyle.
+2. görünümde C'nin dallı mip seçimi erken çıkar; Matoki dalsız olduğu için tüm zinciri yapar.
 
 ## Henüz olmayanlar
 
-Seviyeler arası (trilinear) filtre, tam matris değerleri (yerel, `M * M`), uniform dizileri, uniform'dan türeyen
-değerlerin çizim başına bir kez hesaplanması (şu an quad başına, v128), uniform özelleştirme ve varyant önbelleği,
-vertex shader'ları.
+Seviyeler arası (trilinear) filtre, tam matris değerleri (yerel, `M * M`), uniform dizileri, quad-sabit
+koşullarda gerçek dallanma (C'nin erken çıkışı gibi), uniform özelleştirme ve varyant önbelleği, vertex shader'ları.

@@ -22,7 +22,12 @@ typedef struct ShadeQuad {
 /* out[l] = 0xAABBGGRR renk; yalnızca mask'taki lane'ler yazılır. */
 typedef void (*ShadeFn)(const ShadeQuad* q, const void* uniforms, u32 out[4]);
 
-/* Doku. Boyut 96 bayt (wasm32), ofsetler sabit (codegen bunlara gömülü erişir).
+/* İsteğe bağlı çizim önsözü: uniform'lardan türeyen değerleri shader'ın önbelleğine yazar.
+ * Raster, önsözü olan bir üçgeni gölgelemeden önce (önsöz, uniforms) çifti değiştiyse çağırır;
+ * uniform içeriği flush boyunca sabit olmalıdır (zaten sözleşme). */
+typedef void (*PreludeFn)(const void* uniforms);
+
+/* Doku. Boyut 352 bayt (wasm32), ofsetler sabit (codegen bunlara gömülü erişir).
  * Mip zinciri: tüm seviyeler px'ten başlayarak bitişik; seviye k: wk = max(1, w>>k),
  * hk = max(1, h>>k), başlangıç = px + lv_ofs[k] (texel), lv_ofs[k] = Σ_{i<k} wi*hi.
  * levels = 0 → 1 kabul edilir; lv_ofs[k >= levels] son seviyeyi tekrarlar (tex_create doldurur).
@@ -37,6 +42,10 @@ typedef struct Texture {
     u32  log2_w;
     u32  levels;           /* mip seviye sayısı (>= 1) */
     u32  lv_ofs[TEX_MAX_LEVELS];
+    u32  lv_w[TEX_MAX_LEVELS];    /* seviye boyutu wk, hk (k >= levels → son seviye) */
+    u32  lv_h[TEX_MAX_LEVELS];
+    f32  lv_fw[TEX_MAX_LEVELS];   /* (f32)wk, (f32)hk */
+    f32  lv_fh[TEX_MAX_LEVELS];
 } Texture;
 
 #define TEX_OFF_PX     0
@@ -49,13 +58,18 @@ typedef struct Texture {
 #define TEX_OFF_LEVELS 28
 #define TEX_OFF_LVOFS  32
 #define TEX_WORD_LVOFS 8    /* lv_ofs[0]'ın u32 indeksi */
+#define TEX_WORD_LVW   24   /* lv_w[0] */
+#define TEX_WORD_LVH   40   /* lv_h[0] */
+#define TEX_WORD_LVFW  56   /* lv_fw[0] (f32 bitleri) */
+#define TEX_WORD_LVFH  72   /* lv_fh[0] */
 
 #define TEX_FLAG_BILINEAR 1u
 #define TEX_FLAG_CLAMP    2u
 #define TEX_FLAG_MIPMAP   4u
 
 #if defined(__wasm32__)
-_Static_assert(sizeof(Texture) == 96, "Texture ABI boyutu 96 bayt olmalı");
+_Static_assert(sizeof(Texture) == 352, "Texture ABI boyutu 352 bayt olmalı");
+_Static_assert(__builtin_offsetof(Texture, lv_fh) == TEX_WORD_LVFH * 4, "Texture seviye tablosu ofsetleri");
 #endif
 
 static inline u32 color_pack(u32 r, u32 g, u32 b, u32 a) { return r | (g << 8) | (b << 16) | (a << 24); }

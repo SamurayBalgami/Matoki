@@ -172,7 +172,7 @@ TEST(clip_crack_free_shared_edge) {
     env_init(&e, 160, 120);
     u32* counts = ARENA_ARRAY(test_arena(), u32, e.fb.w * e.fb.h);
     CountCapture cap = { counts, e.fb.w };
-    Material mat = { shade_count, &cap, CULL_NONE };
+    Material mat = { .shade = shade_count, .uniforms = &cap, .cull = CULL_NONE };
     u32 doubles = 0, holes = 0, checked = 0, near_clips = 0, guard_clips = 0;
     for (u32 trial = 0; trial < 24; trial++) {
         for (i32 i = 0; i < e.fb.w * e.fb.h; i++) counts[i] = 0;
@@ -220,7 +220,7 @@ TEST(perspective_correct_uv) {
     usize n = (usize)e.fb.w * e.fb.h;
     UvCapture cap = { ARENA_ARRAY(test_arena(), f32, n), ARENA_ARRAY(test_arena(), f32, n),
                       ARENA_ARRAY(test_arena(), u8, n), e.fb.w };
-    Material mat = { shade_uv_capture, &cap, CULL_NONE };
+    Material mat = { .shade = shade_uv_capture, .uniforms = &cap, .cull = CULL_NONE };
     /* eğik düzlem y = -1, x ∈ [-3,3], z ∈ [-8,-1.5] */
     Mesh* m = quad_mesh(v3(-3, -1, -8), v3(3, -1, -8), v3(3, -1, -1.5f), v3(-3, -1, -1.5f));
     DrawItem d = { m, &mat, mat4_identity() };

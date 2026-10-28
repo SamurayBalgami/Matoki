@@ -15,6 +15,7 @@
 
 typedef struct Material {
     ShadeFn     shade;
+    PreludeFn   prelude;    /* NULL olabilir; varsa shade onun önbelleğini okuyan hızlı yoldur */
     const void* uniforms;
     CullMode    cull;
 } Material;

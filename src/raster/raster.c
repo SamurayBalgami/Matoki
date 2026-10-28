@@ -35,9 +35,12 @@ void raster_init(Raster* r, Framebuffer* fb) {
 
 void raster_set_shader(Raster* r, ShadeFn fn, const void* uniforms, u32 var_count) {
     r->shade = fn;
+    r->prelude = NULL;
     r->uniforms = uniforms;
     r->var_count = var_count > SHADE_MAX_VARS ? SHADE_MAX_VARS : var_count;
 }
+
+void raster_set_prelude(Raster* r, PreludeFn fn) { r->prelude = fn; }
 
 void raster_set_depth(Raster* r, b32 test, b32 write, DepthFunc func) {
     r->depth_test = test;
@@ -87,6 +90,9 @@ void raster_flush(Raster* r) {
     Framebuffer* fb = r->fb;
     r->stats.flushes++;
     if (r->pending) {
+        /* son çağrılan önsöz: shader önbelleği (önsöz, uniforms) çifti değişene kadar geçerli */
+        PreludeFn last_pre = NULL;
+        const void* last_uni = NULL;
         for (i32 ty = 0; ty < r->tiles_y; ty++) {
             for (i32 tx = 0; tx < r->tiles_x; tx++) {
                 const Bin* b = &r->bins[ty * r->tiles_x + tx];
@@ -94,6 +100,13 @@ void raster_flush(Raster* r) {
                 i32 x1 = MIN(x0 + RASTER_TILE - 1, fb->w - 1), y1 = MIN(y0 + RASTER_TILE - 1, fb->h - 1);
                 for (const BinChunk* c = b->head; c; c = c->next) {
                     for (u32 i = 0; i < c->count; i++) {
+                        const TriSetup* t = c->items[i].t;
+                        if (t->prelude && (t->prelude != last_pre || t->uniforms != last_uni)) {
+                            t->prelude(t->uniforms);
+                            last_pre = t->prelude;
+                            last_uni = t->uniforms;
+                            r->stats.preludes++;
+                        }
 #if defined(__wasm_simd128__)
                         if (r->mode == RASTER_MODE_SIMD) {
                             raster_tile_simd(r, c->items[i].t, x0, y0, x1, y1, c->items[i].full);
@@ -211,6 +224,7 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
 
     TriSetup* t = (TriSetup*)arena_alloc_nozero(r->arena, tri_bytes, _Alignof(TriSetup));
     t->shade = r->shade;
+    t->prelude = r->prelude;
     t->uniforms = r->uniforms;
     t->var_count = nv;
     t->depth_test = (u8)(r->depth_test && fb->depth);

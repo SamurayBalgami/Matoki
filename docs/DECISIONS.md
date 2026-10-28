@@ -63,8 +63,8 @@ framebuffer hash'leri regresyon testi olarak kullanılabilir. Matoki codegen'i d
 - **Skalerleştirme:** vektörler bileşenlere bölünür; IR'da yalnızca F32/I32 (bool = tam maske).
 - **Katlama + CSE kurulumda:** katlama `ir_eval_lane` ile yapılır → katlanmış ve katlanmamış program bit-bit
   aynıdır (test her iki yolu da JIT'ler). Ayrı bir optimizasyon geçişi yok; DCE codegen öncesi.
-- **Codegen:** her canlı değer bir v128 yereli; V8 yazmaç ayırmayı yapar. Uniform değerler de şimdilik
-  vektörde hesaplanır (skalere indirmek sonraki adım).
+- **Codegen:** her canlı değer bir v128 yereli; V8 yazmaç ayırmayı yapar. Quad-sabit değerler skaler
+  yerellerde (D26).
 - **JIT:** motor `__indirect_function_table`'ı dışa aktarır (`--export-table --growable-table`); JS modülü
   `env.memory` ile örnekleyip `shade`i tabloya ekler, dönen indeks C'de `ShadeFn`. Modül imzası
   `(i32, i32, i32) -> ()` = `ShadeFn`, böylece `call_indirect` tip denetimi geçer.
@@ -159,7 +159,7 @@ soft step'te 60 Hz / ζ = 2 yumuşaklık (temaslardan sert, zincirde birkaç cm 
   ara değerle birebir aynı (eski sonuçlar değişmez).
 - Açık hava sürüklemesi alt adımda normal göreli hızı tersine çeviremez (kararlılık sınırı).
 
-## D23. Texture ABI 96 bayt: seviye ofset tablosu dokunun içinde (2026-10-28)
+## D23. Texture ABI 96 bayt: seviye ofset tablosu dokunun içinde (2026-10-28) — D26 ile 352 bayt
 D10'un yerine geçer. `Texture` sonuna `u32 lv_ofs[16]` eklendi (ofset 32, eski alanların ofsetleri aynı).
 `tex_create` doldurur; elle kurulan dokular `tex_fill_level_offsets` çağırır. Böylece Matoki, uniform bloğuna
 tablo koymadan herhangi bir dokuda seviye başlangıcını tek okumayla bulur (`IR_TEX_WORD`). C tarafındaki
@@ -181,6 +181,24 @@ discard SPMD kalır: kod akmaya devam eder, yalnızca etkin yol maskesi (iç iç
   sayede tek lane'den kaydırma / tek okuma ile hesaplanır. Yan etki: türevin türevi her zaman 0 (önceden inf/NaN
   girdide NaN olabilirdi); ir_eval ve codegen aynı kuralı izler.
 - `@bilinear` seviye içinde (GL_LINEAR_MIPMAP_NEAREST); seviyeler arası (trilinear) yok.
+
+## D26. Matoki varsayılan shader: önsöz (preshader), skaler quad-sabitler, seviye tabloları (2026-10-28)
+- **Önsöz:** codegen üç fonksiyon üretir: `shade` (tek başına doğru), `prelude(uniforms)` ve `shade_fast`.
+  Yalnızca uniform/doku/sabitten türeyen ve quad'a bağlı bir kullanıcısı olan değerler önsözde hesaplanıp
+  modülün önbelleğine (codegen arenası) yazılır. Raster, `TriSetup.prelude` varsa (önsöz, uniforms) çifti
+  değiştikçe çağırır (`raster_set_prelude`, `Material.prelude`). Önbellek anahtarı içerik değil işaretçi:
+  uniform içeriği flush boyunca sabit olmalı (zaten sözleşmeydi). Doğrudan çağıran (test, araç) önce
+  prelude'u çağırır ya da `shade`'i kullanır. İleride worker'lar: önbellek thread başına olmalı.
+- **Skaler quad-sabitler:** `uniform` bayrağı taşıyan değerler (türevler, mip seviyesi, ondan türeyen her şey)
+  wasm skaler yerellerde hesaplanır, v128'e yalnızca vektör kullanıcısı varsa bir kez yayılır. Türev = iki
+  lane çıkar + skaler fark. Karşılaştırma koşullu skaler select → tek wasm `select`. Ölçüm (yakalanmış gerçek
+  quad'lar, aynı ikili, anahtar `codegen_set_scalar`): v128'e göre dört görünümde %6–10 hızlı.
+- **Seviye tabloları:** `Texture` 352 bayt: `lv_w/lv_h/lv_fw/lv_fh[16]` (D23'teki `lv_ofs`'a ek). Seviyeye
+  bağlı boyutlar "kaydır → max → dönüştür" seri zinciri yerine paralel tek okumalar (C'deki `TexLevel` gibi).
+  Ölçüm: 2. görünümde shader oranı 1.24 → 1.10.
+- **Sonuç:** lit.mtk varsayılan (C ile bit-bit, hash'ler aynı). Kare ölçümünde ortalama %1–4 hızlı; mip'in
+  hep 0 olduğu yakın görünümde %2–6 yavaş — C'nin dallı mip seçimi orada erken çıkıyor, Matoki dalsız.
+  C shader'ları kâhin ve A/B için kalır.
 
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi

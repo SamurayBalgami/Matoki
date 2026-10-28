@@ -10,13 +10,15 @@ let table = null;
 const env = {
   plat_log(p, n) { process.stdout.write(dec.decode(new Uint8Array(mem.buffer, p, n))); },
   plat_now_ms() { return performance.now(); },
-  // Matoki JIT: modülü derle, belleği paylaştır, "shade"i fonksiyon tablosuna ekle → indeks
+  // Matoki JIT: modülü derle, belleği paylaştır, export'ları fonksiyon tablosuna ekle → ilk indeks
   plat_jit_instantiate(p, n) {
     try {
       const code = new Uint8Array(mem.buffer, p, n).slice();
       const inst = new WebAssembly.Instance(new WebAssembly.Module(code), { env: { memory: mem } });
-      const idx = table.grow(1);
-      table.set(idx, inst.exports.shade);
+      // shade, prelude, shade_fast (olanlar) ardışık indekslere — jit_wasm.c bu sırayı varsayar
+      const fns = ['shade', 'prelude', 'shade_fast'].map((k) => inst.exports[k]).filter(Boolean);
+      const idx = table.grow(fns.length);
+      fns.forEach((fn, k) => table.set(idx + k, fn));
       return idx;
     } catch (e) {
       process.stdout.write(`plat_jit_instantiate: ${e.message}\n`);

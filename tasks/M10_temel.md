@@ -54,10 +54,36 @@ Sonuçlar:
 - Not: bu oturumda ölçüm makinesi yüklüydü (medyanlar ilk ölçümden ~%30–40 yüksek); karşılaştırma aynı koşulda,
   sırayla ve "en iyi" değerle yapıldı.
 
+## Faz 3 — Matoki varsayılan shader (2026-10-28) ✅
+
+Hedef: demo her şeyi Matoki ile çizsin, C SIMD'den yavaş olmasın, çıktı bit-bit aynı kalsın.
+
+Ölçüm araçları (`tools/bench.mjs`):
+- `--shade`: sentetik quad'larda shader mikro-ölçümü; `--replay`: bench görünümünün **gerçek** quad'larını
+  yakalayıp (`engine_capture_view`) yalnızca shader'ları ölçer; `--pair`: kare ölçümü, C ve Matoki dönüşümlü.
+- Makine ölçüm sırasında yüklüydü (başka uygulama ~2 çekirdek): mutlak süreler ±%40 oynadı. Bu yüzden
+  karşılaştırmalar **aynı turda ölçülen iki tarafın oranının medyanı** ile yapıldı (dış yük iki tarafa eşit).
+
+Adımlar ve etkileri (oran = Matoki / C SIMD, shader süresi, yakalanmış gerçek quad'lar):
+
+| adım | sonuç |
+|---|---|
+| `v128.load32_splat`, vektör adres + `load32_lane` | ~%1 (gürültü içinde); tutuldu: daha kısa kod |
+| önsöz (preshader), 5 değer | sentetik quad'larda 1.026 → 0.968 |
+| teşhis: lit.mtk parçalarını çıkarma | mip seçimi + seviyeye bağlı boyutlar shader'ın ~%30'u (2. görünüm) |
+| seviye tabloları (`lv_w/h/fw/fh`) | 2. görünüm 1.24 → 1.10 |
+| skaler quad-sabitler (anahtarla A/B, aynı ikili) | 4 görünümde v128'e göre %6–10 hızlı |
+| tek komutluk skaler select | etkisiz (±%2); tutuldu: daha kısa kod |
+
+Kare süresi (eşli, iki tur): 640×360 oranlar 1: 0.974/0.942, 2: 1.023/1.029, 3: 0.966/0.930,
+4: 0.918/0.890; 1280×720: 1: 0.919/0.978, 2: 1.035/1.061, 3: 0.980/0.995, 4: 0.951/0.987.
+Ortalama Matoki %1–4 hızlı; 2. görünümde (mip hep 0) %2–6 yavaş: C'nin dallı mip seçimi erken çıkıyor.
+Tüm görünümlerde hash'ler C ile aynı. Demo varsayılanı artık Matoki; tarayıcıda 6 sahne kontrol edildi.
+
 ## Sıradakiler
 
 1. **Render çekirdeği (4c):** SIMD vertex aşaması + üçgen kurulumu; boyamada raster payını (flat) küçültmek.
 2. **Paralel raster:** worker'lar + SharedArrayBuffer (COOP/COEP sunucu hazır), karo başına iş.
-3. **Matoki:** uniform'dan türeyen değerleri çizim başına bir kez hesaplama (önsöz fonksiyonu), varyant önbelleği,
-   trilinear, tam matris değerleri, vertex shader'ları.
+3. **Matoki:** quad-sabit koşullarda gerçek dallanma (2. görünüm farkı), varyant önbelleği, trilinear,
+   tam matris değerleri, vertex shader'ları; worker'larla birlikte thread başına önsöz önbelleği.
 4. Sonra: Matoki ile yazılmış ışık/gölge (M8 Faz 4–5), varlık yükleme.

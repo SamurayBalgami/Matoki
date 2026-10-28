@@ -28,8 +28,10 @@ const env = {
   plat_now_ms() { return performance.now(); },
   plat_jit_instantiate(p, n) {
     const inst = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice()), { env: { memory: mem } });
-    const idx = table.grow(1);
-    table.set(idx, inst.exports.shade);
+    // shade, prelude, shade_fast (olanlar) ardışık indekslere — jit_wasm.c bu sırayı varsayar
+    const fns = ['shade', 'prelude', 'shade_fast'].map((k) => inst.exports[k]).filter(Boolean);
+    const idx = table.grow(fns.length);
+    fns.forEach((fn, k) => table.set(idx + k, fn));
     return idx;
   },
 };

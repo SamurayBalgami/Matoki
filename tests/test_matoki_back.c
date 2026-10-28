@@ -1,6 +1,6 @@
 /* tests/test_matoki_back.c — arka uç diferansiyel testi: ir_eval == codegen (JIT, node'da).
- * 500 rastgele IR programı; her biri katlama/CSE açık ve kapalı iki kez kurulur → 4 sonuç
- * (eval/jit × fold/nofold) tüm rastgele quad'larda bit-bit aynı olmalı. NaN yükü wasm'da
+ * 500 rastgele IR programı; her biri katlama/CSE açık ve kapalı iki kez kurulur → 6 sonuç
+ * (eval / jit shade / jit prelude+shade_fast × fold/nofold) tüm rastgele quad'larda bit-bit aynı olmalı. NaN yükü wasm'da
  * belirsiz olduğundan float→int bitcast öncesi NaN kanonikleştirilir (x == x ? x : 0). */
 #include "test.h"
 #include "core/math.h"
@@ -236,7 +236,7 @@ TEST(matoki_diff_eval_vs_codegen_500) {
     arena_init(&scratch, arena_alloc(a, 1 << 20, 16), 1 << 20);
     usize mark = arena_mark(a);
 
-    u32 programs = 0, mismatches = 0, jit_fail = 0, live_total = 0, folded = 0, ops_total = 0;
+    u32 programs = 0, mismatches = 0, jit_fail = 0, live_total = 0, folded = 0, ops_total = 0, hoisted = 0;
     for (u32 prog = 0; prog < 500; prog++) {
         arena_reset(a, mark);
         Rng r = rng_make(0xD1FF0000ull + prog);
@@ -246,13 +246,15 @@ TEST(matoki_diff_eval_vs_codegen_500) {
         for (u32 k = 0; k < 16; k++) random_quad(&r, &quads[k]);
 
         IrFunc fn[2];
-        ShadeFn jit[2];
+        JitShader jit[2];
+        b32 ok[2];
         for (u32 v = 0; v < 2; v++) {
             ir_init(&fn[v], a, 8192, v == 1);
             build_random(&fn[v], 0xBEEF0000ull + prog);
             WasmModule wm;
-            jit[v] = codegen_wasm(&fn[v], a, &wm) ? jit_load_shade(wm.bytes, wm.len) : NULL;
-            if (!jit[v]) jit_fail++;
+            ok[v] = codegen_wasm(&fn[v], a, &wm) && jit_load(wm.bytes, wm.len, TRUE, &jit[v]);
+            if (!ok[v]) jit_fail++;
+            else hoisted += wm.hoisted;
             if (v == 0) {
                 live_total += wm.live_insts;
                 folded += fn[v].folded + fn[v].cse_hits;
@@ -260,15 +262,20 @@ TEST(matoki_diff_eval_vs_codegen_500) {
                 ops_total += fn[v].count - 1;
             }
         }
-        if (!jit[0] || !jit[1]) continue;
+        if (!ok[0] || !ok[1]) continue;
+        /* hızlı yol: önsöz bu uniform'larla bir kez, sonra tüm quad'lar */
+        jit[0].prelude(uni);
+        jit[1].prelude(uni);
         for (u32 k = 0; k < 16; k++) {
-            u32 o[4][4];
+            u32 o[6][4];
             ir_eval(&fn[0], &quads[k], uni, o[0], &scratch);
             ir_eval(&fn[1], &quads[k], uni, o[1], &scratch);
-            jit[0](&quads[k], uni, o[2]);
-            jit[1](&quads[k], uni, o[3]);
+            jit[0].shade(&quads[k], uni, o[2]);
+            jit[1].shade(&quads[k], uni, o[3]);
+            jit[0].fast(&quads[k], uni, o[4]);
+            jit[1].fast(&quads[k], uni, o[5]);
             for (u32 l = 0; l < 4; l++) {
-                if (o[1][l] != o[0][l] || o[2][l] != o[0][l] || o[3][l] != o[0][l]) {
+                if (o[1][l] != o[0][l] || o[2][l] != o[0][l] || o[3][l] != o[0][l] || o[4][l] != o[0][l] || o[5][l] != o[0][l]) {
                     if (mismatches < 2) {
                         test_note("uyumsuz program", prog, 0);
                         diagnose(&fn[1], a, &quads[k], uni, &scratch);
@@ -284,6 +291,7 @@ TEST(matoki_diff_eval_vs_codegen_500) {
     test_note("komut (katlamasız, toplam)", ops_total, 0);
     test_note("canlı komut (katlamalı, toplam)", live_total, 0);
     test_note("katlanan + CSE isabeti", folded, 0);
+    test_note("önsöze alınan (toplam, iki varyant)", hoisted, 0);
     CHECK(jit_fail == 0);
     CHECK(programs == 500);
     CHECK(mismatches == 0);

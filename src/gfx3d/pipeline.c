@@ -178,6 +178,7 @@ void pipe_draw(Pipeline* p, const DrawItem* d) {
 
     const u32 nv = VAR3D_COUNT;
     raster_set_shader(p->r, d->mat->shade, d->mat->uniforms, nv);
+    if (d->mat->prelude) raster_set_prelude(p->r, d->mat->prelude);
     raster_set_cull(p->r, d->mat->cull);
 
     usize mark = arena_mark(p->frame);

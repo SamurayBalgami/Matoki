@@ -28,7 +28,7 @@ u32 tex_level_table(const Texture* t, TexLevel* out);
  * içerik doldurulduktan sonra img_build_mips(t->px, t->w, t->h, t->levels) çağrılmalı. */
 Texture* tex_create(Arena* a, u32 w, u32 h, u32 flags);
 void     tex_build_mips(Texture* t);
-/* lv_ofs tablosunu w, h, levels'tan doldurur (tex_create çağırır; elle kurulan dokular için) */
+/* seviye tablolarını (lv_ofs, lv_w/h, lv_fw/fh) w, h, levels'tan doldurur (tex_create çağırır; elle kurulan dokular için) */
 void     tex_fill_level_offsets(Texture* t);
 
 #endif

@@ -141,11 +141,21 @@ static f32 special_f(Rng* rng, f32 lo, f32 hi) {
     return rng_range(rng, lo, hi);
 }
 
-TEST(matoki_lit_bit_exact_vs_c) {
+static void lit_bit_exact(TestCtx* t_, b32 scalar);
+
+TEST(matoki_lit_bit_exact_vs_c) { lit_bit_exact(t_, TRUE); }
+
+/* quad-sabit değerler v128'de (codegen ölçüm anahtarı): türev / tek okuma / kaydırma vektör yolları */
+TEST(matoki_lit_bit_exact_vs_c_vector_uniforms) { lit_bit_exact(t_, FALSE); }
+
+static void lit_bit_exact(TestCtx* t_, b32 scalar) {
     MatokiProgram p;
     MatokiError e;
     Arena* a = test_arena();
-    CHECK(compile_lit(&p, &e) && matoki_jit(a, &p, &e));
+    codegen_set_scalar(scalar);
+    b32 ok = compile_lit(&p, &e) && matoki_jit(a, &p, &e);
+    codegen_set_scalar(TRUE);
+    CHECK(ok);
     if (e.failed) return;
     Texture* texs[2];
     texs[0] = tex_create(a, 128, 128, TEX_FLAG_MIPMAP);
@@ -156,7 +166,7 @@ TEST(matoki_lit_bit_exact_vs_c) {
     arena_init(&scratch, arena_alloc(a, 1 << 20, 16), 1 << 20);
 
     Rng rng = rng_make(0x11F7);
-    u32 diff_eval = 0, diff_jit = 0, lanes = 0;
+    u32 diff_eval = 0, diff_jit = 0, diff_fast = 0, lanes = 0;
     for (u32 it = 0; it < 30000; it++) {
         LitUniforms u;
         mem_zero(&u, sizeof(u));
@@ -196,19 +206,25 @@ TEST(matoki_lit_bit_exact_vs_c) {
                 q.var[VAR3D_UV + 1][l] = v0 + ay * lx + by * ly;
             }
         }
-        u32 ref[4], ev[4], jt[4];
+        u32 ref[4], ev[4], jt[4], ft[4];
         shade_lit_tex(&q, &u, ref);
         ir_eval(&p.ir, &q, &u, ev, &scratch);
         p.fn(&q, &u, jt);
+        p.prelude(&u);           /* uniform'lar her turda değişiyor (aynı adres): önsöz yeniden */
+        p.fn_fast(&q, &u, ft);
         for (u32 l = 0; l < 4; l++) {
             diff_eval += ref[l] != ev[l];
             diff_jit += ref[l] != jt[l];
+            diff_fast += ref[l] != ft[l];
             lanes++;
         }
     }
     test_note("lane", lanes, 0);
+    test_note("önsöze alınan değer", p.wasm.hoisted, 0);
+    CHECK(p.wasm.hoisted > 0);
     CHECK(diff_eval == 0);
     CHECK(diff_jit == 0);
+    CHECK(diff_fast == 0);
 }
 
 /* Tek bir test shader'ını hem ir_eval hem JIT ile çalıştırır. */
