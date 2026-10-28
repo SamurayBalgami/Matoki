@@ -80,10 +80,28 @@ Kare süresi (eşli, iki tur): 640×360 oranlar 1: 0.974/0.942, 2: 1.023/1.029, 
 Ortalama Matoki %1–4 hızlı; 2. görünümde (mip hep 0) %2–6 yavaş: C'nin dallı mip seçimi erken çıkıyor.
 Tüm görünümlerde hash'ler C ile aynı. Demo varsayılanı artık Matoki; tarayıcıda 6 sahne kontrol edildi.
 
+## Faz 4 — Paralel raster (2026-10-28) ✅
+
+Paylaşılan bellek + aynı modülün worker örnekleri + karo başına iş (D27). Platform katmanı `web/mt.mjs`,
+`web/worker.mjs` (tarayıcı ve node ortak); `tests/run.mjs` 3 worker'la koşar (`--threads 0` tek thread).
+
+Node, `tools/bench.mjs --mt` (aynı ikili, tek thread ↔ 16 thread dönüşümlü, kare medyanı; hash'ler hep aynı):
+
+| görünüm | 640×360 | 1280×720 (16 thread) | 1280×720 (8 thread) |
+|---|---|---|---|
+| 1 başlangıç | 3.99 → 2.08 ms (1.9×) | 12.5 → 3.1 ms (4.1×) | 11.3 → 3.3 ms (3.4×) |
+| 2 ızgara içi | 4.45 → 1.55 ms (2.9×) | 21.5 → 3.3 ms (6.5×) | 26.3 → 4.3 ms (6.1×) |
+| 3 uzaktan | 3.85 → 2.40 ms (1.6×) | 11.1 → 4.0 ms (2.8×) | 10.5 → 4.0 ms (2.6×) |
+| 4 mip zemini | 3.52 → 0.75 ms (4.7×) | 8.1 → 1.5 ms (5.5×) | 8.8 → 2.0 ms (4.4×) |
+
+Tarayıcı (`3d.html?prof`, 640×360, motor ms/kare, `?threads=0` ↔ varsayılan 16 thread):
+1: 5.95 → 1.98 · 2: 2.59 → 0.45 · 3: 3.21 → 0.76 · 4: 3.19 → 0.68 · 5: 6.68 → 2.22 · 6: 5.44 → 2.71
+(boyama ör. sahne 1'de 4.23 → 0.65 ms). Kalan seri kısım: geometri (sahne 1/5'te ~1.2 ms) ve kumaş fiziği.
+
 ## Sıradakiler
 
-1. **Render çekirdeği (4c):** SIMD vertex aşaması + üçgen kurulumu; boyamada raster payını (flat) küçültmek.
-2. **Paralel raster:** worker'lar + SharedArrayBuffer (COOP/COEP sunucu hazır), karo başına iş.
+1. **Geometri aşaması:** vertex dönüşümü + kırpma + üçgen kurulumu paralel/SIMD (artık karedeki en büyük seri pay).
+2. **Fizik paralel:** renk grupları (D20) ve kumaş adımları iş sistemine.
 3. **Matoki:** quad-sabit koşullarda gerçek dallanma (2. görünüm farkı), varyant önbelleği, trilinear,
    tam matris değerleri, vertex shader'ları; worker'larla birlikte thread başına önsöz önbelleği.
 4. Sonra: Matoki ile yazılmış ışık/gölge (M8 Faz 4–5), varlık yükleme.

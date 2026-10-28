@@ -4,6 +4,7 @@
  * JS (web/3d.js) yalnızca girişi iletir ve framebuffer'ı canvas'a kopyalar. */
 #include "core/arena.h"
 #include "core/embed.h"
+#include "core/jobs.h"
 #include "core/fmt.h"
 #include "core/mem.h"
 #include "core/sys.h"
@@ -1189,6 +1190,9 @@ EXPORT(engine_scratch) char* engine_scratch(u32 n) {
     g_src_buf = (char*)arena_alloc(&g.perm, n + 1, 1);
     return g_src_buf;
 }
+
+/* ölçüm: kullanılacak en fazla thread (0 = hepsi, 1 = tek) */
+EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0 ? (u32)n : 0); }
 
 EXPORT(engine_set_codegen_scalar) void engine_set_codegen_scalar(i32 on) { codegen_set_scalar(on != 0); }
 

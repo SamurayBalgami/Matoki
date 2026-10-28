@@ -3,6 +3,7 @@
 // Her koşu 600 adım; sahne 0 = düşen yığın, sahne 1 = piramit duvar. src/phys/phys_bench.c ile eşleşir.
 import fs from 'node:fs';
 import os from 'node:os';
+import { loadEngine } from '../web/mt.mjs';
 
 const args = process.argv.slice(2);
 let wasmPath = new URL('../build/engine.wasm', import.meta.url);
@@ -21,25 +22,8 @@ for (let i = 0; i < args.length; i++) {
   else wasmPath = args[i];
 }
 
-let mem = null, table = null;
-const dec = new TextDecoder();
-const env = {
-  plat_log(p, n) { process.stdout.write(dec.decode(new Uint8Array(mem.buffer, p, n))); },
-  plat_now_ms() { return performance.now(); },
-  plat_jit_instantiate(p, n) {
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice()), { env: { memory: mem } });
-    // shade, prelude, shade_fast (olanlar) ardışık indekslere — jit_wasm.c bu sırayı varsayar
-    const fns = ['shade', 'prelude', 'shade_fast'].map((k) => inst.exports[k]).filter(Boolean);
-    const idx = table.grow(fns.length);
-    fns.forEach((fn, k) => table.set(idx + k, fn));
-    return idx;
-  },
-};
-const { instance } = await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env });
-const ex = instance.exports;
-mem = ex.memory;
-table = ex.__indirect_function_table;
-
+const { state, ex } = await loadEngine(fs.readFileSync(wasmPath), (t) => process.stdout.write(t));
+const mem = state.memory;
 const SOLVER = ['SI', 'soft'];
 const SCENE = ['yığın', 'piramit', 'duvar', 'şehir'];
 console.log(`CPU: ${os.cpus()[0].model}, node ${process.version}, wasm ${String(wasmPath).split(/[\\/]/).pop()}`);

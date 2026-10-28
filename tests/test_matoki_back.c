@@ -171,8 +171,9 @@ static void diagnose(IrFunc* f, Arena* a, const ShadeQuad* q, const void* uni, A
         if (f->ins[i].type == IR_T_F32) v = ir_emit(f, IR_BITCAST_F2I, IR_T_I32, canon(f, i), 0, 0, 0);
         f->out = v;
         WasmModule wm;
-        ShadeFn fn = codegen_wasm(f, a, &wm) ? jit_load_shade(wm.bytes, wm.len) : NULL;
-        if (!fn) continue;
+        JitShader js;
+        if (!codegen_wasm(f, a, &wm) || !jit_load(wm.bytes, wm.len, wm.cache, wm.cache_stride, FALSE, &js)) continue;
+        ShadeFn fn = js.shade;
         u32 e[4], j[4];
         ir_eval(f, q, uni, e, scratch);
         fn(q, uni, j);
@@ -252,7 +253,7 @@ TEST(matoki_diff_eval_vs_codegen_500) {
             ir_init(&fn[v], a, 8192, v == 1);
             build_random(&fn[v], 0xBEEF0000ull + prog);
             WasmModule wm;
-            ok[v] = codegen_wasm(&fn[v], a, &wm) && jit_load(wm.bytes, wm.len, TRUE, &jit[v]);
+            ok[v] = codegen_wasm(&fn[v], a, &wm) && jit_load(wm.bytes, wm.len, wm.cache, wm.cache_stride, TRUE, &jit[v]);
             if (!ok[v]) jit_fail++;
             else hoisted += wm.hoisted;
             if (v == 0) {

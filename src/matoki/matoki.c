@@ -42,7 +42,7 @@ b32 matoki_codegen(Arena* a, MatokiProgram* p, MatokiError* err) {
 b32 matoki_jit(Arena* a, MatokiProgram* p, MatokiError* err) {
     if (!p->wasm.bytes && !matoki_codegen(a, p, err)) return FALSE;
     JitShader s;
-    if (!jit_load(p->wasm.bytes, p->wasm.len, TRUE, &s)) {
+    if (!jit_load(p->wasm.bytes, p->wasm.len, p->wasm.cache, p->wasm.cache_stride, TRUE, &s)) {
         matoki_error(err, 1, 1, "JIT yüklemesi başarısız (platform modülü reddetti)", NULL, 0);
         return FALSE;
     }

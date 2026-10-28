@@ -61,10 +61,12 @@ static inline b32 raster_depth_pass(u32 f, f32 z, f32 d) {
 
 static inline f32 attr_eval(const AttrPlane* p, f32 fx, f32 fy) { return p->c + p->a * fx + p->b * fy; }
 
-/* Karo [tx0..tx1] × [ty0..ty1] (dahil, framebuffer'a kenetli, tx0/ty0 çift) içinde üçgeni çiz. */
-void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full);
+/* Karo [tx0..tx1] × [ty0..ty1] (dahil, framebuffer'a kenetli, tx0/ty0 çift) içinde üçgeni çiz.
+ * Farklı karolar farklı thread'lerde aynı anda çağrılabilir: istatistik thread'in st'sine yazılır,
+ * r yalnızca okunur. */
+void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st);
 #if defined(__wasm_simd128__)
-void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full);
+void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st);
 #endif
 
 #endif

@@ -30,7 +30,7 @@ static inline u32 depth_mask4(u32 func, v128_t z, v128_t d) {
     return 0xF;
 }
 
-void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full) {
+void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st) {
     Framebuffer* fb = r->fb;
     i32 minx = MAX(t->minx, tx0) & ~1, miny = MAX(t->miny, ty0) & ~1;
     i32 maxx = MIN(t->maxx, tx1), maxy = MIN(t->maxy, ty1);
@@ -170,11 +170,9 @@ void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
         }
     }
     if (quads) {
-        r->stats.quads_shaded += quads;
-        r->stats.pixels_written += pixels;
-        if (!t->drawn) {
-            t->drawn = 1;
-            r->stats.tris_drawn++;
-        }
+        st->quads_shaded += quads;
+        st->pixels_written += pixels;
+        /* üçgen birden çok karoda (thread'de) çizilebilir: ilk çizen sayar */
+        if (!__atomic_exchange_n(&t->drawn, 1, __ATOMIC_RELAXED)) st->tris_drawn++;
     }
 }

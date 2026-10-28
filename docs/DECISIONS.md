@@ -200,6 +200,23 @@ discard SPMD kalır: kod akmaya devam eder, yalnızca etkin yol maskesi (iç iç
   hep 0 olduğu yakın görünümde %2–6 yavaş — C'nin dallı mip seçimi orada erken çıkıyor, Matoki dalsız.
   C shader'ları kâhin ve A/B için kalır.
 
+## D27. Paralel raster: paylaşılan bellek, aynı modülün worker örnekleri, karo başına iş (2026-10-28)
+- **Bellek:** motor `--import-memory --shared-memory --max-memory=1GiB` ile bağlanır; JS paylaşılan
+  `WebAssembly.Memory` oluşturur (web/mt.mjs). Sayfa crossOriginIsolated olmalı (COOP/COEP; `build.py serve`).
+  Worker'lar aynı derlenmiş modülü bu bellekle örnekler; `__wasm_init_memory` veriyi bir kez kurar,
+  her örnek kendi yığınını (`jobs_stack_top`, `__stack_pointer`) kullanır.
+- **İş sistemi (core/jobs):** tek bilet sözcüğü (sıra << 16 | indeks), CAS ile indeks alma → geç uyanan worker
+  sonraki işten indeks tüketemez. Worker'lar `memory.atomic.wait32`'de uyur; ana thread (tarayıcıda wait
+  yasak) kendisi de çalışır, sonra biten sayısını bekler. Worker yoksa aynı döngü sırayla çalışır.
+- **Raster:** flush, boş olmayan karoları paylaştırır; bir karonun üçgenleri gönderim sırasıyla tek thread'de
+  → çıktı thread sayısından bağımsız (test: `jobs_raster_parallel_bit_exact`, bench hash'leri). İstatistik ve
+  "son önsöz" thread başına; `TriSetup.drawn` atomik değişim.
+- **JIT:** Matoki modülleri yalnızca ana thread'de derlenir; `jit_load` baytları kayıt defterine kopyalar,
+  worker'lar iş almadan önce eksik modülleri aynı tablo indekslerine kurar. Modül `env.cache` global'ini içe
+  aktarır: her örnek kendi önsöz önbellek dilimini (`cache + tid·stride`) kullanır (D26'daki tek önbellek yarışırdı).
+- **Ölçüm (i7-12650H, 16 thread):** node 1280×720 kare 2.6–6.5× hızlı; tarayıcı 640×360 motor süresi 2.0–5.8×.
+  Kalan seri kısım: geometri aşaması ve fizik (sıradaki iş).
+
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

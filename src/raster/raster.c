@@ -4,6 +4,7 @@
  * başına bölme); yardımcı lane'ler aynı düzlemden dışdeğerlenir. Early-z: shade'den önce.
  * Karolar sırayla, karo içinde üçgenler gönderim sırasıyla işlenir → anlık çizimle aynı sonuç. */
 #include "raster/raster_internal.h"
+#include "core/jobs.h"
 #include "core/math.h"
 #include "core/mem.h"
 #include "core/sys.h"
@@ -85,38 +86,77 @@ static void bin_push(Raster* r, Bin* b, TriSetup* t, u32 full) {
     c->count++;
 }
 
+/* ---- flush: karolar thread'lere dağıtılır (jobs.h) ----
+ * Bir karonun üçgenleri gönderim sırasıyla tek thread'de işlenir; karolar ayrık pikseller yazar →
+ * thread sayısından bağımsız aynı framebuffer. İstatistik ve son önsöz (shader önbelleği thread başına,
+ * codegen.h) thread başına tutulur, sonda toplanır. */
+typedef struct ThreadTile {
+    RasterStats st;
+    PreludeFn   last_pre;
+    const void* last_uni;
+    u8          pad[64];      /* komşu thread'lerin yazdığı alanlar ayrı önbellek satırında */
+} ThreadTile;
+
+typedef struct FlushCtx {
+    Raster*     r;
+    const u32*  tiles;        /* boş olmayan karo indeksleri */
+    ThreadTile  th[JOBS_MAX_THREADS];
+} FlushCtx;
+
+static FlushCtx g_flush;
+
+static void flush_tile(void* ctx, u32 index, u32 tid) {
+    FlushCtx* fc = (FlushCtx*)ctx;
+    Raster* r = fc->r;
+    ThreadTile* th = &fc->th[tid];
+    const Framebuffer* fb = r->fb;
+    u32 tile = fc->tiles[index];
+    i32 tx = (i32)(tile % (u32)r->tiles_x), ty = (i32)(tile / (u32)r->tiles_x);
+    const Bin* b = &r->bins[tile];
+    i32 x0 = tx << RASTER_TILE_SHIFT, y0 = ty << RASTER_TILE_SHIFT;
+    i32 x1 = MIN(x0 + RASTER_TILE - 1, fb->w - 1), y1 = MIN(y0 + RASTER_TILE - 1, fb->h - 1);
+    for (const BinChunk* c = b->head; c; c = c->next) {
+        for (u32 i = 0; i < c->count; i++) {
+            TriSetup* t = c->items[i].t;
+            /* son çağrılan önsöz: bu thread'in önbelleği (önsöz, uniforms) çifti değişene kadar geçerli */
+            if (t->prelude && (t->prelude != th->last_pre || t->uniforms != th->last_uni)) {
+                t->prelude(t->uniforms);
+                th->last_pre = t->prelude;
+                th->last_uni = t->uniforms;
+                th->st.preludes++;
+            }
+#if defined(__wasm_simd128__)
+            if (r->mode == RASTER_MODE_SIMD) {
+                raster_tile_simd(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
+                continue;
+            }
+#endif
+            raster_tile_scalar(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
+        }
+    }
+}
+
 void raster_flush(Raster* r) {
     if (!r->bins) return;
-    Framebuffer* fb = r->fb;
     r->stats.flushes++;
     if (r->pending) {
-        /* son çağrılan önsöz: shader önbelleği (önsöz, uniforms) çifti değişene kadar geçerli */
-        PreludeFn last_pre = NULL;
-        const void* last_uni = NULL;
-        for (i32 ty = 0; ty < r->tiles_y; ty++) {
-            for (i32 tx = 0; tx < r->tiles_x; tx++) {
-                const Bin* b = &r->bins[ty * r->tiles_x + tx];
-                i32 x0 = tx << RASTER_TILE_SHIFT, y0 = ty << RASTER_TILE_SHIFT;
-                i32 x1 = MIN(x0 + RASTER_TILE - 1, fb->w - 1), y1 = MIN(y0 + RASTER_TILE - 1, fb->h - 1);
-                for (const BinChunk* c = b->head; c; c = c->next) {
-                    for (u32 i = 0; i < c->count; i++) {
-                        const TriSetup* t = c->items[i].t;
-                        if (t->prelude && (t->prelude != last_pre || t->uniforms != last_uni)) {
-                            t->prelude(t->uniforms);
-                            last_pre = t->prelude;
-                            last_uni = t->uniforms;
-                            r->stats.preludes++;
-                        }
-#if defined(__wasm_simd128__)
-                        if (r->mode == RASTER_MODE_SIMD) {
-                            raster_tile_simd(r, c->items[i].t, x0, y0, x1, y1, c->items[i].full);
-                            continue;
-                        }
-#endif
-                        raster_tile_scalar(r, c->items[i].t, x0, y0, x1, y1, c->items[i].full);
-                    }
-                }
-            }
+        u32 n_tiles = (u32)(r->tiles_x * r->tiles_y);
+        u32* tiles = ARENA_ARRAY(r->arena, u32, n_tiles);
+        u32 n = 0;
+        for (u32 i = 0; i < n_tiles; i++) {
+            if (r->bins[i].head) tiles[n++] = i;
+        }
+        FlushCtx* fc = &g_flush;
+        mem_zero(fc, sizeof(*fc));
+        fc->r = r;
+        fc->tiles = tiles;
+        jobs_parallel_for(flush_tile, fc, n);
+        for (u32 k = 0; k < JOBS_MAX_THREADS; k++) {
+            const RasterStats* s = &fc->th[k].st;
+            r->stats.quads_shaded += s->quads_shaded;
+            r->stats.pixels_written += s->pixels_written;
+            r->stats.tris_drawn += s->tris_drawn;
+            r->stats.preludes += s->preludes;
         }
     }
     arena_reset(r->arena, r->arena_mark);
@@ -282,7 +322,7 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
 
 /* ---- skaler karo döngüsü (referans) ---- */
 
-void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full) {
+void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st) {
     Framebuffer* fb = r->fb;
     i32 minx = MAX(t->minx, tx0) & ~1, miny = MAX(t->miny, ty0) & ~1;
     i32 maxx = MIN(t->maxx, tx1), maxy = MIN(t->maxy, ty1);
@@ -350,12 +390,10 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
                 fb->color[idx] = out[l];
                 if (t->depth_write) fb->depth[idx] = q.z[l];
             }
-            r->stats.quads_shaded++;
-            r->stats.pixels_written += (u32)__builtin_popcount(pass);
-            if (!t->drawn) {
-                t->drawn = 1;
-                r->stats.tris_drawn++;
-            }
+            st->quads_shaded++;
+            st->pixels_written += (u32)__builtin_popcount(pass);
+            /* üçgen birden çok karoda (thread'de) çizilebilir: ilk çizen sayar */
+            if (!__atomic_exchange_n(&t->drawn, 1, __ATOMIC_RELAXED)) st->tris_drawn++;
         }
         row0 += 2 * e0->sy;
         row1 += 2 * e1->sy;

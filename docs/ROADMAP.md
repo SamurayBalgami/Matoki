@@ -16,7 +16,7 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 6 | M8 Faz 2'nin Matoki kısmı: dFdx/dFdy/fwidth, texel_fetch/bitcast, @mipmap, mip_level, sample_level, @bilinear | ✅ (C ile bit-bit) |
 | 7 | PNG (inflate/deflate), JSON, glTF/GLB, OBJ, .mmsh (M8 Faz 3) | ⏳ |
 | 8 | Bitmap font + immediate-mode UI | ⏳ |
-| 9 | İş sistemi + worker'lar + paralel raster (M6_2) | ⏳ |
+| 9 | İş sistemi + worker'lar + paralel raster (M6_2) | ✅ (D27; 720p 2.6–6.5×) |
 | 10 | M8 Faz 4–7: ışıklandırma/PBR, gölgeler, prosedürel şehir, vertex shader'lar | ⏳ |
 | 11 | M9 fizik Faz 1: rijit cisimler, küre/kutu/düzlem, SAT, SAP, warm start'lı sequential impulse, demo sahne 3 | ✅ (`tasks/M9_physics.md`) |
 | 12 | M9 Faz 2: soft step (varsayılan), adalar + uyku, fizik benchmark'ı (`tools/bench_phys.mjs`) | ✅ oturmuş sahneler 30–110× |
@@ -32,4 +32,5 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 14 | M10 Faz 1: tarayıcıda kare profili (`3d.html?prof`) — boyama baskın | ✅ (`tasks/M10_temel.md`) |
 | 14b | M10 Faz 2: Matoki eksikleri (mip, bilinear, discard, matris, exp/log/pow); lit.mtk C ile bit-bit | ✅ |
 | 14c | M10 Faz 3: Matoki demo varsayılanı (önsöz, skaler quad-sabitler, seviye tabloları); C ile bit-bit | ✅ |
-| 14d | M10 Faz 4: render çekirdeği (4c) + paralel raster (9) | ⏳ |
+| 14d | M10 Faz 4: paralel raster (9), tek/çok thread bit-bit | ✅ |
+| 14e | M10 Faz 5: geometri aşaması paralel/SIMD (4c), fizik iş sistemine | ⏳ |

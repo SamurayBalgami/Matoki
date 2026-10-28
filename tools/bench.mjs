@@ -1,9 +1,10 @@
-// tools/bench.mjs — rasterizer/boru hattı ölçümü (node, tek thread).
-// Kullanım: node tools/bench.mjs [engine.wasm] [--frames N] [--res 640x360] [--shade | --pair]
+// tools/bench.mjs — rasterizer/boru hattı ölçümü (node; --threads N worker, --mt çok thread karşılaştırması).
+// Kullanım: node tools/bench.mjs [engine.wasm] [--frames N] [--res 640x360] [--threads N] [--shade | --pair | --mt]
 // Her sabit görünümde (engine_bench_view) ısınma + N kare; kare başına ms (medyan/en iyi)
 // ve framebuffer FNV-1a hash'i. Motor engine_set_raster_mode export'u veriyorsa her mod ayrı ölçülür.
 import fs from 'node:fs';
 import os from 'node:os';
+import { loadEngine, startWorkers } from '../web/mt.mjs';
 
 const args = process.argv.slice(2);
 let wasmPath = new URL('../build/engine.wasm', import.meta.url);
@@ -11,31 +12,17 @@ let frames = 60, W = 640, H = 360;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--frames') frames = +args[++i];
   else if (args[i] === '--res') [W, H] = args[++i].split('x').map(Number);
+  else if (args[i] === '--threads') i++;
   else if (!args[i].startsWith('--')) wasmPath = args[i];
 }
 
-const dec = new TextDecoder();
-let mem = null;
-let table = null;
-const env = {
-  plat_log(p, n) { process.stdout.write(dec.decode(new Uint8Array(mem.buffer, p, n))); },
-  plat_now_ms() { return performance.now(); },
-  plat_jit_instantiate(p, n) {
-    const code = new Uint8Array(mem.buffer, p, n).slice();
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(code), { env: { memory: mem } });
-    // shade, prelude, shade_fast (olanlar) ardışık indekslere — jit_wasm.c bu sırayı varsayar
-    const fns = ['shade', 'prelude', 'shade_fast'].map((k) => inst.exports[k]).filter(Boolean);
-    const idx = table.grow(fns.length);
-    fns.forEach((fn, k) => table.set(idx + k, fn));
-    return idx;
-  },
-};
-const { instance } = await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env });
-const ex = instance.exports;
-mem = ex.memory;
-table = ex.__indirect_function_table;
+const ti = args.indexOf('--threads');
+const WORKERS = ti >= 0 ? +args[ti + 1] : 0;   // varsayılan tek thread (eski ölçümlerle karşılaştırılabilir)
+const { state, ex, module } = await loadEngine(fs.readFileSync(wasmPath), (t) => process.stdout.write(t));
+const mem = state.memory;
 if (!ex.engine_init(W, H)) throw new Error('engine_init');
-
+const workers = await startWorkers(state, ex, module, args.includes('--mt') && ti < 0 ? os.cpus().length - 1 : WORKERS);
+process.on('exit', () => workers.forEach((w) => w.terminate()));
 function fnv(u32) {
   let h = 0x811c9dc5;
   for (let i = 0; i < u32.length; i++) { h ^= u32[i]; h = Math.imul(h, 0x01000193) >>> 0; }
@@ -94,6 +81,25 @@ if (args.includes('--shade')) {
   process.exit(0);
 }
 
+// --mt: her görünümde tek thread ↔ tüm thread'ler (dönüşümlü 9 tur), kare medyanı, hızlanma, hash eşitliği
+if (args.includes('--mt')) {
+  const med = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+  const n = 1 + workers.length;
+  console.log(`| görünüm | 1 thread ms | ${n} thread ms | hızlanma | hash eşit |`);
+  console.log('|---|---|---|---|---|');
+  const sm = hasMatoki ? MATOKI : 2;
+  for (let v = 1; v <= ex.engine_bench_view_count(); v++) {
+    const a = [], b = [];
+    let ha = '', hb = '';
+    for (let k = 0; k < 9; k++) {
+      ex.engine_set_threads(1); const x = measure(v, 0, RASTER_MODES.length - 1, sm, 1, 20);
+      ex.engine_set_threads(0); const y = measure(v, 0, RASTER_MODES.length - 1, sm, 1, 20);
+      a.push(+x[0]); b.push(+y[0]); ha = x[2]; hb = y[2];
+    }
+    console.log(`| ${v} | ${med(a).toFixed(3)} | ${med(b).toFixed(3)} | ${(med(a) / med(b)).toFixed(2)}× | ${ha === hb ? 'evet' : 'HAYIR'} |`);
+  }
+  process.exit(0);
+}
 // --replay: her görünümün gerçek quad'larını yakala, yalnızca shader'ları (C SIMD ↔ Matoki) eşli ölç
 if (args.includes('--replay') && hasMatoki) {
   console.log('| görünüm | yakalanan quad | C SIMD ns/quad | Matoki ns/quad | Matoki / C oranı | hash eşit |');

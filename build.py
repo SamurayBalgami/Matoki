@@ -39,7 +39,7 @@ NODE_DIRS = [r"C:\Program Files\nodejs"]
 CFLAGS = [
     "--target=wasm32", "-std=c11", "-O2", "-ffreestanding", "-nostdlib",
     "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
-    "-msimd128", "-mbulk-memory", "-mnontrapping-fptoint",
+    "-msimd128", "-mbulk-memory", "-mnontrapping-fptoint", "-matomics",
     "-fno-stack-protector",
     "-I" + os.path.join(ROOT, "src"),
 ]
@@ -47,6 +47,12 @@ LDFLAGS = [
     "-Wl,--no-entry",
     "-Wl,-z,stack-size=1048576",
     "-Wl,--initial-memory=4194304",
+    # paylaşılan bellek (worker'lar aynı belleği kullanır; D27): JS oluşturur, modül içe aktarır
+    "-Wl,--import-memory",
+    "-Wl,--shared-memory",
+    "-Wl,--max-memory=1073741824",
+    # her worker örneğinin kendi yığını: JS __stack_pointer'ı örnek başına ayarlar
+    "-Wl,--export=__stack_pointer",
     # JIT: üretilen shader modüllerinin fonksiyonları bu tabloya eklenir
     "-Wl,--export-table",
     "-Wl,--growable-table",

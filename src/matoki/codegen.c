@@ -6,6 +6,7 @@
  *   - texel / doku sözcüğü okuma: adresler vektörde, lane başına v128.load32_lane (wasm'da gather yok);
  *     indeks quad-sabitse tek v128.load32_splat. Uniform'lar da v128.load32_splat ile okunur. */
 #include "matoki/codegen.h"
+#include "core/jobs.h"
 #include "core/math.h"
 #include "core/mem.h"
 
@@ -147,7 +148,7 @@ static i32 simple_simd_op(u32 op) {
 
 /* skaler komutlar (quad-sabit değerler skaler yerellerde hesaplanır) */
 enum {
-    OP_DROP = 0x1a, OP_SELECT = 0x1b, OP_LOCAL_TEE = 0x22, OP_F32_CONST = 0x43,
+    OP_DROP = 0x1a, OP_SELECT = 0x1b, OP_LOCAL_TEE = 0x22, OP_GLOBAL_GET = 0x23, OP_F32_CONST = 0x43,
     OP_I32_EQ = 0x46, OP_I32_NE = 0x47, OP_I32_LT_S = 0x48, OP_I32_GT_S = 0x4a, OP_I32_LE_S = 0x4c, OP_I32_GE_S = 0x4e,
     OP_F32_EQ = 0x5b, OP_F32_NE = 0x5c, OP_F32_LT = 0x5d, OP_F32_GT = 0x5e, OP_F32_LE = 0x5f, OP_F32_GE = 0x60,
     OP_I32_SUB = 0x6b, OP_I32_MUL = 0x6c, OP_I32_AND = 0x71, OP_I32_OR = 0x72, OP_I32_XOR = 0x73,
@@ -243,7 +244,8 @@ typedef struct Plan {
     u32* rel;         /* canlı komutun v128 yerel indeksi (göreli) */
     u32* srel;        /* quad-sabit canlı komutun skaler yerel indeksi (tipine göre göreli) */
     u32  nv128, ni32, nf32;
-    u32  cache;       /* önbelleğin bellek adresi */
+    void* cache;      /* önbellek: JOBS_MAX_THREADS × stride bayt (thread başına dilim) */
+    u32  cache_stride;
     /* gövde başına */
     u8*  emit;        /* bu gövdede hesaplanır */
     u8*  load;        /* bu gövdede önbellekten okunur (FAST) */
@@ -642,6 +644,12 @@ static void body_needs(const IrFunc* f, Plan* pl, u32 kind) {
     }
 }
 
+/* bu örneğin (thread'in) önbellek dilimi: içe aktarılan env.cache global'i (global 0) */
+static void cache_addr(WB* body) {
+    byte(body, OP_GLOBAL_GET);
+    uleb(body, 0);
+}
+
 static b32 emit_body(WB* body, const IrFunc* f, Plan* pl, u32 kind) {
     body_needs(f, pl, kind);
     Emit e;
@@ -663,15 +671,13 @@ static b32 emit_body(WB* body, const IrFunc* f, Plan* pl, u32 kind) {
         for (u32 i = 1; i < f->count; i++) {
             if (!pl->load[i]) continue;
             if (pl->need_v[i]) {
-                byte(body, OP_I32_CONST);
-                sleb(body, (i32)pl->cache);
+                cache_addr(body);
                 simd(body, S_V128_LOAD);
                 memarg(body, 4, pl->slot[i] * 16);
                 lset(body, V_(&e, i));
             }
             if (pl->need_s[i]) {
-                byte(body, OP_I32_CONST);
-                sleb(body, (i32)pl->cache);
+                cache_addr(body);
                 byte(body, f->ins[i].type == IR_T_F32 ? OP_F32_LOAD : OP_I32_LOAD);
                 memarg(body, 2, pl->slot[i] * 16);
                 lset(body, S_(&e, i));
@@ -686,8 +692,7 @@ static b32 emit_body(WB* body, const IrFunc* f, Plan* pl, u32 kind) {
     if (kind == BODY_PRELUDE) {
         for (u32 i = 1; i < f->count; i++) {
             if (!pl->hoist[i]) continue;
-            byte(body, OP_I32_CONST);
-            sleb(body, (i32)pl->cache);
+            cache_addr(body);
             vget(&e, i);
             simd(body, S_V128_STORE);
             memarg(body, 4, pl->slot[i] * 16);
@@ -774,8 +779,8 @@ static void plan_make(const IrFunc* f, Arena* a, Plan* pl) {
             if (pl->need_pre[i]) pl->need_pre[ops[k]] = 1;
         }
     }
-    u8* cache = (u8*)arena_alloc(a, 16u * (pl->nhoist ? pl->nhoist : 1u), 16);
-    pl->cache = (u32)(uptr)cache;
+    pl->cache_stride = 16u * (pl->nhoist ? pl->nhoist : 1u);
+    pl->cache = arena_alloc(a, (usize)pl->cache_stride * JOBS_MAX_THREADS, 16);
 }
 
 static void section(WB* m, u32 id, const WB* s) {
@@ -791,7 +796,8 @@ b32 codegen_wasm(IrFunc* f, Arena* a, WasmModule* out) {
     Plan pl;
     plan_make(f, a, &pl);
     out->hoisted = pl.nhoist;
-    out->cache = (void*)(uptr)pl.cache;
+    out->cache = pl.cache;
+    out->cache_stride = pl.cache_stride;
 
     WB bodies[3];
     for (u32 k = 0; k < 3; k++) {
@@ -812,14 +818,21 @@ b32 codegen_wasm(IrFunc* f, Arena* a, WasmModule* out) {
     byte(&s, 0x60); uleb(&s, 3); byte(&s, 0x7f); byte(&s, 0x7f); byte(&s, 0x7f); uleb(&s, 0);
     byte(&s, 0x60); uleb(&s, 1); byte(&s, 0x7f); uleb(&s, 0);
     section(&m, 1, &s);
-    /* import: env.memory, en az 1 sayfa, üst sınır yok */
-    wb_init(&s, a, 32);
-    uleb(&s, 1);
+    /* import'lar: env.memory (paylaşılan, en az 1, en çok 65536 sayfa — motorun belleği bu sınırın içinde)
+     * ve env.cache (i32, değişmez: bu örneğin önsöz önbellek dilimi, global 0) */
+    wb_init(&s, a, 48);
+    uleb(&s, 2);
     name(&s, "env");
     name(&s, "memory");
     byte(&s, 0x02);
-    byte(&s, 0x00);
+    byte(&s, 0x03);
     uleb(&s, 1);
+    uleb(&s, 65536);
+    name(&s, "env");
+    name(&s, "cache");
+    byte(&s, 0x03);
+    byte(&s, 0x7f);
+    byte(&s, 0x00);
     section(&m, 2, &s);
     /* fonksiyonlar: shade (tip 0), prelude (tip 1), shade_fast (tip 0) */
     wb_init(&s, a, 8);

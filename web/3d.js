@@ -7,34 +7,19 @@ const info = document.getElementById('info');
 const errBox = document.getElementById('err');
 const ctx = canvas.getContext('2d');
 
-let mem = null;
-let table = null;
-const dec = new TextDecoder();
-let logBuf = '';
-const env = {
-  plat_log(p, n) {
-    logBuf += dec.decode(new Uint8Array(mem.buffer, p, n));
-    let i;
-    while ((i = logBuf.indexOf('\n')) >= 0) { console.log(logBuf.slice(0, i)); logBuf = logBuf.slice(i + 1); }
-  },
-  plat_now_ms() { return performance.now(); },
-  // Matoki JIT: üretilen modülü derle, motorun belleğini paylaştır, "shade"i fonksiyon tablosuna ekle
-  plat_jit_instantiate(p, n) {
-    try {
-      const code = new Uint8Array(mem.buffer, p, n).slice();
-      const inst = new WebAssembly.Instance(new WebAssembly.Module(code), { env: { memory: mem } });
-      // shade, prelude, shade_fast (olanlar) ardışık indekslere — jit_wasm.c bu sırayı varsayar
-      const fns = ['shade', 'prelude', 'shade_fast'].map((k) => inst.exports[k]).filter(Boolean);
-      const idx = table.grow(fns.length);
-      fns.forEach((fn, k) => table.set(idx + k, fn));
-      return idx;
-    } catch (e) {
-      console.error('plat_jit_instantiate', e);
-      return -1;
-    }
-  },
-};
+import { loadEngine, startWorkers } from './mt.mjs';
 
+let mem = null;
+let logBuf = '';
+function log(text) {
+  logBuf += text;
+  let i;
+  while ((i = logBuf.indexOf('\n')) >= 0) { console.log(logBuf.slice(0, i)); logBuf = logBuf.slice(i + 1); }
+}
+// ?threads=N: worker sayısı (0 = tek thread); varsayılan çekirdek sayısı - 1
+const qs = new URLSearchParams(location.search);
+const WANT_WORKERS = qs.has('threads') ? +qs.get('threads') : Math.max(0, (navigator.hardwareConcurrency || 4) - 1);
+let threads = 1;
 // engine_stats yerleşimi — demo.c'deki ST_* enum'u ile aynı sıra
 const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected', 'triNear', 'triGuard',
   'triEmitted', 'triBack', 'triDegen', 'triDrawn', 'quads', 'pixels', 'frameUs', 'arenaKb', 'camX', 'camY', 'camZ',
@@ -43,17 +28,22 @@ const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected',
   'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes'];
 // ?prof: kareler rAF yerine art arda, sabit 1/60 sn adımla sürülür (vsync ve gizli sekmeden bağımsız);
 // her sahnede 60 kare ısınma + 180 kare ölçüm, aşama ortalamaları konsola ve window.__prof'a
-const PROF = new URLSearchParams(location.search).has('prof');
+const PROF = qs.has('prof');
 const PROF_SCENES = [1, 2, 3, 4, 5, 6], PROF_WARM = 60, PROF_MEASURE = 180, PROF_DT = 1000 / 60;
 const PLAY_NAMES = ['SÜRÜŞ', 'YÜRÜYÜŞ', 'UÇUŞ'];
 const SHADER_NAMES = ['ref (skaler)', 'tablo (skaler)', 'SIMD', 'Matoki JIT'];
 
 async function main() {
-  const { instance } = await WebAssembly.instantiateStreaming(fetch('engine.wasm'), { env });
-  const ex = instance.exports;
-  mem = ex.memory;
-  table = ex.__indirect_function_table;
+  if (!crossOriginIsolated) throw new Error('SharedArrayBuffer yok: sayfa COOP/COEP başlıklarıyla sunulmalı (python build.py serve)');
+  const { state, ex, module } = await loadEngine(await WebAssembly.compileStreaming(fetch('engine.wasm')), log);
+  mem = state.memory;
   if (!ex.engine_init(W, H)) throw new Error('engine_init başarısız');
+  // kare döngüsü worker'lar hazır olunca başlar (başaramazsa tek thread devam)
+  try {
+    threads = 1 + (await startWorkers(state, ex, module, WANT_WORKERS)).length;
+  } catch (e) {
+    console.error('worker başlatılamadı, tek thread', e);
+  }
   const img = ctx.createImageData(W, H);
 
   const swallow = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F1']);
@@ -134,7 +124,7 @@ async function main() {
       info.textContent =
         (PROF ? (prof.i < PROF_SCENES.length ? `PROFİL: sahne ${PROF_SCENES[prof.i]} ölçülüyor…\n` : 'PROFİL bitti (konsol / window.__prof)\n') : '') +
         `sahne ${st.scene}   mipmap ${st.mip ? 'AÇIK' : 'kapalı'}   kamera ${['uçuş', 'orbit', 'oyun'][st.cam] || '?'}\n` +
-        `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H}\n` +
+        `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H}   ${threads} thread\n` +
         `  temizle ${f('clear')}  geometri ${f('geo')}  boyama ${f('flush')}  fizik ${f('phys')}  yumuşak ${f('soft')}  kopya ${f('copy')}\n` +
         `raster ${st.rasterMode ? 'SIMD' : 'skaler'}   shader ${SHADER_NAMES[st.shaderMode]}\n` +
         `bin ${st.binItems} (tam ${st.binFull})\n` +
