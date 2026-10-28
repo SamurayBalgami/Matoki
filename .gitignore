@@ -1,0 +1,8 @@
+# derleme çıktıları (python build.py yeniden üretir)
+build/
+web/engine.wasm
+
+# araç / editör klasörleri
+.claude/
+.vscode/
+__pycache__/

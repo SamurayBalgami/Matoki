@@ -1,0 +1,3 @@
+# kaynaklar LF satır sonuyla kalır (Windows'ta CRLF'e çevrilmez)
+* text=auto eol=lf
+*.wasm binary

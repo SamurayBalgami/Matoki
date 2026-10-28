@@ -1,0 +1,42 @@
+// shaders/lit.mtk — doku + Lambert + yarım küre ortam ışığı + doğrusal sis.
+// C referansı shade_lit_tex (src/raster/ref_shaders.c) ile mip kapalıyken BİT-BİT aynı:
+// işlem sırası ve NaN davranışı birebir korunur (maxc/clampc, norm_safe).
+// Uniform sırası ve tipleri LitUniforms struct'ıyla aynı → aynı uniform bloğu iki shader'a da verilir.
+
+uniform tex: texture2d;
+uniform to_light: vec3;
+uniform ambient: f32;
+uniform light_color: vec3;
+uniform fog_start: f32;
+uniform fog_color: vec3;
+uniform fog_end: f32;
+uniform eye: vec3;
+uniform use_mip: i32;       // henüz kullanılmıyor (@mipmap M8 Faz 2)
+uniform tint: vec3;
+
+varying wpos: vec3;         // yuva 0..2
+varying nrm: vec3;          // yuva 3..5
+varying uv: vec2;           // yuva 6..7
+
+// C'deki m_maxf / m_clampf ile aynı (NaN girişte aynı sonucu verir)
+fn maxc(a: f32, b: f32) -> f32 { return select(a > b, a, b); }
+fn clampc(x: f32, lo: f32, hi: f32) -> f32 { return select(x < lo, lo, select(x > hi, hi, x)); }
+
+// v3_norm: uzunluk 0 (veya NaN) ise vektör olduğu gibi kalır
+fn norm_safe(v: vec3) -> vec3 {
+    let l = sqrt(dot(v, v));
+    return select(l > 0.0, v * (1.0 / l), v);
+}
+
+fn frag() -> vec4 {
+    let texel = sample(tex, uv);
+    let n = norm_safe(nrm);
+    let ndl = maxc(dot(n, to_light), 0.0);
+    let hemi = ambient * (0.75 + 0.25 * n.y);
+    let light = vec3(hemi) + light_color * ndl;
+    let c = texel.rgb * tint * light;
+    let d = length(wpos - eye);
+    let fog_scale = 1.0 / maxc(fog_end - fog_start, 0.000001);
+    let f = clampc((d - fog_start) * fog_scale, 0.0, 1.0);
+    return vec4(mix(c, fog_color, f), 1.0);
+}
