@@ -1,0 +1,45 @@
+// shaders/water.mtk — su yüzeyi fragment shader'ı (wave_vert.mtk normalleriyle).
+// Schlick Fresnel: dik bakışta derin su rengi, sığ açıda gök yansıması; güneşten speküler parıltı
+// (yansıyan bakış · ışık)^96; yarım küre ortam. Uniform'lar LitUniforms ile aynı yerleşim:
+// tint = derin su rengi, fog_color = ufuk / gök rengi (sis de aynı renge kaçar). Doku kullanılmaz.
+
+uniform tex: texture2d;
+uniform to_light: vec3;
+uniform ambient: f32;
+uniform light_color: vec3;
+uniform fog_start: f32;
+uniform fog_color: vec3;
+uniform fog_end: f32;
+uniform eye: vec3;
+uniform use_mip: i32;
+uniform tint: vec3;
+uniform wrap: f32;
+uniform translucency: f32;
+
+varying wpos: vec3;
+varying nrm: vec3;
+varying uv: vec2;
+
+fn frag() -> vec4 {
+    let n = normalize(nrm);
+    let to_eye = eye - wpos;
+    let d = length(to_eye);
+    let v = to_eye * (1.0 / max(d, 0.0001));
+    let ndv = clamp(dot(n, v), 0.0, 1.0);
+    // Schlick: F0 = 0.02 (su)
+    let m = 1.0 - ndv;
+    let m2 = m * m;
+    let fresnel = 0.02 + 0.98 * (m2 * m2 * m);
+    // gök: ufukta açık, tepeye doğru doygun mavi
+    let r = reflect(-v, n);
+    let up = clamp(r.y, 0.0, 1.0);
+    let sky = mix(fog_color, vec3(0.32, 0.52, 0.86), up * 0.8);
+    // derin su: ortam + yumuşak diffuse
+    let nl = dot(n, to_light);
+    let body = tint * (ambient * (0.6 + 0.4 * n.y) + light_color * max(nl * 0.5 + 0.5, 0.0) * 0.45);
+    let spec = pow(max(dot(r, to_light), 0.0), 96.0) * 2.5;
+    let c = mix(body, sky, fresnel) + light_color * spec;
+    let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
+    let f = clamp((d - fog_start) * fog_scale, 0.0, 1.0);
+    return vec4(mix(c, fog_color, f), 1.0);
+}

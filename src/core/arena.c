@@ -44,3 +44,17 @@ usize arena_mark(const Arena* a) { return a->used; }
 void arena_reset(Arena* a, usize mark) {
     if (mark <= a->used) a->used = mark;
 }
+
+void* arena_alloc_atomic(Arena* a, usize size, usize align) {
+    if (align < 1) align = 1;
+    usize used = __atomic_load_n(&a->used, __ATOMIC_RELAXED);
+    for (;;) {
+        uptr p = (uptr)(a->base + used);
+        uptr aligned = (p + (align - 1)) & ~(uptr)(align - 1);
+        usize start = (usize)(aligned - (uptr)a->base);
+        if (start > a->cap || size > a->cap - start) return NULL;
+        if (__atomic_compare_exchange_n(&a->used, &used, start + size, FALSE, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {
+            return (void*)aligned;
+        }
+    }
+}

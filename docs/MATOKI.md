@@ -107,6 +107,37 @@ kurulum sırasında yapılır.
 - **Tek belirsizlik NaN yük/işaret bitleridir:** wasm bunları sabitlemez. Test, float→int bitcast öncesinde
   NaN'ı kanonikleştirir. `select`'in F32 maskesi tam olmalıdır (lower yalnızca bunu üretir).
 
+## Vertex aşaması (`fn vert() -> vec4`, D29)
+
+```
+uniform model: mat4;           // VertUniforms ile aynı sıra: model, view_proj, normal_mat, time, params...
+uniform view_proj: mat4;
+uniform normal_mat: mat3;
+uniform time: f32;
+attribute position: vec3;      // köşe girdisi: yuvalar bildirim sırasıyla (ATTR3D_POS/NRM/UV) ya da @slot(N)
+attribute normal: vec3;
+attribute texcoord: vec2;
+varying wpos: vec3;            // fragment aşamasıyla aynı yuvalar
+varying nrm: vec3;
+varying uv: vec2;
+
+fn vert() -> vec4 {
+    let w = model * vec4(position, 1.0);
+    wpos = w.xyz;              // vert'te varying'ler yazılabilir yereldir (0 ile başlar, if'lerde birleşir)
+    nrm = normal_mat * normal;
+    uv = texcoord;
+    return view_proj * vec4(wpos, 1.0);    // klip uzayı konumu
+}
+```
+
+- Derleme: `MatokiOptions.stage = MATOKI_STAGE_VERT`. Bir dosyada `frag` ve `vert` birlikte olabilir; uniform bloğu
+  tektir, bu yüzden demo vertex shader'larını ayrı dosyada tutar (`shaders/std_vert.mtk`, `wave_vert.mtk`).
+- Lane'ler 4 bağımsız köşedir: `dFdx/dFdy/fwidth`, `frag_coord`, `mip_level`, `@mipmap` ile `sample` ve
+  `discard` derleme hatası. `sample_level` serbest (dokudan yükseklik okuyup köşe kaydırma).
+- `attribute` yalnız vert'te okunur; varying'e yalnız vert'te yazılır.
+- ABI: `VertexFn(VertexIn*, uniforms, VertexOut*)` — wasm imzası ShadeFn ile aynı; önsöz ve thread önbelleği aynen.
+- `std_vert.mtk` C kâhini `vert_std_c` ile bit-bit aynı (test + kare hash'leri).
+
 ## Üretilen modül: shade, prelude, shade_fast (D26)
 
 - **Çizim-sabitler önsözde:** yalnızca uniform/doku/sabitten türeyen pahalı değerler `prelude(uniforms)`'da bir
@@ -131,4 +162,5 @@ Kare süresi oranı Matoki / C (eşli ölçüm `node tools/bench.mjs --pair`, ik
 ## Henüz olmayanlar
 
 Seviyeler arası (trilinear) filtre, tam matris değerleri (yerel, `M * M`), uniform dizileri, quad-sabit
-koşullarda gerçek dallanma (C'nin erken çıkışı gibi), uniform özelleştirme ve varyant önbelleği, vertex shader'ları.
+koşullarda gerçek dallanma (C'nin erken çıkışı gibi), uniform özelleştirme ve varyant önbelleği, vertex
+aşamasında kullanıcı tanımlı köşe girdileri (şimdilik standart konum/normal/uv).

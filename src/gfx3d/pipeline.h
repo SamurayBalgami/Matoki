@@ -13,11 +13,33 @@
 #define PIPE_GUARD_PX  8192.0f
 #define CLIP_MAX_VERTS 16
 
+/* Köşe girdilerinin standart yerleşimi (VertexIn.attr yuvaları; Matoki'de attribute sırası) */
+#define ATTR3D_POS   0   /* x, y, z */
+#define ATTR3D_NRM   3   /* nx, ny, nz */
+#define ATTR3D_UV    6   /* u, v */
+#define ATTR3D_COUNT 8
+
+#define VERT_PARAMS 8
+
+/* Vertex shader uniform bloğu (shaders/std_vert.mtk ile aynı sıra; çizim başına boru hattı doldurur).
+ * Ofsetler: model 0, view_proj 64, normal_mat 128, time 164, params 168. */
+typedef struct VertUniforms {
+    Mat4 model;
+    Mat4 view_proj;
+    Mat3 normal_mat;              /* modelin ters-devrik üst 3×3'ü */
+    f32  time;                    /* pipe_set_time */
+    f32  params[VERT_PARAMS];     /* materyale özel (Material.vert_params) */
+} VertUniforms;
+
 typedef struct Material {
     ShadeFn     shade;
     PreludeFn   prelude;    /* NULL olabilir; varsa shade onun önbelleğini okuyan hızlı yoldur */
     const void* uniforms;
     CullMode    cull;
+    VertexFn    vert;       /* NULL → vert_std_c (C kâhini) */
+    PreludeFn   vert_prelude;
+    f32         vert_params[VERT_PARAMS];
+    f32         cull_margin;  /* vertex shader'ın köşeleri en çok bu kadar oynatır (frustum culling payı) */
 } Material;
 
 typedef struct DrawItem {
@@ -25,6 +47,22 @@ typedef struct DrawItem {
     const Material* mat;
     Mat4            model;
 } DrawItem;
+
+/* ertelenmiş çizim kaydı (pipe_draw → pipe_end) */
+typedef struct DrawRec {
+    const Mesh*     mesh;
+    const Material* mat;
+    VertUniforms*   vu;
+    RasterState     rs;
+    struct ClipVert* cv;      /* parti içinde: köşe aşaması çıktısı */
+    u32*            oc;       /* outcode */
+    u32             vert_base, tri_base;   /* parti içi önek toplamları */
+} DrawRec;
+
+/* std_vert.mtk'nin C kâhini: wp = model·p, klip = view_proj·(wp, 1), n = normal_mat·n, uv geçer */
+void vert_std_c(const VertexIn* in, const void* uniforms, VertexOut* out);
+
+#define PIPE_MAX_DRAWS 16384
 
 typedef struct ClipVert {
     f32 x, y, z, w;
@@ -50,13 +88,23 @@ typedef struct Pipeline {
     Vec4      frustum[6];     /* sol, sağ, alt, üst, yakın, uzak (normalize, içeri bakar) */
     f32       vw, vh;
     f32       guard_x, guard_y;
+    f32       time;
+    usize     frame_mark;     /* pipe_end frame arenasını buraya geri alır */
+    DrawRec*  draws;
+    u32       ndraws;
     PipeStats stats;
+    u32       batches;        /* pipe_end'deki parti sayısı (arena bütçesi) */
+    f64       vert_ms, setup_ms, raster_ms;   /* pipe_end aşama süreleri (partilerin toplamı) */
 } Pipeline;
 
-/* r üzerinde raster_begin çağrılmış olmalı; frame, raster'ın arenasından AYRI olmalı. */
+/* r üzerinde raster_begin çağrılmış olmalı; frame, raster'ın arenasından AYRI olmalı.
+ * pipe_draw yalnızca kaydeder (görünmeyeni eler); iş pipe_end'de: köşe aşaması ve üçgen kurulumu
+ * iş sistemiyle paralel, sonra raster_flush. Sonuç thread sayısından bağımsız, gönderim sırası korunur.
+ * Materyal / mesh / uniform işaretçileri pipe_end'e dek geçerli kalmalı. pipe_end, pipe_begin'den sonra frame\n * arenasından ayrılan her şeyi geri alır. */
 void pipe_begin(Pipeline* p, Raster* r, Arena* frame, Mat4 view, Mat4 proj, Vec3 eye);
+void pipe_set_time(Pipeline* p, f32 t);
 void pipe_draw(Pipeline* p, const DrawItem* d);
-void pipe_end(Pipeline* p);   /* raster_flush */
+void pipe_end(Pipeline* p);
 
 /* Test/araç erişimi için açık */
 void pipe_extract_frustum(const Mat4* view_proj, Vec4 out[6]);

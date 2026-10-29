@@ -1,0 +1,24 @@
+// shaders/std_vert.mtk — standart vertex shader: model → dünya, view_proj → klip, normal_mat ile normal.
+// vert_std_c (src/gfx3d/pipeline.c) ile BİT-BİT aynı: M · (p, 1) son terimi a12 · 1 = a12, toplama sırası
+// mat4_mul_point / mat4_mul_v4 / mat3_mul_v3 ile aynı. Uniform sırası VertUniforms ile aynı.
+
+uniform model: mat4;
+uniform view_proj: mat4;
+uniform normal_mat: mat3;
+uniform time: f32;
+
+attribute position: vec3;   // yuva 0..2 (ATTR3D_POS)
+attribute normal: vec3;     // yuva 3..5 (ATTR3D_NRM)
+attribute texcoord: vec2;   // yuva 6..7 (ATTR3D_UV)
+
+varying wpos: vec3;         // yuva 0..2 (VAR3D_WPOS)
+varying nrm: vec3;          // yuva 3..5 (VAR3D_NRM)
+varying uv: vec2;           // yuva 6..7 (VAR3D_UV)
+
+fn vert() -> vec4 {
+    let w = model * vec4(position, 1.0);
+    wpos = w.xyz;
+    nrm = normal_mat * normal;
+    uv = texcoord;
+    return view_proj * vec4(wpos, 1.0);
+}

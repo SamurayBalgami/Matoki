@@ -17,7 +17,8 @@ b32 matoki_compile(Arena* a, const char* src, u32 len, const MatokiOptions* opt,
     if (!sema_module(a, &p->module, &p->sema, err)) return FALSE;
     u32 cap = opt && opt->ir_cap ? opt->ir_cap : 65536;
     ir_init(&p->ir, a, cap, opt ? opt->no_fold : FALSE);
-    if (!lower_module(a, &p->module, &p->sema, &p->ir, err)) return FALSE;
+    p->stage = opt ? opt->stage : MATOKI_STAGE_FRAG;
+    if (!lower_module(a, &p->module, &p->sema, p->stage, &p->ir, err)) return FALSE;
     char buf[160];
     StrBuf sb;
     sb_init(&sb, buf, sizeof(buf) - 1);
@@ -63,6 +64,7 @@ static const GlobalDecl* find_global(const MatokiProgram* p, const char* name, u
 
 const GlobalDecl* matoki_find_uniform(const MatokiProgram* p, const char* name) { return find_global(p, name, GD_UNIFORM); }
 const GlobalDecl* matoki_find_varying(const MatokiProgram* p, const char* name) { return find_global(p, name, GD_VARYING); }
+const GlobalDecl* matoki_find_attribute(const MatokiProgram* p, const char* name) { return find_global(p, name, GD_ATTRIBUTE); }
 
 void matoki_format_error(const MatokiError* e, StrBuf* out) {
     sb_i64(out, e->line);

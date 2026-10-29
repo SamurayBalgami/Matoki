@@ -83,13 +83,27 @@ typedef struct Raster {
     CullMode     cull;
     RasterMode   mode;
     RasterStats  stats;
-    /* bin'leme */
+    /* bin'leme: parça (chunk) başına karo kutuları; flush parçaları sırayla gezer */
     Arena*       arena;
     usize        arena_mark;
-    struct Bin*  bins;
+    struct Bin** chunk_bins;
+    u32          nchunks;
+    i32          serial_chunk;   /* raster_triangle'ın yazdığı parça (-1: yok) */
     i32          tiles_x, tiles_y;
     u32          pending;
+    u32          overflow;       /* paralel kurulumda arena doldu (programlama hatası: bütçe) */
 } Raster;
+
+/* Bir üçgenin çizim durumu (paralel kurulumda Raster'ın "set" alanları yerine) */
+typedef struct RasterState {
+    ShadeFn     shade;
+    PreludeFn   prelude;
+    const void* uniforms;
+    u32         var_count;
+    CullMode    cull;
+    b32         depth_test, depth_write;
+    DepthFunc   depth_func;
+} RasterState;
 
 void fb_clear(Framebuffer* fb, u32 color, f32 depth);
 /* MSAA: örneklerin kanal ortalaması ((a+b+c+d+2)>>2) → color; tek örnekte bir şey yapmaz. Satırlar paralel. */
@@ -107,6 +121,24 @@ void raster_reset_stats(Raster* r);
 /* arena yalnızca raster'a ait olmalı (başkası mark/reset yapmamalı); kare başına bir kez çağrılır. */
 void raster_begin(Raster* r, Arena* arena);
 void raster_triangle(Raster* r, const RasterVert* a, const RasterVert* b, const RasterVert* c);
+
+/* Paralel kurulum (gfx3d/pipeline):
+ *   raster_chunks_alloc — yalnızca ana thread; n ardışık parça ayırır, ilkinin indeksini döndürür
+ *   raster_triangle_to  — herhangi bir thread; parçaya yalnızca bir thread aynı anda yazmalı.
+ *                         Bellek işin dilimlerinden (RasterAlloc); dolarsa r->overflow (çağıran raster_room ile bütçe tutar).
+ * Flush'ta karo içi sıra: parça indeksi, sonra parçaya ekleme sırası. */
+/* iş başına ayırıcı: sıfırla başlat, işin sonunda raster_alloc_done (bekleyen üçgen sayısını ekler) */
+typedef struct RasterAlloc {
+    u8* cur;
+    u8* end;
+    u32 tris;
+} RasterAlloc;
+
+u32   raster_chunks_alloc(Raster* r, u32 n);
+void  raster_triangle_to(Raster* r, u32 chunk, const RasterState* s, const RasterVert* a, const RasterVert* b,
+                         const RasterVert* c, RasterStats* st, RasterAlloc* ra);
+void  raster_alloc_done(Raster* r, RasterAlloc* ra);
+usize raster_room(const Raster* r);
 void raster_flush(Raster* r);
 
 #endif

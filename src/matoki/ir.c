@@ -6,7 +6,7 @@
 #include "core/mem.h"
 
 static const char* const OP_NAMES[IR_OP_COUNT] = {
-    "nop", "const", "uniform", "varying", "frag_x", "frag_y", "frag_z", "tex_field", "texel_load", "tex_word",
+    "nop", "const", "uniform", "varying", "attr", "frag_x", "frag_y", "frag_z", "tex_field", "texel_load", "tex_word",
     "fadd", "fsub", "fmul", "fdiv", "fmin", "fmax",
     "fneg", "fabs", "fsqrt", "ffloor", "fceil", "ftrunc", "fnearest",
     "feq", "fne", "flt", "fle", "fgt", "fge",
@@ -19,7 +19,7 @@ const char* ir_op_name(IrOp op) { return op < IR_OP_COUNT ? OP_NAMES[op] : "?"; 
 
 u32 ir_op_arity(IrOp op) {
     switch (op) {
-    case IR_NOP: case IR_CONST: case IR_UNIFORM: case IR_VARYING:
+    case IR_NOP: case IR_CONST: case IR_UNIFORM: case IR_VARYING: case IR_ATTR:
     case IR_FRAG_X: case IR_FRAG_Y: case IR_FRAG_Z: case IR_TEX_FIELD:
         return 0;
     case IR_TEXEL_LOAD: case IR_TEX_WORD:
@@ -185,7 +185,7 @@ IrRef ir_emit(IrFunc* f, IrOp op, u32 type, IrRef a, IrRef b, IrRef c, u32 imm) 
     if (f->overflow) return 0;
     u32 ar = ir_op_arity(op);
     u8 uniform = 1;
-    if (op == IR_VARYING || op == IR_FRAG_X || op == IR_FRAG_Y || op == IR_FRAG_Z) uniform = 0;
+    if (op == IR_VARYING || op == IR_ATTR || op == IR_FRAG_X || op == IR_FRAG_Y || op == IR_FRAG_Z) uniform = 0;
     /* türev her lane'e aynı farkı yayar: işleneni ne olursa olsun quad-sabit */
     if (op == IR_DERIV_X || op == IR_DERIV_Y) ar = 0;
     if (ar >= 1 && !f->ins[a].uniform) uniform = 0;
@@ -256,9 +256,15 @@ b32 ir_verify(const IrFunc* f, StrBuf* err) {
             return FALSE;
         }
     }
-    if (!f->out || f->out >= f->count || f->ins[f->out].type != IR_T_I32) {
+    if (!f->out || f->out >= f->count) {
         sb_cstr(err, "çıktı geçersiz");
         return FALSE;
+    }
+    for (u32 k = 0; k < f->nxout; k++) {
+        if (!f->xout[k] || f->xout[k] >= f->count) {
+            sb_cstr(err, "ek çıktı geçersiz");
+            return FALSE;
+        }
     }
     if (f->kill && (f->kill >= f->count || f->ins[f->kill].type != IR_T_I32)) {
         sb_cstr(err, "discard maskesi geçersiz");
@@ -305,8 +311,13 @@ u32 ir_mark_live(IrFunc* f) {
     if (!f->out) return 0;
     f->ins[f->out].live = 1;
     if (f->kill) f->ins[f->kill].live = 1;
+    u32 top = MAX(f->out, f->kill);
+    for (u32 k = 0; k < f->nxout; k++) {
+        f->ins[f->xout[k]].live = 1;
+        top = MAX(top, f->xout[k]);
+    }
     u32 n = 0;
-    for (u32 i = MAX(f->out, f->kill); i >= 1; i--) {
+    for (u32 i = top; i >= 1; i--) {
         IrInst* in = &f->ins[i];
         if (!in->live) continue;
         n++;

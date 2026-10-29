@@ -4,6 +4,7 @@
  * belirsiz olduğundan float→int bitcast öncesi NaN kanonikleştirilir (x == x ? x : 0). */
 #include "test.h"
 #include "core/math.h"
+#include "core/mem.h"
 #include "core/rng.h"
 #include "matoki/codegen.h"
 #include "matoki/ir_eval.h"
@@ -52,18 +53,21 @@ static IrRef canon(IrFunc* f, IrRef x) {
     return ir_emit(f, IR_SELECT, IR_T_F32, eq, x, ir_const_f(f, 0.0f), 0);
 }
 
-static void build_random(IrFunc* f, u64 seed) {
+/* vert: kaynaklar köşe girdileri (IR_ATTR), türev/frag_coord yok, ek çıktılar (xout) VertexOut ofsetlerinde */
+static void build_random(IrFunc* f, u64 seed, b32 vert) {
     Rng r = rng_make(seed);
     Pools p;
     p.nf = p.ni = 0;
-    for (u32 s = 0; s < 6; s++) push_f(&p, ir_emit(f, IR_VARYING, IR_T_F32, 0, 0, 0, s));
+    for (u32 s = 0; s < 6; s++) push_f(&p, ir_emit(f, vert ? IR_ATTR : IR_VARYING, IR_T_F32, 0, 0, 0, s));
     for (u32 k = 0; k < UNI_F_COUNT; k++) push_f(&p, ir_emit(f, IR_UNIFORM, IR_T_F32, 0, 0, 0, k * 4));
     for (u32 k = 0; k < UNI_I_COUNT; k++) push_i(&p, ir_emit(f, IR_UNIFORM, IR_T_I32, 0, 0, 0, UNI_I_OFS + k * 4));
     for (u32 k = 0; k < 4; k++) push_f(&p, ir_const_f(f, m_bits_f32(rand_f_bits(&r))));
     for (u32 k = 0; k < 4; k++) push_i(&p, ir_const_i(f, rand_i(&r)));
-    push_f(&p, ir_emit(f, IR_FRAG_X, IR_T_F32, 0, 0, 0, 0));
-    push_f(&p, ir_emit(f, IR_FRAG_Y, IR_T_F32, 0, 0, 0, 0));
-    push_f(&p, ir_emit(f, IR_FRAG_Z, IR_T_F32, 0, 0, 0, 0));
+    if (!vert) {
+        push_f(&p, ir_emit(f, IR_FRAG_X, IR_T_F32, 0, 0, 0, 0));
+        push_f(&p, ir_emit(f, IR_FRAG_Y, IR_T_F32, 0, 0, 0, 0));
+        push_f(&p, ir_emit(f, IR_FRAG_Z, IR_T_F32, 0, 0, 0, 0));
+    }
     push_i(&p, ir_emit(f, IR_TEX_FIELD, IR_T_I32, 0, 0, 0, UNI_TEX_OFS | (TEX_OFF_W << 16)));
     push_i(&p, ir_emit(f, IR_TEX_FIELD, IR_T_I32, 0, 0, 0, UNI_TEX_OFS | (TEX_OFF_WMASK << 16)));
     p.first_f = p.nf;
@@ -120,8 +124,9 @@ static void build_random(IrFunc* f, u64 seed) {
             if (rng_u32(&r) & 1) push_f(&p, ir_emit(f, IR_BITCAST_I2F, IR_T_F32, pi(&r, &p), 0, 0, 0));
             else push_i(&p, ir_emit(f, IR_BITCAST_F2I, IR_T_I32, canon(f, pf(&r, &p)), 0, 0, 0));
             break;
-        case 10: case 11:   /* türevler */
-            push_f(&p, ir_emit(f, (rng_u32(&r) & 1) ? IR_DERIV_X : IR_DERIV_Y, IR_T_F32, pf(&r, &p), 0, 0, 0));
+        case 10: case 11:   /* türevler (vert'te yok: yerine çarpma) */
+            if (vert) push_f(&p, ir_emit(f, IR_FMUL, IR_T_F32, pf(&r, &p), pf(&r, &p), 0, 0));
+            else push_f(&p, ir_emit(f, (rng_u32(&r) & 1) ? IR_DERIV_X : IR_DERIV_Y, IR_T_F32, pf(&r, &p), 0, 0, 0));
             break;
         case 12: {          /* doku sözcüğü (mip ofset tablosu, sözcük 8..23) */
             IrRef w = ir_emit(f, IR_IAND, IR_T_I32, pi(&r, &p), ir_const_i(f, 15), 0, 0);
@@ -144,6 +149,16 @@ static void build_random(IrFunc* f, u64 seed) {
         acc = ir_emit(f, IR_IXOR, IR_T_I32, ir_emit(f, IR_ISHL, IR_T_I32, acc, ir_const_i(f, 1), 0, 0), b, 0, 0);
     }
     f->out = acc;
+    if (vert) {
+        /* ek çıktılar: rastgele havuz değerleri (kanonik), pos.yzw ve varying yuvalarına */
+        u32 nx = 1 + rng_u32(&r) % (IR_MAX_XOUT - 1);
+        f->nxout = 0;
+        for (u32 k = 0; k < nx; k++) {
+            IrRef v = (rng_u32(&r) & 1) ? canon(f, pf(&r, &p)) : pi(&r, &p);
+            f->xout[f->nxout] = v;
+            f->xout_ofs[f->nxout++] = 16u * (k + 1);
+        }
+    }
 }
 
 static void random_quad(Rng* r, ShadeQuad* q) {
@@ -251,7 +266,7 @@ TEST(matoki_diff_eval_vs_codegen_500) {
         b32 ok[2];
         for (u32 v = 0; v < 2; v++) {
             ir_init(&fn[v], a, 8192, v == 1);
-            build_random(&fn[v], 0xBEEF0000ull + prog);
+            build_random(&fn[v], 0xBEEF0000ull + prog, FALSE);
             WasmModule wm;
             ok[v] = codegen_wasm(&fn[v], a, &wm) && jit_load(wm.bytes, wm.len, wm.cache, wm.cache_stride, TRUE, &jit[v]);
             if (!ok[v]) jit_fail++;
@@ -295,5 +310,75 @@ TEST(matoki_diff_eval_vs_codegen_500) {
     test_note("önsöze alınan (toplam, iki varyant)", hoisted, 0);
     CHECK(jit_fail == 0);
     CHECK(programs == 500);
+    CHECK(mismatches == 0);
+}
+
+TEST(matoki_diff_vert_eval_vs_codegen_300) {
+    /* vert aşaması: köşe girdisi kaynakları + çoklu ek çıktı; eval / shade / prelude+fast × fold/nofold */
+    Arena* a = test_arena();
+    Texture* tex = ARENA_NEW(a, Texture);
+    tex->px = ARENA_ARRAY(a, u32, 256);
+    tex->w = tex->h = 16;
+    tex->w_mask = tex->h_mask = 15;
+    tex->levels = 1;
+    Rng tr = rng_make(1234);
+    for (u32 i = 0; i < 256; i++) tex->px[i] = rng_u32(&tr);
+    for (u32 i = 0; i < TEX_MAX_LEVELS; i++) tex->lv_ofs[i] = rng_u32(&tr);
+    u8* uni = (u8*)arena_alloc(a, UNI_SIZE, 16);
+    VertexIn* ins = ARENA_ARRAY(a, VertexIn, 8);
+    Arena scratch;
+    arena_init(&scratch, arena_alloc(a, 1 << 20, 16), 1 << 20);
+    usize mark = arena_mark(a);
+    u32 programs = 0, mismatches = 0, jit_fail = 0, outs = 0;
+    for (u32 prog = 0; prog < 300; prog++) {
+        arena_reset(a, mark);
+        Rng r = rng_make(0x7E870000ull + prog);
+        for (u32 k = 0; k < UNI_F_COUNT; k++) *(u32*)(uni + k * 4) = rand_f_bits(&r);
+        for (u32 k = 0; k < UNI_I_COUNT; k++) *(i32*)(uni + UNI_I_OFS + k * 4) = rand_i(&r);
+        *(Texture**)(uni + UNI_TEX_OFS) = tex;
+        for (u32 k = 0; k < 8; k++) {
+            mem_zero(&ins[k], sizeof(VertexIn));
+            ins[k].count = 4;
+            for (u32 s = 0; s < VERT_MAX_ATTRS; s++) {
+                for (u32 l = 0; l < 4; l++) ins[k].attr[s][l] = m_bits_f32(rand_f_bits(&r));
+            }
+        }
+        IrFunc fn[2];
+        JitShader jit[2];
+        b32 ok[2];
+        for (u32 v = 0; v < 2; v++) {
+            ir_init(&fn[v], a, 8192, v == 1);
+            build_random(&fn[v], 0x7E8E0000ull + prog, TRUE);
+            WasmModule wm;
+            ok[v] = codegen_wasm(&fn[v], a, &wm) && jit_load(wm.bytes, wm.len, wm.cache, wm.cache_stride, TRUE, &jit[v]);
+            if (!ok[v]) jit_fail++;
+        }
+        if (!ok[0] || !ok[1]) continue;
+        outs += fn[0].nxout;
+        jit[0].prelude(uni);
+        jit[1].prelude(uni);
+        for (u32 k = 0; k < 8; k++) {
+            VertexOut o[6];
+            mem_zero(o, sizeof(o));
+            ir_eval_io(&fn[0], &ins[k], uni, &o[0], &scratch);
+            ir_eval_io(&fn[1], &ins[k], uni, &o[1], &scratch);
+            jit[0].shade((const ShadeQuad*)&ins[k], uni, (u32*)&o[2]);
+            jit[1].shade((const ShadeQuad*)&ins[k], uni, (u32*)&o[3]);
+            jit[0].fast((const ShadeQuad*)&ins[k], uni, (u32*)&o[4]);
+            jit[1].fast((const ShadeQuad*)&ins[k], uni, (u32*)&o[5]);
+            usize bytes = 16u * (fn[0].nxout + 1);
+            for (u32 j = 1; j < 6; j++) {
+                if (!mem_equal(&o[0], &o[j], bytes)) {
+                    mismatches++;
+                    break;
+                }
+            }
+        }
+        programs++;
+    }
+    test_note("program", programs, 0);
+    test_note("ek çıktı (toplam)", outs, 0);
+    CHECK(jit_fail == 0);
+    CHECK(programs == 300);
     CHECK(mismatches == 0);
 }

@@ -23,6 +23,7 @@
 #define KEY_T 84
 #define KEY_V 86
 #define KEY_N 78
+#define KEY_K 75
 
 /* sahne 4 oyun modu */
 enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
@@ -49,6 +50,8 @@ enum {
     ST_CLEAR_US, ST_GEO_US, ST_FLUSH_US, ST_TOTAL_US,   /* kare profili (µs) */
     ST_PRELUDES,                                         /* çizim önsözü çağrısı */
     ST_MSAA, ST_RESOLVE_US,                              /* örnek sayısı, MSAA çözümleme (µs) */
+    ST_VERT_MODE, ST_VERTS, ST_BATCHES,                  /* köşe aşaması: 0 C, 1 Matoki; köşe; geometri partisi */
+    ST_VERT_US, ST_SETUP_US,                             /* köşe aşaması, üçgen kurulumu (µs) */
     ST_COUNT
 };
 
@@ -103,6 +106,10 @@ typedef struct Demo {
     f32 soft_time;       /* simülasyon zamanı (rüzgâr) */
     b32 flat;           /* ölçüm: tüm materyaller shade_flat */
     b32 capture;        /* ölçüm: lit materyaller quad yakalayıcıdan geçer (engine_capture_view) */
+    i32 vert_mode;      /* 0: C köşe aşaması (vert_std_c), 1: Matoki std_vert.mtk (K tuşu) */
+    Mesh* water;        /* sahne 7: 128×128 bölmeli göl, wave_vert.mtk */
+    LitUniforms u_water;
+    Material m_water;
     i32 shader_mode;     /* SHADER_* */
     Material m_flat;
     u32 stats[ST_COUNT];
@@ -136,6 +143,11 @@ static ShadeFn g_matoki_lit;      /* hızlı yol (önsöz önbelleğini okur) */
 static PreludeFn g_matoki_pre;
 static ShadeFn g_hq_lit;
 static PreludeFn g_hq_pre;
+/* vertex shader'lar (Matoki vert aşaması) */
+static VertexFn g_std_vert, g_wave_vert;
+static ShadeFn g_water;                 /* water.mtk (göl fragment) */
+static PreludeFn g_water_pre;
+static PreludeFn g_std_vert_pre, g_wave_vert_pre;
 
 /* Matoki'de shader önsözle birlikte gelir; diğerlerinde önsöz yok */
 static PreludeFn lit_prelude_for(i32 mode) {
@@ -153,8 +165,8 @@ static ShadeFn lit_shader_for(i32 mode) {
     return shade_lit_tex;
 }
 
-/* .mtk'yi derle + JIT; uniform yerleşimi LitUniforms ile aynı değilse NULL. */
-static MatokiProgram* matoki_lit_load(Arena* a, const char* file) {
+/* .mtk'yi derle + JIT (aşama: frag / vert); uniform yerleşimi denetimi çağıranda. */
+static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) {
     const EmbedFile* ef = embed_find(file);
     char buf[320];
     StrBuf sb;
@@ -167,8 +179,11 @@ static MatokiProgram* matoki_lit_load(Arena* a, const char* file) {
     }
     MatokiProgram* p = ARENA_NEW(a, MatokiProgram);
     MatokiError e;
+    MatokiOptions opt;
+    mem_zero(&opt, sizeof(opt));
+    opt.stage = stage;
     f64 t0 = sys_now_ms();
-    b32 ok = matoki_compile(a, (const char*)ef->data, ef->len, NULL, p, &e) && matoki_jit(a, p, &e);
+    b32 ok = matoki_compile(a, (const char*)ef->data, ef->len, &opt, p, &e) && matoki_jit(a, p, &e);
     f64 t1 = sys_now_ms();
     if (!ok) {
         sb_cstr(&sb, "matoki: ");
@@ -178,12 +193,24 @@ static MatokiProgram* matoki_lit_load(Arena* a, const char* file) {
         log_sb(&sb);
         return NULL;
     }
-    const GlobalDecl* tex = matoki_find_uniform(p, "tex");
-    const GlobalDecl* tint = matoki_find_uniform(p, "tint");
-    const GlobalDecl* tr = matoki_find_uniform(p, "translucency");
-    if (!tex || !tint || tex->offset != __builtin_offsetof(LitUniforms, tex) || tint->offset != __builtin_offsetof(LitUniforms, tint) ||
-        (tr && tr->offset != __builtin_offsetof(LitUniforms, translucency))) {
-        sb_cstr(&sb, "matoki: uniform yerleşimi LitUniforms ile uyuşmuyor: ");
+    b32 layout_ok;
+    if (stage == MATOKI_STAGE_VERT) {
+        const GlobalDecl* model = matoki_find_uniform(p, "model");
+        const GlobalDecl* nm = matoki_find_uniform(p, "normal_mat");
+        const GlobalDecl* tm = matoki_find_uniform(p, "time");
+        const GlobalDecl* pos = matoki_find_attribute(p, "position");
+        layout_ok = model && nm && tm && pos && model->offset == __builtin_offsetof(VertUniforms, model) &&
+                    nm->offset == __builtin_offsetof(VertUniforms, normal_mat) && tm->offset == __builtin_offsetof(VertUniforms, time) &&
+                    pos->offset == ATTR3D_POS;
+    } else {
+        const GlobalDecl* tex = matoki_find_uniform(p, "tex");
+        const GlobalDecl* tint = matoki_find_uniform(p, "tint");
+        const GlobalDecl* tr = matoki_find_uniform(p, "translucency");
+        layout_ok = tex && tint && tex->offset == __builtin_offsetof(LitUniforms, tex) && tint->offset == __builtin_offsetof(LitUniforms, tint) &&
+                    (!tr || tr->offset == __builtin_offsetof(LitUniforms, translucency));
+    }
+    if (!layout_ok) {
+        sb_cstr(&sb, "matoki: uniform yerleşimi C yapısıyla (LitUniforms / VertUniforms) uyuşmuyor: ");
         sb_cstr(&sb, file);
         log_sb(&sb);
         return NULL;
@@ -204,16 +231,31 @@ static MatokiProgram* matoki_lit_load(Arena* a, const char* file) {
 }
 
 static void matoki_lit_init(Arena* a) {
-    MatokiProgram* p = matoki_lit_load(a, "lit.mtk");
+    MatokiProgram* p = matoki_load(a, "lit.mtk", MATOKI_STAGE_FRAG);
     if (p) {
         g_matoki_lit = p->fn_fast;
         g_matoki_pre = p->prelude;
         g_matoki_full = p->fn;
     }
-    MatokiProgram* hq = matoki_lit_load(a, "lit_hq.mtk");
+    MatokiProgram* hq = matoki_load(a, "lit_hq.mtk", MATOKI_STAGE_FRAG);
     if (hq) {
         g_hq_lit = hq->fn_fast;
         g_hq_pre = hq->prelude;
+    }
+    MatokiProgram* wf = matoki_load(a, "water.mtk", MATOKI_STAGE_FRAG);
+    if (wf) {
+        g_water = wf->fn_fast;
+        g_water_pre = wf->prelude;
+    }
+    MatokiProgram* sv = matoki_load(a, "std_vert.mtk", MATOKI_STAGE_VERT);
+    if (sv) {
+        g_std_vert = (VertexFn)sv->fn_fast;
+        g_std_vert_pre = sv->prelude;
+    }
+    MatokiProgram* wv = matoki_load(a, "wave_vert.mtk", MATOKI_STAGE_VERT);
+    if (wv && matoki_find_uniform(wv, "amp")->offset == __builtin_offsetof(VertUniforms, params)) {
+        g_wave_vert = (VertexFn)wv->fn_fast;
+        g_wave_vert_pre = wv->prelude;
     }
 }
 
@@ -598,6 +640,14 @@ static void scene_set(i32 s) {
     g.scene = s;
     camera_set_mode(&g.cam, CAM_FLY);
     g.cam.use_look = FALSE;
+    if (s == 7) {
+        g.cam.pos = v3(0.0f, 6.0f, 22.0f);    /* göle bakar */
+        g.cam.yaw = 0.0f;
+        g.cam.pitch = -0.22f;
+        g.cam.zfar = 1000.0f;
+        g.cam.speed = 8.0f;
+        return;
+    }
     if (s == 6) {
         g.cam.pos = v3(-4.2f, 5.6f, 10.0f);   /* bayrağa bakar: G ile vur */
         g.cam.yaw = 0.0f;
@@ -679,6 +729,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.cube = mesh_cube(&g.perm);
     g.ground = mesh_plane(&g.perm, 80.0f, 80.0f, 0.25f, 8);
     g.big_floor = mesh_plane(&g.perm, 4000.0f, 4000.0f, 0.5f, 1);
+    g.water = mesh_plane(&g.perm, 40.0f, 40.0f, 0.15f, 128);   /* 129² köşe, 32 768 üçgen */
 
     lit_defaults(&g.u_bricks, g.tex_bricks, v3(1, 1, 1));
     lit_defaults(&g.u_grid[0], g.tex_grid, v3(1.0f, 0.55f, 0.45f));
@@ -730,6 +781,15 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.u_flag.translucency = 0.3f;  /* ters yüz arkadan ışıkla parlar */
     lit_defaults(&g.u_jelly, g.tex_grid, v3(0.35f, 0.95f, 0.45f));
     g.u_jelly.wrap = 0.7f;
+    lit_defaults(&g.u_water, g.tex_grid, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
+    g.u_water.wrap = 0.5f;
+    material(&g.m_water, &g.u_water);
+    g.m_water.cull = CULL_NONE;          /* dalga tepesinden arka yüz görünebilir */
+    g.m_water.vert_params[0] = 0.22f;    /* amp (m) */
+    g.m_water.vert_params[1] = 7.0f;     /* en uzun dalga boyu (m) */
+    g.m_water.vert_params[2] = 1.0f;     /* hız çarpanı */
+    g.m_water.vert_params[3] = 0.6f;     /* sivrilik */
+    g.m_water.cull_margin = 1.5f;
     g.u_jelly.translucency = 0.2f;
     material(&g.m_flag, &g.u_flag);
     material(&g.m_jelly, &g.u_jelly);
@@ -743,6 +803,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     matoki_lit_init(&g.perm);
     if (g_matoki_lit) g.shader_mode = SHADER_MATOKI;
     if (g_hq_lit) g.shader_mode = SHADER_HQ;
+    g.vert_mode = g_std_vert != NULL;
     scene_set(1);
     g.ready = TRUE;
     return 1;
@@ -758,7 +819,7 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 
 static void set_frame_uniforms(void) {
     LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
-                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly };
+                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = g.cam.pos;
         all[i]->use_mip = g.mip;
@@ -766,10 +827,23 @@ static void set_frame_uniforms(void) {
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
     Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
-                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly };
+                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water };
+    /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
+    VertexFn vf = g.vert_mode ? g_std_vert : NULL;
+    PreludeFn vpre = g.vert_mode ? g_std_vert_pre : NULL;
     for (u32 i = 0; i < ARRAY_COUNT(mats); i++) {
         mats[i]->shade = fn;
         mats[i]->prelude = pre;
+        mats[i]->vert = vf;
+        mats[i]->vert_prelude = vpre;
+    }
+    if (g_wave_vert) {
+        g.m_water.vert = g_wave_vert;
+        g.m_water.vert_prelude = g_wave_vert_pre;
+    }
+    if (g_water && !g.capture) {
+        g.m_water.shade = g_water;
+        g.m_water.prelude = g_water_pre;
     }
 }
 
@@ -860,6 +934,24 @@ static void render_scene4(void) {
     }
 }
 
+/* Sahne 7: dalgalı göl (wave_vert.mtk, her kare köşe aşamasında yeniden şekillenir) + içinde sütunlar */
+static void render_scene7(void) {
+    draw(g.big_floor, &g.m_floor, mat4_identity());
+    draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
+    for (i32 k = 0; k < 7; k++) {
+        f32 a = (f32)k * (M_TAU_F / 7.0f) + 0.4f;
+        Vec3 pos = v3(m_sinf(a) * 11.0f, 2.0f, -8.0f - m_cosf(a) * 11.0f);
+        draw(g.cube, &g.m_pillar, mat4_mul(mat4_translate(pos), mat4_scale(v3(1.2f, 4.0f + (f32)(k % 3), 1.2f))));
+    }
+    /* su üstünde sallanan sandıklar */
+    for (i32 k = 0; k < 4; k++) {
+        f32 t = g.time * 0.8f + (f32)k * 1.6f;
+        Vec3 pos = v3(-6.0f + (f32)k * 4.0f, 1.2f + 0.25f * m_sinf(t * 1.3f), -6.0f + 2.0f * m_cosf((f32)k));
+        Mat4 rot = mat4_mul(mat4_rotate_z(0.15f * m_sinf(t)), mat4_rotate_x(0.12f * m_cosf(t * 0.9f)));
+        draw(g.cube, &g.m_bricks, mat4_mul(mat4_translate(pos), mat4_mul(rot, mat4_scale(v3(1.4f, 1.4f, 1.4f)))));
+    }
+}
+
 static void render_scene2(void) {
     draw(g.big_floor, &g.m_floor, mat4_identity());
     for (i32 k = 0; k < 12; k++) {
@@ -881,6 +973,8 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (g.in.pressed[KEY_0 + 4]) scene_set(4);
     if (g.in.pressed[KEY_0 + 5]) scene_set(5);
     if (g.in.pressed[KEY_0 + 6]) scene_set(6);
+    if (g.in.pressed[KEY_0 + 7]) scene_set(7);
+    if (g.in.pressed[KEY_K] && g_std_vert) g.vert_mode = !g.vert_mode;
     if (g.scene == 5 && g.in.pressed[KEY_T]) joints_scene_build();
     if (g.scene == 6 && g.in.pressed[KEY_T]) soft_scene_build();
     const u8* key = g.in.down;
@@ -986,8 +1080,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     raster_begin(&g.raster, &g.bins);
     set_frame_uniforms();
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
+    pipe_set_time(&g.pipe, g.time);
     if (g.scene == 1) render_scene1();
     else if (g.scene == 2) render_scene2();
+    else if (g.scene == 7) render_scene7();
     else if (g.scene == 3) render_scene3();
     else if (g.scene == 4) render_scene4();
     else if (g.scene == 6) render_scene6();
@@ -1017,12 +1113,18 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_PIXELS] = rs->pixels_written;
     g.stats[ST_FRAME_US] = (u32)((t1 - t0) * 1000.0);
     g.stats[ST_CLEAR_US] = (u32)((t_clear - t0) * 1000.0);
-    g.stats[ST_GEO_US] = (u32)((t_geo - t_clear) * 1000.0);
-    g.stats[ST_FLUSH_US] = (u32)((t1 - t_geo) * 1000.0);
+    /* geometri = çizim kaydı + köşe aşaması + üçgen kurulumu; boyama = raster (pipe_end içindeki flush'lar) */
+    g.stats[ST_GEO_US] = (u32)(((t_geo - t_clear) + g.pipe.vert_ms + g.pipe.setup_ms) * 1000.0);
+    g.stats[ST_FLUSH_US] = (u32)(g.pipe.raster_ms * 1000.0);
+    g.stats[ST_VERT_US] = (u32)(g.pipe.vert_ms * 1000.0);
+    g.stats[ST_SETUP_US] = (u32)(g.pipe.setup_ms * 1000.0);
     g.stats[ST_TOTAL_US] = (u32)((t_res - t_start) * 1000.0);
     g.stats[ST_PRELUDES] = rs->preludes;
     g.stats[ST_MSAA] = fb_msaa(&g.fb) ? RASTER_MSAA : 1u;
     g.stats[ST_RESOLVE_US] = (u32)((t_res - t1) * 1000.0);
+    g.stats[ST_VERT_MODE] = (u32)g.vert_mode;
+    g.stats[ST_VERTS] = ps->verts_transformed;
+    g.stats[ST_BATCHES] = g.pipe.batches;
     g.stats[ST_ARENA_KB] = (u32)(g.bins.peak >> 10);
     g.stats[ST_RASTER_MODE] = (u32)g.raster.mode;
     g.stats[ST_BIN_ITEMS] = rs->bin_items;
@@ -1079,6 +1181,7 @@ static const BenchView BENCH_VIEWS[] = {
     { 1, 34.0f, 30.0f, 22.0f, -0.57f, -0.30f }, /* 3: uzaktan: çok sayıda küçük üçgen */
     { 2, 0.0f, 1.7f, 0.0f, 0.3f, -0.08f },      /* 4: ufka uzanan mipmap zemini */
     { 6, -3.2f, 5.2f, 1.2f, -0.25f, 0.05f },    /* 5: bayrak yakından (kumaş ışığı) */
+    { 7, 0.0f, 6.0f, 22.0f, 0.0f, -0.22f },     /* 6: dalgalı göl (wave_vert.mtk, 33 bin üçgen) */
 };
 
 EXPORT(engine_bench_view_count) i32 engine_bench_view_count(void) { return (i32)ARRAY_COUNT(BENCH_VIEWS); }
@@ -1241,6 +1344,9 @@ EXPORT(engine_scratch) char* engine_scratch(u32 n) {
 /* ölçüm: kullanılacak en fazla thread (0 = hepsi, 1 = tek) */
 /* ölçüm: MSAA 4x aç / kapa */
 EXPORT(engine_set_msaa) void engine_set_msaa(i32 on) { g.fb.samples = on ? RASTER_MSAA : 1u; }
+
+/* ölçüm: köşe aşaması 0 = C kâhini, 1 = Matoki std_vert.mtk */
+EXPORT(engine_set_vert_mode) void engine_set_vert_mode(i32 m) { g.vert_mode = m && g_std_vert; }
 
 EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0 ? (u32)n : 0); }
 

@@ -14,6 +14,7 @@ typedef enum IrOp {
     IR_CONST,       /* imm = bitler */
     IR_UNIFORM,     /* imm = uniform bloğunda bayt ofseti (4 bayt yükle, tüm lane'lere) */
     IR_VARYING,     /* imm = varying yuvası → ShadeQuad.var[imm][lane] (F32) */
+    IR_ATTR,        /* imm = köşe girdisi yuvası → VertexIn.attr[imm][lane] (F32; yalnızca vert aşaması) */
     IR_FRAG_X,      /* (f32)(q.x + lane_x) + 0.5 */
     IR_FRAG_Y,      /* (f32)(q.y + lane_y) + 0.5 */
     IR_FRAG_Z,      /* q.z[lane] */
@@ -48,6 +49,8 @@ enum { IR_T_F32 = 1, IR_T_I32 = 2 };
 
 typedef u32 IrRef;
 
+#define IR_MAX_XOUT 20   /* 3 (pos.yzw) + 16 varying + 1 */
+
 typedef struct IrInst {
     u8  op;
     u8  type;
@@ -63,8 +66,11 @@ typedef struct IrFunc {
     u32     count, cap;
     u32*    htab;       /* CSE karma tablosu (ref'ler) */
     u32     hcap;
-    IrRef   out;        /* paketlenmiş renk (I32) */
+    IrRef   out;        /* çıktı 0 (bayt 0): frag'da paketlenmiş renk (I32), vert'te pos.x (F32) */
     IrRef   kill;       /* discard maskesi (I32 tam maske) → ShadeQuad.kill bitleri; 0 = discard yok */
+    u32     nxout;      /* ek çıktılar (vert: pos.yzw + varying'ler): xout[k] → çıktı yapısında xout_ofs[k] */
+    IrRef   xout[IR_MAX_XOUT];
+    u32     xout_ofs[IR_MAX_XOUT];
     b32     overflow;
     b32     no_fold;    /* test: sabit katlama + CSE kapalı (optimize öncesi karşılaştırması) */
     u32     folded, cse_hits;

@@ -17,6 +17,7 @@ typedef struct Lower {
     u32          budget;   /* açılan döngü turu + satır içi çağrı sınırı */
     IrRef        cond;     /* etkin yol maskesi (iç içe if koşullarının VE'si); 0 = her lane */
     IrRef        kill;     /* discard edilen lane maskesi; 0 = hiç discard yok */
+    u32          stage;    /* MATOKI_STAGE_FRAG / MATOKI_STAGE_VERT */
 } Lower;
 
 static b32 failed(Lower* L) { return L->err->failed; }
@@ -253,7 +254,23 @@ static void lower_sample_lod(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, Ir
     else unpack_texel(L, lower_texel_at(L, g, u, v, k), out);
 }
 
+/* vert aşamasında lane'ler komşu pikseller değil bağımsız köşelerdir: türev ve ondan türeyenler anlamsız */
+static b32 vert_forbids(const Node* e) {
+    switch ((Builtin)e->builtin) {
+    case BI_DFDX: case BI_DFDY: case BI_FWIDTH: case BI_FRAG_COORD: case BI_MIP_LEVEL:
+        return TRUE;
+    case BI_SAMPLE:
+        return (e->list->sym->g->attrs & ATTR_MIPMAP) != 0;
+    default:
+        return FALSE;
+    }
+}
+
 static u32 lower_builtin(Lower* L, Node* e, IrRef out[4]) {
+    if (L->stage == MATOKI_STAGE_VERT && vert_forbids(e)) {
+        fail(L, e, "vert aşamasında kullanılamaz (türev / frag_coord / otomatik mip; dokuda sample_level kullanın):");
+        return e->type.n ? e->type.n : 1;
+    }
     Node* args[16];
     IrRef av[16][4];
     u32 an[16];
@@ -498,7 +515,16 @@ static u32 lower_expr(Lower* L, Node* e, IrRef out[4]) {
         Sym* y = e->sym;
         u32 n = y->type.n;
         for (u32 i = 0; i < n; i++) {
-            if (y->kind == SYM_LOCAL) out[i] = y->vals[i];
+            if (y->kind == SYM_ATTRIBUTE) {
+                if (L->stage != MATOKI_STAGE_VERT) {
+                    fail(L, e, "attribute yalnızca vert aşamasında okunur");
+                    return n;
+                }
+                out[i] = ir_emit(L->f, IR_ATTR, F, 0, 0, 0, y->g->offset + i);
+                continue;
+            }
+            /* vert'te varying'ler çıktı yerelleridir (0 ile başlar, if'lerde select ile birleşir) */
+            if (y->kind == SYM_LOCAL || (y->kind == SYM_VARYING && L->stage == MATOKI_STAGE_VERT)) out[i] = y->vals[i];
             else if (y->kind == SYM_UNIFORM) out[i] = ir_emit(L->f, IR_UNIFORM, irt(y->type), 0, 0, 0, y->g->offset + 4 * i);
             else out[i] = ir_emit(L->f, IR_VARYING, F, 0, 0, 0, y->g->offset + i);
         }
@@ -573,6 +599,11 @@ static void lower_stmt(Lower* L, Node* st) {
         IrRef v[4];
         lower_expr(L, st->c ? st->c : st->b, v);
         Node* target = st->a;
+        const Sym* ts = target->kind == NK_SWIZZLE ? target->a->sym : target->sym;
+        if (ts->kind == SYM_VARYING && L->stage != MATOKI_STAGE_VERT) {
+            fail(L, st, "varying'e yalnızca vert aşamasında yazılır");
+            return;
+        }
         if (target->kind == NK_SWIZZLE) {
             Sym* y = target->a->sym;
             for (u32 i = 0; i < target->swz_n; i++) y->vals[target->swz[i]] = v[i];
@@ -632,6 +663,10 @@ static void lower_stmt(Lower* L, Node* st) {
         lower_block(L, st);
         return;
     case NK_DISCARD: {
+        if (L->stage != MATOKI_STAGE_FRAG) {
+            fail(L, st, "discard yalnızca frag aşamasında");
+            return;
+        }
         /* SPMD: kod akmaya devam eder; yalnızca etkin yoldaki lane'ler atıldı olarak işaretlenir */
         IrRef m = L->cond ? L->cond : ci(L, -1);
         L->kill = L->kill ? op2(L, IR_IOR, I, L->kill, m) : m;
@@ -683,7 +718,7 @@ static IrRef pack_color(Lower* L, const IrRef c[4]) {
     return r;
 }
 
-b32 lower_module(Arena* a, Module* m, const SemaResult* s, IrFunc* f, MatokiError* err) {
+b32 lower_module(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err) {
     UNUSED(m);
     Lower L;
     mem_zero(&L, sizeof(L));
@@ -691,13 +726,44 @@ b32 lower_module(Arena* a, Module* m, const SemaResult* s, IrFunc* f, MatokiErro
     L.a = a;
     L.err = err;
     L.budget = 4096;
-    IrRef color[4];
-    lower_fn(&L, s->frag, NULL, color);
+    L.stage = stage;
+    FnDecl* entry = stage == MATOKI_STAGE_VERT ? s->vert : s->frag;
+    if (!entry) {
+        matoki_error(err, 1, 1, stage == MATOKI_STAGE_VERT ? "giriş noktası yok: fn vert() -> vec4" : "giriş noktası yok: fn frag() -> vec4", NULL, 0);
+        return FALSE;
+    }
+    if (stage == MATOKI_STAGE_VERT) {
+        /* varying çıktıları: 0 ile başlayan değiştirilebilir yereller */
+        for (Sym* y = s->globals; y; y = y->next) {
+            if (y->kind != SYM_VARYING) continue;
+            for (u32 i = 0; i < y->type.n; i++) y->vals[i] = cf(&L, 0.0f);
+            live_push(&L, y);
+        }
+    }
+    IrRef res[4];
+    lower_fn(&L, entry, NULL, res);
     if (err->failed) return FALSE;
-    f->out = pack_color(&L, color);
-    f->kill = L.kill;
+    if (stage == MATOKI_STAGE_VERT) {
+        /* pos → VertexOut.pos (out + xout 0..2), varying'ler → VertexOut.var[yuva] */
+        f->out = res[0];
+        f->nxout = 0;
+        for (u32 c = 1; c < 4; c++) {
+            f->xout[f->nxout] = res[c];
+            f->xout_ofs[f->nxout++] = VOUT_POS_OFS + c * 16;
+        }
+        for (Sym* y = s->globals; y; y = y->next) {
+            if (y->kind != SYM_VARYING) continue;
+            for (u32 i = 0; i < y->type.n && f->nxout < IR_MAX_XOUT; i++) {
+                f->xout[f->nxout] = y->vals[i];
+                f->xout_ofs[f->nxout++] = VOUT_VAR_OFS + (y->g->offset + i) * 16;
+            }
+        }
+    } else {
+        f->out = pack_color(&L, res);
+        f->kill = L.kill;
+    }
     if (f->overflow) {
-        matoki_error(err, s->frag->line, s->frag->col, "IR kapasitesi aşıldı (shader çok büyük)", NULL, 0);
+        matoki_error(err, entry->line, entry->col, "IR kapasitesi aşıldı (shader çok büyük)", NULL, 0);
         return FALSE;
     }
     return TRUE;

@@ -7,7 +7,7 @@
 #include "matoki/ast.h"
 #include "matoki/ir.h"
 
-enum { SYM_LOCAL, SYM_UNIFORM, SYM_VARYING };
+enum { SYM_LOCAL, SYM_UNIFORM, SYM_VARYING, SYM_ATTRIBUTE };
 
 typedef struct Sym {
     const char*  name;
@@ -37,14 +37,21 @@ typedef enum Builtin {
 } Builtin;
 
 typedef struct SemaResult {
-    FnDecl* frag;
+    FnDecl* frag;           /* NULL olabilir (yalnız vertex dosyası) */
+    FnDecl* vert;           /* NULL olabilir */
     u32     uniform_size;
     u32     varying_slots;
+    u32     attr_slots;
+    Sym*    globals;        /* uniform / varying / attribute sembolleri (bildirim sırası) */
 } SemaResult;
+
+/* derleme aşaması (MatokiOptions.stage) */
+enum { MATOKI_STAGE_FRAG = 0, MATOKI_STAGE_VERT = 1 };
 
 b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err);
 
-/* lower: tip denetimi geçmiş modülü IR'a çevirir (frag satır içi, çıktı paketlenmiş renk) */
-b32 lower_module(Arena* a, Module* m, const SemaResult* s, IrFunc* f, MatokiError* err);
+/* lower: tip denetimi geçmiş modülü IR'a çevirir. frag: çıktı paketlenmiş renk; vert: pos (out + xout[0..2])
+ * ve varying'ler (xout, VertexOut ofsetleri). Aşamaya ait olmayan yapılar (türev, discard, attribute ...) hata. */
+b32 lower_module(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err);
 
 #endif

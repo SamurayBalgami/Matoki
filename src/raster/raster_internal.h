@@ -35,7 +35,7 @@ typedef struct BinItem {
     u32       full;    /* 1: karo tamamen üçgenin içinde → kenar testi atlanır */
 } BinItem;
 
-#define BIN_CHUNK_ITEMS 120
+#define BIN_CHUNK_ITEMS 30   /* küçük: paralel kurulumda (parça × karo) başına bir düğüm */
 
 typedef struct BinChunk {
     struct BinChunk* next;

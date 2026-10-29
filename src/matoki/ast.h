@@ -80,7 +80,7 @@ typedef struct FnDecl {
     struct FnDecl* next;
 } FnDecl;
 
-enum { GD_UNIFORM, GD_VARYING };
+enum { GD_UNIFORM, GD_VARYING, GD_ATTRIBUTE };
 
 #define ATTR_CLAMP    1u
 #define ATTR_MIPMAP   2u

@@ -1,0 +1,51 @@
+// shaders/wave_vert.mtk — su yüzeyi: 4 Gerstner dalgası (GPU Gems 1, böl. 1), dünya uzayında.
+// Köşe hem yükselir hem yatayda tepeye doğru toplanır (sivri tepe, geniş çukur); normal dalga türevlerinden
+// analitik: N = (-Σ dx·k·a·cos f, 1 - Σ Q·k·a·sin f, -Σ dz·k·a·cos f). Derin su dağılımı: c = √(g / k).
+// params (VertUniforms.params): amp (genlik, m), wavelen (en uzun dalga boyu, m), speed (çarpan), steep (0..1).
+
+uniform model: mat4;
+uniform view_proj: mat4;
+uniform normal_mat: mat3;
+uniform time: f32;
+uniform amp: f32;
+uniform wavelen: f32;
+uniform speed: f32;
+uniform steep: f32;
+
+attribute position: vec3;
+attribute normal: vec3;
+attribute texcoord: vec2;
+
+varying wpos: vec3;
+varying nrm: vec3;
+varying uv: vec2;
+
+fn vert() -> vec4 {
+    let w0 = (model * vec4(position, 1.0)).xyz;
+    var p = w0;
+    var n = vec3(0.0, 1.0, 0.0);
+    for i in 0..4 {
+        let fi = f32(i);
+        let ang = fi * 1.7 + 0.35;                    // her dalganın yönü farklı
+        let d = vec2(cos(ang), sin(ang));
+        let len = wavelen / (1.0 + fi * 0.6);         // dalga boyu küçülür
+        let k = 6.2831853 / len;
+        let a = amp / (1.0 + fi * 0.9);               // kısa dalga daha alçak
+        let c = sqrt(9.81 / k) * speed;
+        let f = k * (dot(d, w0.xz) - c * time);
+        let q = steep / (k * a * 4.0);                // 4 dalgaya paylaştırılmış sivrilik
+        let cf = cos(f);
+        let sf = sin(f);
+        let wa = k * a;
+        p.x += q * a * d.x * cf;
+        p.z += q * a * d.y * cf;
+        p.y += a * sf;
+        n.x -= d.x * wa * cf;
+        n.z -= d.y * wa * cf;
+        n.y -= q * wa * sf;
+    }
+    wpos = p;
+    nrm = n;
+    uv = texcoord + vec2(time * 0.02, time * 0.013);  // doku yavaşça akar
+    return view_proj * vec4(p, 1.0);
+}

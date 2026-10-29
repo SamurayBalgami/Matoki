@@ -8,6 +8,8 @@
 
 /* scratch: f->count * 16 bayt geçici bellek (her çağrıda mark/reset) */
 void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[4], Arena* scratch);
+/* genel: input = ShadeQuad (frag) ya da VertexIn (vert); output = renk[4] ya da VertexOut */
+void ir_eval_io(const IrFunc* f, const void* input, const void* uniforms, void* output, Arena* scratch);
 
 typedef struct IrEvalShader {
     const IrFunc* f;

@@ -490,8 +490,10 @@ static void sema_stmt(Sema* s, Node* st) {
         }
         sema_expr(s, target);
         if (failed(s)) return;
-        if (base->sym->kind != SYM_LOCAL || !base->sym->mutable_) {
-            err_name(s, base, "değiştirilemez (let, parametre, uniform veya varying):");
+        /* varying'e yazmak vert aşamasının işi; aşama denetimi lower'da (yalnız giriş noktasından erişilen kod) */
+        b32 writable = (base->sym->kind == SYM_LOCAL && base->sym->mutable_) || base->sym->kind == SYM_VARYING;
+        if (!writable) {
+            err_name(s, base, "değiştirilemez (let, parametre, uniform veya attribute):");
             return;
         }
         if (target->kind == NK_SWIZZLE) {
@@ -628,7 +630,7 @@ b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err) {
     s.err = err;
     mem_zero(out, sizeof(*out));
 
-    u32 uofs = 0, vslot = 0;
+    u32 uofs = 0, vslot = 0, aslot = 0;
     Sym** gtail = &s.globals;
     for (GlobalDecl* g = m->globals; g && !err->failed; g = g->next) {
         for (GlobalDecl* h = m->globals; h != g; h = h->next) {
@@ -645,6 +647,16 @@ b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err) {
             if (g->type.base != TB_TEX && g->attrs) matoki_error(err, g->line, g->col, "öznitelik yalnızca texture2d için:", g->name, g->name_len);
             g->offset = uofs;
             uofs += g->type.base == TB_TEX ? 4u : g->type.base == TB_MAT ? 4u * g->type.n * g->type.n : 4u * g->type.n;
+        } else if (g->kind == GD_ATTRIBUTE) {
+            if (g->type.base != TB_FLOAT) {
+                matoki_error(err, g->line, g->col, "attribute f32/vecN olmalı:", g->name, g->name_len);
+                break;
+            }
+            if (g->slot >= 0) aslot = (u32)g->slot;
+            g->offset = aslot;
+            aslot += g->type.n;
+            if (aslot > VERT_MAX_ATTRS) matoki_error(err, g->line, g->col, "attribute yuvaları 16'yı aşıyor:", g->name, g->name_len);
+            if (aslot > out->attr_slots) out->attr_slots = aslot;
         } else {
             if (g->type.base != TB_FLOAT) {
                 matoki_error(err, g->line, g->col, "varying f32/vecN olmalı (matris yalnızca uniform):", g->name, g->name_len);
@@ -656,12 +668,14 @@ b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err) {
             if (vslot > SHADE_MAX_VARS) matoki_error(err, g->line, g->col, "varying yuvaları 16'yı aşıyor:", g->name, g->name_len);
             if (vslot > out->varying_slots) out->varying_slots = vslot;
         }
-        Sym* y = sym_new(&s, g->name, g->name_len, g->kind == GD_UNIFORM ? SYM_UNIFORM : SYM_VARYING, g->type, FALSE);
+        u32 kind = g->kind == GD_UNIFORM ? SYM_UNIFORM : g->kind == GD_VARYING ? SYM_VARYING : SYM_ATTRIBUTE;
+        Sym* y = sym_new(&s, g->name, g->name_len, kind, g->type, FALSE);
         y->g = g;
         *gtail = y;
         gtail = &y->next;
     }
     out->uniform_size = uofs;
+    out->globals = s.globals;
     for (FnDecl* f = m->fns; f && !err->failed; f = f->next) {
         for (FnDecl* h = m->fns; h != f; h = h->next) {
             if (name_eq(h->name, h->name_len, f->name, f->name_len)) matoki_error(err, f->line, f->col, "yinelenen fonksiyon:", f->name, f->name_len);
@@ -670,13 +684,19 @@ b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err) {
         sema_fn(&s, f, NULL);
     }
     if (!err->failed) {
+        /* giriş noktaları: fn frag() -> vec4 (renk) ve/veya fn vert() -> vec4 (klip konumu); hangisinin
+         * gerektiği derleme aşamasına bağlı (matoki_compile denetler) */
         FnDecl* frag = find_fn(&s, "frag", 4);
-        if (!frag) {
-            matoki_error(err, 1, 1, "giriş noktası yok: fn frag() -> vec4", NULL, 0);
-        } else if (frag->param_count != 0 || !type_eq(frag->ret, type_make(TB_FLOAT, 4))) {
+        FnDecl* vert = find_fn(&s, "vert", 4);
+        if (!frag && !vert) {
+            matoki_error(err, 1, 1, "giriş noktası yok: fn frag() -> vec4 veya fn vert() -> vec4", NULL, 0);
+        } else if (frag && (frag->param_count != 0 || !type_eq(frag->ret, type_make(TB_FLOAT, 4)))) {
             matoki_error(err, frag->line, frag->col, "giriş noktası 'fn frag() -> vec4' olmalı", NULL, 0);
+        } else if (vert && (vert->param_count != 0 || !type_eq(vert->ret, type_make(TB_FLOAT, 4)))) {
+            matoki_error(err, vert->line, vert->col, "giriş noktası 'fn vert() -> vec4' olmalı (klip konumu)", NULL, 0);
         }
         out->frag = frag;
+        out->vert = vert;
     }
     return !err->failed;
 }

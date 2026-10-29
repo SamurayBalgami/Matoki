@@ -402,11 +402,11 @@ b32 parse_module(Arena* a, const TokenList* toks, Module* out, MatokiError* err)
     FnDecl** ftail = &out->fns;
     while (!failed(&p) && !at(&p, T_EOF)) {
         const Token* t = peek(&p);
-        if (t->kind == T_UNIFORM || t->kind == T_VARYING) {
+        if (t->kind == T_UNIFORM || t->kind == T_VARYING || t->kind == T_ATTRIBUTE) {
             advance(&p);
             const Token* name = expect(&p, T_IDENT, "isim");
             GlobalDecl* g = ARENA_NEW(a, GlobalDecl);
-            g->kind = t->kind == T_UNIFORM ? GD_UNIFORM : GD_VARYING;
+            g->kind = t->kind == T_UNIFORM ? GD_UNIFORM : t->kind == T_VARYING ? GD_VARYING : GD_ATTRIBUTE;
             g->name = name->p;
             g->name_len = name->len;
             g->line = name->line;

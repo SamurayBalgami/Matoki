@@ -123,10 +123,38 @@ Maliyet (`tools/bench_quality.mjs`, 16 thread, kare medyanı ms):
 MSAA aşamaları (görünüm 4): boyama 0.53 → 2.23 ms (skaler ilk sürüm 3.12), temizleme 0.29, çözümleme 0.37.
 Tarayıcıda 6 sahne 200 FPS (ekran sınırı), motor 2.5–3.9 ms.
 
+## Faz 6 — Matoki vertex shader'ları + paralel geometri (2026-10-29) ✅
+
+**Matoki vert aşaması** (D29): `attribute`, `fn vert() -> vec4`, varying çıktıları, aşama denetimleri.
+- `shaders/std_vert.mtk` (varsayılan; `K` ile C kâhinine geçer) — `vert_std_c` ile bit-bit.
+- `shaders/wave_vert.mtk` — 4 Gerstner dalgası, analitik normal; `shaders/water.mtk` — Schlick Fresnel, gök
+  yansıması, speküler. Sahne 7 (dalgalı göl, 129² köşe, 32 768 üçgen; `7` tuşu).
+- Testler: std_vert ↔ C (ir_eval / JIT / önsöz+hızlı, 5000 grup), aşama hataları (8 vaka), varying if-birleşmesi +
+  vertex doku okuması, dalga hareketi, rastgele 300 vert programı (3019 ek çıktı) eval = JIT, boru hattında
+  Matoki vert = C vert ve tek thread = tüm thread (17 parti). 107/107 (3 worker ve worker'sız).
+
+**Paralel geometri:** ertelenmiş çizim, köşe işleri + üçgen parçaları, raster parça kutuları, iş başına dilim.
+
+`tools/bench_geo.mjs` (önceki commit a4f4f4a = seri geometri ↔ bu sürüm, dönüşümlü, geometri = köşe + kurulum):
+
+| görünüm | 16 thread önce | 16 thread sonra (C vert) | 16 thread sonra (Matoki vert) | 1 thread önce | 1 thread Matoki vert |
+|---|---|---|---|---|---|
+| 1 | 4.10 | 0.97 | 0.84 | 3.35 | 1.93 |
+| 2 | 1.57 | 0.37 | 0.32 | 0.80 | 0.52 |
+| 3 | 3.75 | 0.92 | 0.76 | 3.05 | 1.97 |
+| 4 | 0.05 | 0.03 | 0.03 | 0.03 | 0.02 |
+| 5 | 0.32 | 0.17 | 0.14 | 0.23 | 0.17 |
+| 6 göl | — | — | 1.08 | — | 6.44 |
+
+Göl, thread sayısına göre (köşe / kurulum ms): 1: 0.90 / 5.25 · 4: 0.37 / 1.42 · 8: 0.36 / 0.94 · 16: 0.38 / 0.75.
+İlk sürümde kurulum 16 thread'de 12.6 ms'ydi (ortak atomik sayaç çekişmesi) → iş başına dilimle düzeldi.
+Tüm kare hash'leri (görünüm × shader × MSAA) değişiklikten önceki referansla aynı (`tools/hashes.mjs`).
+Tarayıcı: göl 160 FPS (motor 5.75 ms: köşe 0.18, kurulum 0.41), diğer sahneler 200 FPS (ekran sınırı).
+
 ## Sıradakiler
 
 1. **MSAA boyama:** kenar sınıflaması için artımlı kenar adımı, örnek tamponu sıkıştırma (tam kaplı pikselde tek renk).
-2. **Geometri aşaması:** vertex dönüşümü + kırpma + üçgen kurulumu paralel/SIMD (artık karedeki en büyük seri pay).
+2. **Matoki dili:** tam matris değerleri, uniform dizileri (çoklu ışık), quad-sabit koşullarda gerçek dallanma.
 2. **Fizik paralel:** renk grupları (D20) ve kumaş adımları iş sistemine.
 3. **Matoki:** quad-sabit koşullarda gerçek dallanma (2. görünüm farkı), varyant önbelleği, trilinear,
    tam matris değerleri, vertex shader'ları; worker'larla birlikte thread başına önsöz önbelleği.

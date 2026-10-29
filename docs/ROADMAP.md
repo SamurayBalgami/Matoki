@@ -10,7 +10,7 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 3 | 3D boru hattı: kırpma, guard band, culling, kamera, demo sahne 1–2 | ✅ (M8 Faz 1 temeli) |
 | 4 | Raster performansı: 64×64 karo binning, wasm SIMD quad yolu, benchmark (`tools/bench.mjs`) | ✅ raster 1.25–2.6× |
 | 4b | Shader maliyeti: mip seviye tablosu + SIMD C lit shader | ✅ lit kare 1.7–2.5× |
-| 4c | SIMD vertex aşaması + üçgen kurulumu, hızlı fb_clear (artık raster tarafı baskın) | ⏳ |
+| 4c | SIMD vertex aşaması (Matoki vert) + paralel üçgen kurulumu | ✅ (D29) |
 | 5 | **Matoki** v0: lexer → parser → sema → IR (katlama + CSE) → wasm SIMD codegen, ir_eval, diferansiyel test, JIT | ✅ (`docs/MATOKI.md`) |
 | 5b | Matoki: mat3/mat4 ✅, discard ✅, exp/log/pow ✅, önsöz (çizim başına) ✅, skaler quad-sabitler ✅; uniform özelleştirme + varyant önbelleği | ⏳ |
 | 6 | M8 Faz 2'nin Matoki kısmı: dFdx/dFdy/fwidth, texel_fetch/bitcast, @mipmap, mip_level, sample_level, @bilinear | ✅ (C ile bit-bit) |
@@ -34,4 +34,5 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 14c | M10 Faz 3: Matoki demo varsayılanı (önsöz, skaler quad-sabitler, seviye tabloları); C ile bit-bit | ✅ |
 | 14d | M10 Faz 4: paralel raster (9), tek/çok thread bit-bit | ✅ |
 | 14e | M10 Faz 5: anizotropik süzme + kumaş ışığı (lit_hq.mtk), MSAA 4x | ✅ (D28) |
-| 14f | M10 Faz 6: geometri aşaması paralel/SIMD (4c), fizik iş sistemine | ⏳ |
+| 14f | M10 Faz 6: Matoki vertex shader'ları + paralel geometri (4c), dalgalı göl | ✅ (D29) |
+| 14g | M10 Faz 7: Matoki tam matris / uniform dizisi / dallanma; ışık + gölge | ⏳ |

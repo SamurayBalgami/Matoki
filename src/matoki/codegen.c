@@ -9,6 +9,7 @@
 #include "core/jobs.h"
 #include "core/math.h"
 #include "core/mem.h"
+#include "raster/shade_abi.h"
 
 typedef struct WB {
     u8* p;
@@ -483,6 +484,11 @@ static b32 emit_vector(const Emit* e, u32 i) {
         simd(body, S_V128_LOAD);
         memarg(body, 4, Q_VAR_OFS + in->imm * 16);
         break;
+    case IR_ATTR:
+        lget(body, e->q);
+        simd(body, S_V128_LOAD);
+        memarg(body, 4, VIN_ATTR_OFS + in->imm * 16);
+        break;
     case IR_FRAG_X:
     case IR_FRAG_Y: {
         b32 is_x = in->op == IR_FRAG_X;
@@ -641,6 +647,7 @@ static void body_needs(const IrFunc* f, Plan* pl, u32 kind) {
     } else {
         pl->need_v[f->out] = 1;
         if (f->kill) pl->need_v[f->kill] = 1;
+        for (u32 k = 0; k < f->nxout; k++) pl->need_v[f->xout[k]] = 1;
     }
 }
 
@@ -698,11 +705,17 @@ static b32 emit_body(WB* body, const IrFunc* f, Plan* pl, u32 kind) {
             memarg(body, 4, pl->slot[i] * 16);
         }
     } else {
-        /* *out = sonuç */
+        /* *out = sonuç; vert'te ek çıktılar (pos.yzw, varying'ler) kendi ofsetlerine */
         lget(body, 2);
         vget(&e, f->out);
         simd(body, S_V128_STORE);
         memarg(body, 4, 0);
+        for (u32 k = 0; k < f->nxout; k++) {
+            lget(body, 2);
+            vget(&e, f->xout[k]);
+            simd(body, S_V128_STORE);
+            memarg(body, 4, f->xout_ofs[k]);
+        }
         if (f->kill) {
             /* q->kill = i32x4.bitmask(kill) */
             lget(body, 0);
@@ -742,7 +755,7 @@ static void plan_make(const IrFunc* f, Arena* a, Plan* pl) {
         u32 op = in->op;
         if (cheap_source(op)) {
             pl->du[i] = 1;
-        } else if (op == IR_VARYING || op == IR_FRAG_X || op == IR_FRAG_Y || op == IR_FRAG_Z ||
+        } else if (op == IR_VARYING || op == IR_ATTR || op == IR_FRAG_X || op == IR_FRAG_Y || op == IR_FRAG_Z ||
                    op == IR_DERIV_X || op == IR_DERIV_Y) {
             pl->du[i] = 0;
         } else {
@@ -762,6 +775,10 @@ static void plan_make(const IrFunc* f, Arena* a, Plan* pl) {
     }
     if (pl->du[f->out] && !cheap_source(f->ins[f->out].op)) pl->hoist[f->out] = 1;
     if (f->kill && pl->du[f->kill] && !cheap_source(f->ins[f->kill].op)) pl->hoist[f->kill] = 1;
+    for (u32 k = 0; k < f->nxout; k++) {
+        IrRef x = f->xout[k];
+        if (pl->du[x] && !cheap_source(f->ins[x].op)) pl->hoist[x] = 1;
+    }
     pl->nhoist = 0;
     for (u32 i = 1; i < n; i++) {
         if (pl->hoist[i]) pl->slot[i] = pl->nhoist++;
@@ -769,6 +786,7 @@ static void plan_make(const IrFunc* f, Arena* a, Plan* pl) {
     /* gereksinimler: geriye doğru; FAST önbellekteki değerlerde durur, PRELUDE önbellek köklerinden başlar */
     pl->need_fast[f->out] = 1;
     if (f->kill) pl->need_fast[f->kill] = 1;
+    for (u32 k = 0; k < f->nxout; k++) pl->need_fast[f->xout[k]] = 1;
     for (u32 i = n - 1; i >= 1; i--) {
         const IrInst* in = &f->ins[i];
         if (pl->hoist[i]) pl->need_pre[i] = 1;

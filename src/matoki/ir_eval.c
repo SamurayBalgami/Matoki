@@ -1,11 +1,14 @@
 /* matoki/ir_eval.c — IR yorumlayıcısı (4 lane, skaler).
  * Kaynak işlemlerinin (uniform/varying/frag/doku) ve türevlerin semantiği burada tanımlanır;
  * saf lane işlemleri ir_eval_lane'den gelir (sabit katlama ile ortak). Tüm komutlar
- * değerlendirilir (ölü olanlar da); doku okumaları lower tarafından sınırlar içinde tutulur. */
+ * değerlendirilir (ölü olanlar da); doku okumaları lower tarafından sınırlar içinde tutulur.
+ * Girdi/çıktı aşamaya göre: frag ShadeQuad → renk (16 bayt), vert VertexIn → VertexOut (ek çıktılar ofsetlerinde). */
 #include "matoki/ir_eval.h"
 #include "core/math.h"
 
-void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[4], Arena* scratch) {
+void ir_eval_io(const IrFunc* f, const void* input, const void* uniforms, void* output, Arena* scratch) {
+    const ShadeQuad* q = (const ShadeQuad*)input;     /* frag aşaması */
+    const VertexIn* vin = (const VertexIn*)input;     /* vert aşaması */
     usize mark = arena_mark(scratch);
     u32 (*v)[4] = (u32(*)[4])arena_alloc_nozero(scratch, sizeof(u32) * 4 * f->count, 16);
     const u8* uni = (const u8*)uniforms;
@@ -23,6 +26,9 @@ void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[
         }
         case IR_VARYING:
             for (u32 l = 0; l < 4; l++) r[l] = m_f32_bits(q->var[in->imm][l]);
+            break;
+        case IR_ATTR:
+            for (u32 l = 0; l < 4; l++) r[l] = m_f32_bits(vin->attr[in->imm][l]);
             break;
         case IR_FRAG_X:
             for (u32 l = 0; l < 4; l++) r[l] = m_f32_bits((f32)(q->x + (i32)(l & 1)) + 0.5f);
@@ -70,7 +76,11 @@ void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[
         }
         }
     }
-    for (u32 l = 0; l < 4; l++) out[l] = v[f->out][l];
+    u8* ob = (u8*)output;
+    for (u32 l = 0; l < 4; l++) ((u32*)ob)[l] = v[f->out][l];
+    for (u32 k = 0; k < f->nxout; k++) {
+        for (u32 l = 0; l < 4; l++) ((u32*)(ob + f->xout_ofs[k]))[l] = v[f->xout[k]][l];
+    }
     if (f->kill) {
         /* i32x4.bitmask ile aynı: her lane'in işaret biti; q raster'da yazılabilir (shade_abi.h) */
         u32 bits = 0;
@@ -78,6 +88,10 @@ void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[
         ((ShadeQuad*)q)->kill = bits;
     }
     arena_reset(scratch, mark);
+}
+
+void ir_eval(const IrFunc* f, const ShadeQuad* q, const void* uniforms, u32 out[4], Arena* scratch) {
+    ir_eval_io(f, q, uniforms, out, scratch);
 }
 
 void ir_eval_shade(const ShadeQuad* q, const void* ctx, u32 out[4]) {

@@ -108,25 +108,70 @@ void raster_set_mode(Raster* r, RasterMode mode) { r->mode = mode < RASTER_MODE_
 
 void raster_reset_stats(Raster* r) { mem_zero(&r->stats, sizeof(r->stats)); }
 
-/* ---- bin'leme ---- */
+/* ---- bin'leme: parçalar (chunk) ----
+ * Her parçanın karo başına kendi kutu listesi var. Flush bir karoyu işlerken parçaları sırayla gezer →
+ * gönderim sırası korunur. Seri yol (raster_triangle) son "seri parça"ya yazar; paralel kurulum
+ * (raster_triangle_to) ana thread'in önceden ayırdığı parçalara, atomik arena ayırmasıyla yazar. */
+#define RASTER_MAX_CHUNKS 4096
 
-static void bins_alloc(Raster* r) {
+static void chunks_reset(Raster* r) {
     r->tiles_x = (r->fb->w + RASTER_TILE - 1) >> RASTER_TILE_SHIFT;
     r->tiles_y = (r->fb->h + RASTER_TILE - 1) >> RASTER_TILE_SHIFT;
-    r->bins = ARENA_ARRAY(r->arena, Bin, (usize)r->tiles_x * (usize)r->tiles_y);
+    r->chunk_bins = ARENA_ARRAY(r->arena, Bin*, RASTER_MAX_CHUNKS);
+    r->nchunks = 0;
+    r->serial_chunk = -1;
     r->pending = 0;
+    r->overflow = 0;
 }
 
 void raster_begin(Raster* r, Arena* arena) {
     r->arena = arena;
     r->arena_mark = arena_mark(arena);
-    bins_alloc(r);
+    chunks_reset(r);
 }
 
-static void bin_push(Raster* r, Bin* b, TriSetup* t, u32 full) {
+static u32 tiles_count(const Raster* r) { return (u32)(r->tiles_x * r->tiles_y); }
+
+u32 raster_chunks_alloc(Raster* r, u32 n) {
+    if (!r->chunk_bins) sys_panic("raster_chunks_alloc: önce raster_begin");
+    if (r->nchunks + n > RASTER_MAX_CHUNKS) raster_flush(r);
+    if (r->nchunks + n > RASTER_MAX_CHUNKS) sys_panic("raster_chunks_alloc: parça sınırı");
+    u32 first = r->nchunks;
+    for (u32 i = 0; i < n; i++) r->chunk_bins[r->nchunks++] = ARENA_ARRAY(r->arena, Bin, tiles_count(r));
+    r->serial_chunk = -1;   /* sonraki seri üçgenler yeni parçaya (sıra) */
+    return first;
+}
+
+usize raster_room(const Raster* r) { return r->arena->cap - r->arena->used; }
+
+/* Paralel kurulumda iş başına dilim: arenadan tek atomik işlemle RASTER_SLAB bayt, içinden atomiksiz
+ * ayırma → thread'ler ortak sayaçta çekişmez (ölçüm: 16 thread'de kurulum 12.6 ms → bkz. M10 Faz 6). */
+#define RASTER_SLAB (16u * 1024u)
+
+static void* ralloc(Raster* r, usize size, usize align, RasterAlloc* ra) {
+    if (!ra) return arena_alloc_nozero(r->arena, size, align);
+    for (;;) {
+        uptr p = ((uptr)ra->cur + (align - 1)) & ~(uptr)(align - 1);
+        if (ra->cur && p + size <= (uptr)ra->end) {
+            ra->cur = (u8*)(p + size);
+            return (void*)p;
+        }
+        usize len = size + align > RASTER_SLAB ? size + align : RASTER_SLAB;
+        u8* slab = (u8*)arena_alloc_atomic(r->arena, len, 16);
+        if (!slab) {
+            __atomic_store_n(&r->overflow, 1u, __ATOMIC_RELAXED);
+            return NULL;
+        }
+        ra->cur = slab;
+        ra->end = slab + len;
+    }
+}
+
+static b32 bin_push(Raster* r, Bin* b, TriSetup* t, u32 full, RasterAlloc* ra) {
     BinChunk* c = b->tail;
     if (!c || c->count == BIN_CHUNK_ITEMS) {
-        BinChunk* n = (BinChunk*)arena_alloc_nozero(r->arena, sizeof(BinChunk), _Alignof(BinChunk));
+        BinChunk* n = (BinChunk*)ralloc(r, sizeof(BinChunk), _Alignof(BinChunk), ra);
+        if (!n) return FALSE;
         n->next = NULL;
         n->count = 0;
         if (c) c->next = n;
@@ -137,6 +182,7 @@ static void bin_push(Raster* r, Bin* b, TriSetup* t, u32 full) {
     c->items[c->count].t = t;
     c->items[c->count].full = full;
     c->count++;
+    return TRUE;
 }
 
 /* ---- flush: karolar thread'lere dağıtılır (jobs.h) ----
@@ -165,49 +211,56 @@ static void flush_tile(void* ctx, u32 index, u32 tid) {
     const Framebuffer* fb = r->fb;
     u32 tile = fc->tiles[index];
     i32 tx = (i32)(tile % (u32)r->tiles_x), ty = (i32)(tile / (u32)r->tiles_x);
-    const Bin* b = &r->bins[tile];
     i32 x0 = tx << RASTER_TILE_SHIFT, y0 = ty << RASTER_TILE_SHIFT;
     i32 x1 = MIN(x0 + RASTER_TILE - 1, fb->w - 1), y1 = MIN(y0 + RASTER_TILE - 1, fb->h - 1);
-    for (const BinChunk* c = b->head; c; c = c->next) {
-        for (u32 i = 0; i < c->count; i++) {
-            TriSetup* t = c->items[i].t;
-            /* son çağrılan önsöz: bu thread'in önbelleği (önsöz, uniforms) çifti değişene kadar geçerli */
-            if (t->prelude && (t->prelude != th->last_pre || t->uniforms != th->last_uni)) {
-                t->prelude(t->uniforms);
-                th->last_pre = t->prelude;
-                th->last_uni = t->uniforms;
-                th->st.preludes++;
-            }
-            if (fb_msaa(fb)) {
+    for (u32 ch = 0; ch < r->nchunks; ch++) {
+        for (const BinChunk* c = r->chunk_bins[ch][tile].head; c; c = c->next) {
+            for (u32 i = 0; i < c->count; i++) {
+                TriSetup* t = c->items[i].t;
+                /* son çağrılan önsöz: bu thread'in önbelleği (önsöz, uniforms) çifti değişene kadar geçerli */
+                if (t->prelude && (t->prelude != th->last_pre || t->uniforms != th->last_uni)) {
+                    t->prelude(t->uniforms);
+                    th->last_pre = t->prelude;
+                    th->last_uni = t->uniforms;
+                    th->st.preludes++;
+                }
+                if (fb_msaa(fb)) {
+#if defined(__wasm_simd128__)
+                    if (r->mode == RASTER_MODE_SIMD) {
+                        raster_tile_msaa_simd(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
+                        continue;
+                    }
+#endif
+                    raster_tile_msaa(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
+                    continue;
+                }
 #if defined(__wasm_simd128__)
                 if (r->mode == RASTER_MODE_SIMD) {
-                    raster_tile_msaa_simd(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
+                    raster_tile_simd(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
                     continue;
                 }
 #endif
-                raster_tile_msaa(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
-                continue;
+                raster_tile_scalar(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
             }
-#if defined(__wasm_simd128__)
-            if (r->mode == RASTER_MODE_SIMD) {
-                raster_tile_simd(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
-                continue;
-            }
-#endif
-            raster_tile_scalar(r, t, x0, y0, x1, y1, c->items[i].full, &th->st);
         }
     }
 }
 
 void raster_flush(Raster* r) {
-    if (!r->bins) return;
+    if (!r->chunk_bins) return;
     r->stats.flushes++;
+    if (r->overflow) sys_panic("raster arena paralel kurulumda doldu (pipeline bütçesi)");
     if (r->pending) {
-        u32 n_tiles = (u32)(r->tiles_x * r->tiles_y);
+        u32 n_tiles = tiles_count(r);
         u32* tiles = ARENA_ARRAY(r->arena, u32, n_tiles);
         u32 n = 0;
         for (u32 i = 0; i < n_tiles; i++) {
-            if (r->bins[i].head) tiles[n++] = i;
+            for (u32 ch = 0; ch < r->nchunks; ch++) {
+                if (r->chunk_bins[ch][i].head) {
+                    tiles[n++] = i;
+                    break;
+                }
+            }
         }
         FlushCtx* fc = &g_flush;
         mem_zero(fc, sizeof(*fc));
@@ -222,8 +275,9 @@ void raster_flush(Raster* r) {
             r->stats.preludes += s->preludes;
         }
     }
+    if (r->arena->used > r->arena->peak) r->arena->peak = r->arena->used;
     arena_reset(r->arena, r->arena_mark);
-    bins_alloc(r);
+    chunks_reset(r);
 }
 
 /* ---- kurulum ---- */
@@ -254,17 +308,20 @@ static inline i64 edge_at(const EdgeEq* e, i64 px, i64 py) { return e->c + e->sx
 
 #define RASTER_ARENA_SLACK (64u * 1024u)
 
-void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, const RasterVert* vc) {
+/* Kurulum + bin'leme (seri ve paralel ortak). Ön kontroller (alan, cull, sınır kutusu) önce →
+ * bellek yalnızca gerçekten çizilecek üçgen için ayrılır. */
+static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVert* va, const RasterVert* vb,
+                      const RasterVert* vc, RasterStats* st, RasterAlloc* ra) {
+    const b32 atomic = ra != NULL;
     Framebuffer* fb = r->fb;
-    r->stats.tris_in++;
-    if (!r->shade) return;
-    if (!r->bins) sys_panic("raster_triangle: önce raster_begin");
+    st->tris_in++;
+    if (!s->shade) return;
 
     const RasterVert* v[3] = { va, vb, vc };
     for (u32 i = 0; i < 3; i++) {
         /* NaN da bu testi geçemez */
         if (!(m_absf(v[i]->x) <= RASTER_MAX_COORD && m_absf(v[i]->y) <= RASTER_MAX_COORD)) {
-            r->stats.tris_overflow++;
+            st->tris_overflow++;
             return;
         }
     }
@@ -276,13 +333,13 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
     }
     i64 area = ((i64)X[1] - X[0]) * ((i64)Y[2] - Y[0]) - ((i64)Y[1] - Y[0]) * ((i64)X[2] - X[0]);
     if (area == 0) {
-        r->stats.tris_degenerate++;
+        st->tris_degenerate++;
         return;
     }
     /* NDC'de CCW (ön yüz) → y aşağı ekranda alan < 0. Kenar fonksiyonları alan > 0 bekler. */
     b32 back = area > 0;
-    if ((r->cull == CULL_BACK && back) || (r->cull == CULL_FRONT && !back)) {
-        r->stats.tris_culled++;
+    if ((s->cull == CULL_BACK && back) || (s->cull == CULL_FRONT && !back)) {
+        st->tris_culled++;
         return;
     }
     if (area < 0) {
@@ -304,7 +361,7 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
     if (maxx > fb->w - 1) maxx = fb->w - 1;
     if (maxy > fb->h - 1) maxy = fb->h - 1;
     if (minx > maxx || miny > maxy) {
-        r->stats.tris_empty++;
+        st->tris_empty++;
         return;
     }
 
@@ -314,29 +371,35 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
     f32 e2x = v[2]->x - x0, e2y = v[2]->y - y0;
     f32 det = e1x * e2y - e1y * e2x;
     if (det == 0.0f) {
-        r->stats.tris_degenerate++;
+        st->tris_degenerate++;
         return;
     }
 
     i32 tx0 = (i32)minx >> RASTER_TILE_SHIFT, tx1 = (i32)maxx >> RASTER_TILE_SHIFT;
     i32 ty0 = (i32)miny >> RASTER_TILE_SHIFT, ty1 = (i32)maxy >> RASTER_TILE_SHIFT;
-    u32 nv = r->var_count;
+    u32 nv = s->var_count > SHADE_MAX_VARS ? SHADE_MAX_VARS : s->var_count;
     usize tri_bytes = sizeof(TriSetup) + sizeof(AttrPlane) * nv;
-    usize need = tri_bytes + sizeof(BinChunk) * (usize)((tx1 - tx0 + 1) * (ty1 - ty0 + 1)) + RASTER_ARENA_SLACK;
-    if (r->arena->cap - r->arena->used < need) {
-        raster_flush(r);
-        if (r->arena->cap - r->arena->used < need) sys_panic("raster arena çok küçük");
+    if (!atomic) {
+        usize need = tri_bytes + sizeof(BinChunk) * (usize)((tx1 - tx0 + 1) * (ty1 - ty0 + 1)) + RASTER_ARENA_SLACK;
+        if (r->arena->cap - r->arena->used < need) {
+            raster_flush(r);
+            if (r->arena->cap - r->arena->used < need) sys_panic("raster arena çok küçük");
+            /* flush parçaları sıfırladı: seri parça yeniden açılır */
+            r->serial_chunk = (i32)raster_chunks_alloc(r, 1);
+            bins = r->chunk_bins[r->serial_chunk];
+        }
     }
 
-    TriSetup* t = (TriSetup*)arena_alloc_nozero(r->arena, tri_bytes, _Alignof(TriSetup));
-    t->shade = r->shade;
-    t->prelude = r->prelude;
-    t->uniforms = r->uniforms;
+    TriSetup* t = (TriSetup*)ralloc(r, tri_bytes, _Alignof(TriSetup), ra);
+    if (!t) return;
+    t->shade = s->shade;
+    t->prelude = s->prelude;
+    t->uniforms = s->uniforms;
     t->var_count = nv;
     const b32 has_depth = msaa ? fb->depth_ms != NULL : fb->depth != NULL;
-    t->depth_test = (u8)(r->depth_test && has_depth);
-    t->depth_write = (u8)(r->depth_write && has_depth);
-    t->depth_func = (u8)r->depth_func;
+    t->depth_test = (u8)(s->depth_test && has_depth);
+    t->depth_write = (u8)(s->depth_write && has_depth);
+    t->depth_func = (u8)s->depth_func;
     t->drawn = 0;
     t->minx = (i32)minx;
     t->miny = (i32)miny;
@@ -357,10 +420,11 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
 
     /* Bin'leme: tek karoluk üçgenlerde test yok; aksi halde karo köşe piksel merkezlerinde
      * her kenarı değerlendir: hepsi < 0 → karo dışarıda; hepsi >= 0 → o kenar için tam içeride. */
-    r->pending++;
+    if (atomic) ra->tris++;   /* r->pending'e iş sonunda bir kez eklenir (raster_alloc_done) */
+    else r->pending++;
     if (tx0 == tx1 && ty0 == ty1) {
-        bin_push(r, &r->bins[ty0 * r->tiles_x + tx0], t, 0);
-        r->stats.bin_items++;
+        bin_push(r, &bins[ty0 * r->tiles_x + tx0], t, 0, ra);
+        st->bin_items++;
         return;
     }
     for (i32 ty = ty0; ty <= ty1; ty++) {
@@ -383,13 +447,29 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
                 if ((a | b | c | d) < 0) full = 0;
             }
             if (outside) continue;
-            bin_push(r, &r->bins[ty * r->tiles_x + tx], t, full);
-            r->stats.bin_items++;
-            r->stats.bin_full += full;
+            if (!bin_push(r, &bins[ty * r->tiles_x + tx], t, full, ra)) return;
+            st->bin_items++;
+            st->bin_full += full;
         }
     }
 }
 
+void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, const RasterVert* vc) {
+    if (!r->chunk_bins) sys_panic("raster_triangle: önce raster_begin");
+    if (r->serial_chunk < 0) r->serial_chunk = (i32)raster_chunks_alloc(r, 1);
+    RasterState s = { r->shade, r->prelude, r->uniforms, r->var_count, r->cull, r->depth_test, r->depth_write, r->depth_func };
+    tri_setup(r, r->chunk_bins[r->serial_chunk], &s, va, vb, vc, &r->stats, NULL);
+}
+
+void raster_triangle_to(Raster* r, u32 chunk, const RasterState* s, const RasterVert* a, const RasterVert* b,
+                        const RasterVert* c, RasterStats* st, RasterAlloc* ra) {
+    tri_setup(r, r->chunk_bins[chunk], s, a, b, c, st, ra);
+}
+
+void raster_alloc_done(Raster* r, RasterAlloc* ra) {
+    if (ra->tris) __atomic_fetch_add(&r->pending, ra->tris, __ATOMIC_RELAXED);
+    ra->tris = 0;
+}
 /* ---- skaler karo döngüsü (referans) ---- */
 
 void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1, b32 full, RasterStats* st) {

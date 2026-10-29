@@ -231,6 +231,24 @@ discard SPMD kalır: kod akmaya devam eder, yalnızca etkin yol maskesi (iç iç
   Skaler yol kâhin (test: msaa_simd_matches_scalar). Temizleme ve çözümleme iş sistemiyle paralel.
 - **Maliyet (16 thread, 640×360):** HQ + MSAA kare 3.6–5.3 ms (önceki varsayılan 0.8–2.7 ms); 720p 11–23 ms.
 
+## D29. Matoki vertex aşaması ve paralel geometri (2026-10-29)
+- **ABI:** `VertexFn(VertexIn*, uniforms, VertexOut*)`, bir çağrı 4 köşe (lane = köşe), wasm imzası ShadeFn ile
+  aynı → JIT, önsöz (D26) ve thread önbelleği (D27) değişmeden. Köşe girdileri standart yuvalarda (ATTR3D_*),
+  uniform bloğu `VertUniforms` (çizim başına boru hattı doldurur: model, view_proj, normal_mat, time, params[8]).
+- **Dil:** `attribute`, `fn vert() -> vec4`; vert'te varying'ler 0 ile başlayan yereller (if'te select ile
+  birleşir). IR: `IR_ATTR` kaynağı, `out` + `xout[]` ek çıktılar (ofsetli v128 saklama); ir_eval genel girdi/çıktı.
+  Aşama denetimi lower'da (yalnız girişten erişilen kod): türev, discard, otomatik mip vert'te hata.
+- **C kâhini:** `vert_std_c` eski sabit kodlu dönüşüm; `std_vert.mtk` onunla bit-bit → Matoki varsayılan oldu
+  ve bütün kare hash'leri değişmedi. Tek thread'de Matoki (SIMD, 4 köşe) C'den hızlı: 1. görünüm 3.22 → 1.93 ms.
+- **Ertelenmiş, paralel geometri:** `pipe_draw` yalnız eler ve kaydeder; `pipe_end` partiler hâlinde (arena
+  bütçesi) köşe işleri (128 köşe) ve üçgen parçaları (256 üçgen) iş sistemine dağıtır. Raster'da karo kutuları
+  parça başına (`raster_chunks_alloc`, `raster_triangle_to`); flush karo içinde parçaları sırayla gezer →
+  gönderim sırası ve çıktı thread sayısından bağımsız (test + hash). Eski `raster_triangle` "seri parça" ile aynen.
+- **Çekişme:** ilk sürüm her ayırmada ortak arenaya atomik CAS yapıyordu: 16 thread'de kurulum 6.2 → 12.6 ms
+  (yavaşladı). İş başına 16 KB dilim (tek atomik) + bekleyen sayısı iş sonunda: 5.8 → 0.86 ms (6.7×).
+- **Ölçüm (16 thread, HQ + MSAA, 640×360):** geometri 1. görünüm 4.10 → 0.84 ms, 3. görünüm 3.75 → 0.76 ms;
+  göl (33 bin üçgen, wave_vert) 1.08 ms.
+
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

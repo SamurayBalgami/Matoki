@@ -16,6 +16,8 @@ void  arena_init(Arena* a, void* mem, usize cap);
 b32   arena_init_sys(Arena* a, usize cap);
 void* arena_alloc(Arena* a, usize size, usize align);
 void* arena_alloc_nozero(Arena* a, usize size, usize align);
+/* thread güvenli (CAS), sıfırlamaz; dolarsa NULL (panik yok: worker'da tuzak = kilitlenme). peak güncellenmez. */
+void* arena_alloc_atomic(Arena* a, usize size, usize align);
 usize arena_mark(const Arena* a);
 void  arena_reset(Arena* a, usize mark);
 

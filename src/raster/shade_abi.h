@@ -22,6 +22,30 @@ typedef struct ShadeQuad {
 /* out[l] = 0xAABBGGRR renk; yalnızca mask'taki lane'ler yazılır. */
 typedef void (*ShadeFn)(const ShadeQuad* q, const void* uniforms, u32 out[4]);
 
+/* ---- vertex aşaması: bir çağrı 4 köşe (lane = köşe) ----
+ * attr[k][lane]: köşe girdisi bileşeni k (boru hattının standart yerleşimi gfx3d/pipeline.h ATTR3D_*).
+ * count: geçerli lane sayısı (1..4); geçersiz lane'ler son geçerli köşenin kopyasıdır.
+ * Çıktı: pos = klip uzayı (x, y, z, w), var = fragment aşamasına giden varying'ler (ShadeQuad.var ile aynı yuvalar).
+ * İmza wasm'da ShadeFn ile aynı (i32, i32, i32): Matoki JIT, önsöz ve thread önbelleği değişmeden çalışır. */
+#define VERT_MAX_ATTRS 16
+
+typedef struct VertexIn {
+    u32 count;
+    u32 _pad[3];
+    f32 attr[VERT_MAX_ATTRS][4];
+} VertexIn;
+
+typedef struct VertexOut {
+    f32 pos[4][4];
+    f32 var[SHADE_MAX_VARS][4];
+} VertexOut;
+
+typedef void (*VertexFn)(const VertexIn* in, const void* uniforms, VertexOut* out);
+
+#define VIN_ATTR_OFS  16    /* VertexIn.attr */
+#define VOUT_POS_OFS  0     /* VertexOut.pos */
+#define VOUT_VAR_OFS  64    /* VertexOut.var */
+
 /* İsteğe bağlı çizim önsözü: uniform'lardan türeyen değerleri shader'ın önbelleğine yazar.
  * Raster, önsözü olan bir üçgeni gölgelemeden önce (önsöz, uniforms) çifti değiştiyse çağırır;
  * uniform içeriği flush boyunca sabit olmalıdır (zaten sözleşme). */
