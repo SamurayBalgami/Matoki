@@ -1,0 +1,64 @@
+# M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
+
+Durum: PLAN (onay bekliyor). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782, 2026-10-29).
+
+## Durum tespiti (ölçüm)
+- Ortak git geçmişi yok (onlar 83 commit / bizim 9). Aynı yoldaki 55 dosyanın hiçbiri aynı değil → `git merge`
+  değil, **seçerek taşıma**: her alt sistem bizim kurallara (adlandırma, arena, `build.py`, `tests/test.h`) uyarlanır.
+- Onların `src/` ~48 bin satır. Çekirdek tipleri aynı düzende (`Vec3`, `Mat4` sütun öncelikli), ama adlar farklı:
+
+| onların | bizim |
+|---|---|
+| `vec3_add`, `vec3()`, `m_sin`, `m_sqrt`, `m_max` | `v3_add`, `v3()`, `m_sinf`, `m_sqrtf`, `m_maxf` |
+| `arena_push` (225 yerde), `arena_pop_to`, `arena_sub` | `arena_alloc` / `ARENA_ARRAY`, `arena_reset`, — |
+| `thread/job.h` (`job_parallel_for`) | `core/jobs.h` (`jobs_parallel_for`, belirlenimci) |
+| `mtk_compile_ir`, `mtk_compile_wasm`, `g3d_*` | `matoki_compile`, `matoki_jit`, `pipe_*` |
+
+- **Lisans dosyası yok** → kod "tüm hakları saklı". Taşımadan önce arkadaşın yazılı izni şart (onlar bizim fizik için
+  aynı izni aldı). Her taşınan dosyanın başına: "Xassemblianist/MatokiEngine'den uyarlandı (izinle)".
+
+## Bağımlılık haritası (onların src/)
+| alt sistem | satır | bağımlı olduğu | zorluk |
+|---|---|---|---|
+| audio (sentez + halka tampon + AudioWorklet) | 551 | core, plat, thread | düşük |
+| gfx2d | 484 | core, raster | düşük |
+| font (TrueType atlas, bitmap font) | 2 424 | core, raster | düşük |
+| asset (JSON, base64, glTF/GLB) | 1 814 | anim, core, gfx3d, img, plat, raster | orta |
+| anim (iskelet, LBS kaplama, klip) | 951 | core, gfx3d, scene | orta |
+| scene (ECS, dönüşüm, JSON kayıt) | 1 214 | asset, core | düşük |
+| sim (rollback / replay) | 709 | core, phys, scene | orta (bizim phys API) |
+| ui (immediate-mode UI, canlı Matoki editörü) | 1 892 | core, matoki, plat, raster | orta (Matoki API farklı) |
+| mbin / masm (wasm ikili üretici, WAT birleştirici, çözücü) | 5 869 | core | orta |
+| thread (MPMC kuyruk, TLS, JIT eşitleme) | 912 | bench, core, jit, masm, mbin, plat | yüksek (bizim jobs ile çakışır) |
+| gpu (WebGPU RHI, komut akışı) + gpu.js | 1 458 + 28 KB JS | core, gfx3d, plat, raster, thread | yüksek; **onlarda da çalışmıyor** (M15_C: siyah tuval) |
+| app (oyunlar, demolar) | 5 781 | her şey | alınmaz; demolar bizim demo.c üzerinde yeniden |
+
+## Kararlar (önce verilmeli → docs/DECISIONS.md D37)
+1. **İzin + lisans:** arkadaştan yazılı izin; iki depo için ortak bir lisans önerisi (ör. MIT) — kullanıcı ve arkadaş karar verir.
+2. **WebGPU:** bu depo "GPU kullanmadan yazılım render" (AGENTS.md). WebGPU ikinci arka uç olarak alınacaksa proje
+   tanımı değişir. Öneri: yazılım render ana yol kalır, WebGPU isteğe bağlı arka uç; onlarda çalışır hale gelmeden alınmaz.
+3. **Tek iş sistemi:** bizim `core/jobs` (belirlenimci, bit-bit testli) kalır; onların `thread/` kullanımları buna çevrilir.
+4. **Adlandırma:** bizim adlar kalır; taşıma bir eşleme tablosuyla betikle yeniden adlandırılır (uyum başlığı değil →
+   iki ad kümesi depoda kalıcı olmasın). Anlam farkı olan çiftler (ör. `mat4_perspective` derinlik aralığı, `arena_push`
+   sıfırlıyor mu) taşımadan önce testle doğrulanır.
+5. **Derleme:** `build.py` kalır; onların `make check` kural denetimi `build.py check` olarak eklenebilir.
+
+## Fazlar (her faz: taşı → yeniden adlandır → `-Werror` derle → onların testlerini `tests/` çatısına taşı → ölç → commit)
+| faz | içerik | ~satır | çıktı / kabul |
+|---|---|---|---|
+| 0 | izin, lisans, D37, yeniden adlandırma betiği (`tools/port_names.py`) + eşleme tablosu | — | betik onların bir dosyasını bizim adlarla derler |
+| 1 | img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
+| 2 | font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi |
+| 3 | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
+| 4 | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
+| 5 | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
+| 6 | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
+| 7 | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
+| 8 | (karar 2'ye bağlı) mbin/masm + WebGPU RHI + Matoki→WGSL, onlarda M15_C düzeldikten sonra | ~9 000 | yazılım ve GPU yolu aynı sahnede görsel karşılaştırma |
+
+Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.mjs`) mevcut görünümlerde değişmemeli.
+
+## Riskler
+- Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.
+- `thread/` ↔ `core/jobs` çevirisi belirlenimciliği bozabilir → 1T ↔ 16T hash testi her fazda.
+- Onların kodu ileride değişir → taşınan sürümün commit'i (0a7b782) dosya başına not edilir; sonraki senkron elle.
