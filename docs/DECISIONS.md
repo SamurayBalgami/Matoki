@@ -263,6 +263,37 @@ gri duvar, tek renk gök.
 - **Maliyet (node, 16 thread, HQ + MSAA, önceki commit ↔ bu, dönüşümlü):** kare 1.4–2.5× (ör. görünüm 1
   2.60 → 5.47 ms); gök kubbesi bunun 0.4–1.0 ms'si. Ucuz yol: `L` ile Matoki (mip, tek örnek) shader'ı.
 
+## D31. Küreler için hıza bağlı spekülatif temas + çarpma anı hızı (2026-10-29)
+Sorun: üst üste bırakılan toplar (sahne 8) kesin olay çözümünden %6–40 sapıyordu. İki neden: (1) sabit 2 cm'lik
+spekülatif pay, 10 m/s yaklaşan iki dinamik topu yakalamıyordu (CCD yalnızca statiklere bakar) → toplar 13 cm iç içe
+geçip ayrılırken restitüsyon yanlış hızla uygulanıyordu; (2) restitüsyon hedefi adım başındaki hızdı, zemine düşen
+top g·dt kadar yavaş sayılıyordu (her sıçramada ~%6 yükseklik kaybı).
+- **Pay:** küre-küre ve küre-düzlem çiftlerinde `PHYS_MARGIN + yaklaşma hızı·dt` (`spec_margin`, `phys_collide_margin`);
+  uyanık kürelerin AABB'si adım içi yol kadar uzatılır (geniş faz). Diğer şekiller değişmedi.
+- **Çarpma hızı:** boşluklu temasta `rel_vel = −√(v² + 2·a·s)` (a = göreli dış ivme, s = boşluk).
+- **Sınır:** adım başına tek restitüsyon geçişi → bir adımda birden çok çarpışma (hafif top ağır topla zemin arasında
+  sıkışınca) çözülemez. 240 Hz'te kesin çözümle %1 içinde, 60 Hz'te ağır-üstte durumunda %15 sapma
+  (tests/test_phys_drop.c). Sahne 8 bu yüzden kare başına 4 adım (240 Hz) koşar.
+
+## D32. Gezegen çekimi g(h) = GM / (R + h)² (2026-10-29)
+`PhysWorld.planet_gm/planet_radius` > 0 iken her gövdeye `phys_gravity_at` (f64; Dünya'da birkaç metrenin etkisi
+~1e-6, f32'de birkaç ulp). Yön −y, h = merkez y'si (düz zemin y = 0). Varsayılan kapalı (sabit `gravity`).
+Doğrulama (tests/test_phys_fall.c, 240 Hz × 4 alt adım): sabit g'de t = √(2d/g), v = √(2gd) %0,1 içinde;
+R = 50 m'lik gezegende d = 50 m düşüş v = 22,142 (kesin √(2GM(1/r − 1/(r+d))) = 22,147; sabit g formülü 31,32 →
+motor gerçekten g(h) kullanıyor), süre radyal Kepler formülüyle %0,01. Enerji: yarı-örtük Euler'de kapalı form
+E_n − E_0 = −½·g·h·|v_n| (göreli h·v/2d), ölçülen sapma bu sınırla örtüşür (d = 2 m: 0,001633 ↔ 0,001631);
+birinci mertebe, birikmez, h → 0'da sıfır. Sahne 8 Dünya değerleriyle, `P` ile R = 20 m'lik gezegen.
+
+## D33. İstatistiksel okyanus: karmaşık genlik + Phillips spektrumu + FFT (2026-10-29)
+Tessendorf 2001: h̃0(k) = (ξr + iξi)·√(P(k)/2) (Gauss olasılıklı karmaşık genlik), h̃(k,t) = h̃0·e^{−iωt} +
+conj(h̃0(−k))·e^{iωt}, ω = √(g|k|). Sanal üstel faz dalgayı k yönünde yürütür; gerçek cos(kx)·cos(ωt) iki zıt
+yönlü dalganın toplamı olurdu. Rüzgâra karşı (k̂·ŵ < 0) genlikler `reverse` ile çarpılır; sahnede 0 → ters dalga yok.
+Testte rüzgâra karşı enerji tam 0; zaman kaydırmalı çapraz ilinti asimetrisi 0,74 (reverse = 1'de 0,01: duran dalga).
+- 64² ızgara, 40 m yama (göl mesh'i ile aynı → kenarlar periyodik). İki gerçek alan bir karmaşık FFT'de (Hermitsel):
+  (h + i·Sx), (Dx + i·Dz), Sz → 3 ters 2B FFT; Nyquist satırı sıfır (orada eğim Hermitsel olamaz).
+- Genlikler Parseval ile hedef rms'ye ölçeklenir (test: 0,2000). Faz f64'te 2π'ye indirgenir.
+- Alanlar CPU'da, köşeler her kare mesh'e yazılır (Matoki köşe aşamasında doku okuma yok); `O` ile Gerstner
+  (wave_vert.mtk) geri gelir. Bench görünümü 6'nın hash'i bu yüzden değişti. Okyanus maliyeti ayrıca ölçülmedi.
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

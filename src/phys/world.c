@@ -61,6 +61,8 @@ void phys_world_init(PhysWorld* w, Arena* a, u32 max_bodies, u32 max_manifolds) 
     w->sleep_ang = 0.05f;
     w->sleep_delay = 0.5f;
     w->gravity = v3(0, -9.81f, 0);
+    w->planet_gm = 0.0;
+    w->planet_radius = 0.0;
     w->solver = PHYS_SOLVER_SOFT;   /* D16: ölçümle seçildi */
     w->substeps = 4;
     w->contact_hertz = 30.0f;
@@ -386,6 +388,14 @@ void phys_wake_all(PhysWorld* w) {
     }
 }
 
+Vec3 phys_gravity_at(const PhysWorld* w, Vec3 pos) {
+    if (w->planet_gm <= 0.0) return w->gravity;
+    /* f64: Dünya'da R ≈ 6,4e6 m, birkaç metrelik h'nin etkisi ~1e-6 (f32'de birkaç ulp) */
+    f64 r = w->planet_radius + (f64)pos.y;
+    if (r < 1e-3) r = 1e-3;
+    return v3(0.0f, (f32)(-w->planet_gm / (r * r)), 0.0f);
+}
+
 /* yeni manifold: malzeme, yerel noktalar, önceki adımdan warm start; cur_count'u artırır */
 static void finalize_manifold(PhysWorld* w, Manifold* m) {
     u32 ia = m->a, ib = m->b;
@@ -415,6 +425,29 @@ static void finalize_manifold(PhysWorld* w, Manifold* m) {
     w->cur_count++;
 }
 
+/* Hıza bağlı spekülatif pay (küre-küre, küre-düzlem): bu adımda kapanabilecek boşluk = yaklaşma hızı · dt.
+ * Sabit 2 cm'lik pay hızlı iki dinamik topu (CCD yalnızca statiklere bakar) çarpışmadan önce yakalamaz;
+ * iç içe geçip ayrılırken restitüsyon yanlış hızla uygulanır (üst üste düşen toplar, D31). */
+static f32 spec_margin(const PhysWorld* w, const Body* A, const Body* B) {
+    if (!w->speculative || (A->shape != SHAPE_SPHERE && A->shape != SHAPE_PLANE)) return PHYS_MARGIN;
+    if (B->shape != SHAPE_SPHERE && B->shape != SHAPE_PLANE) return PHYS_MARGIN;
+    Vec3 n, dv;
+    if (A->shape == SHAPE_PLANE || B->shape == SHAPE_PLANE) {
+        const Body* s = A->shape == SHAPE_PLANE ? B : A;
+        const Body* p = A->shape == SHAPE_PLANE ? A : B;
+        n = p->plane_n;                                     /* düzlemden küreye */
+        dv = v3_add(s->vel, v3_scale(phys_gravity_at(w, s->pos), w->step_dt));
+    } else {
+        Vec3 d = v3_sub(B->pos, A->pos);
+        f32 l = v3_len(d);
+        if (l < 1e-6f) return PHYS_MARGIN;
+        n = v3_scale(d, 1.0f / l);                          /* A'dan B'ye */
+        dv = v3_sub(B->vel, A->vel);
+    }
+    f32 closing = -v3_dot(dv, n);
+    return closing > 0.0f ? PHYS_MARGIN + closing * w->step_dt : PHYS_MARGIN;
+}
+
 static void narrow(PhysWorld* w, u32 ia, u32 ib) {
     if (ia > ib) { u32 t = ia; ia = ib; ib = t; }
     if (joints_block_pair(w, ia, ib)) return;
@@ -437,7 +470,7 @@ static void narrow(PhysWorld* w, u32 ia, u32 ib) {
     Manifold* m = &w->cur[w->cur_count];
     m->a = ia;
     m->b = ib;
-    if (!phys_collide(A, B, m)) return;
+    if (!phys_collide_margin(A, B, m, spec_margin(w, A, B))) return;
     m->sub = 0;
     finalize_manifold(w, m);
 }
@@ -776,6 +809,11 @@ static Softness make_soft(f32 hertz, f32 zeta, f32 h) {
     return s;
 }
 
+static Vec3 body_accel(const PhysWorld* w, const Body* b) {
+    if (!awake_dynamic(b)) return v3(0, 0, 0);
+    return v3_add(phys_gravity_at(w, b->pos), v3_scale(b->force, b->inv_mass));
+}
+
 static void soft_prepare(PhysWorld* w) {
     for (u32 mi = 0; mi < w->cur_count; mi++) {
         Manifold* m = &w->cur[mi];
@@ -793,6 +831,13 @@ static void soft_prepare(PhysWorld* w) {
             c->mass_t2 = eff_mass(A, B, c->ra, c->rb, m->t2);
             c->rel_vel = v3_dot(v3_sub(point_vel(B, c->rb), point_vel(A, c->ra)), m->normal);
             c->max_jn = 0.0f;
+            /* spekülatif boşluk: restitüsyon hedefi çarpma anındaki hız. Sabit dış ivmeyle (yerçekimi)
+             * yaklaşan çift boşluğu kapatana dek hızlanır: v² + 2·a·s. Bu olmadan zemine düşen top adım
+             * başındaki (g·dt kadar küçük) hızla seker → her sıçramada ~%6 yükseklik kaybı (D31). */
+            if (c->s0 > 0.0f && c->rel_vel <= 0.0f) {
+                f32 an = -v3_dot(v3_sub(body_accel(w, B), body_accel(w, A)), m->normal);
+                if (an > 0.0f) c->rel_vel = -m_sqrtf(c->rel_vel * c->rel_vel + 2.0f * an * c->s0);
+            }
         }
     }
 }
@@ -944,7 +989,7 @@ static void integrate_velocities(PhysWorld* w, f32 dt) {
     for (u32 i = 0; i < w->count; i++) {
         Body* b = &w->bodies[i];
         if (!awake_dynamic(b)) continue;
-        b->vel = v3_add(b->vel, v3_scale(v3_add(w->gravity, v3_scale(b->force, b->inv_mass)), dt));
+        b->vel = v3_add(b->vel, v3_scale(v3_add(phys_gravity_at(w, b->pos), v3_scale(b->force, b->inv_mass)), dt));
         b->ang_vel = v3_add(b->ang_vel, v3_scale(mat3_mul_v3(&b->inv_inertia_world, b->torque), dt));
     }
 }
@@ -1224,6 +1269,18 @@ void phys_step(PhysWorld* w, f32 dt) {
     }
 
     if (w->solver == PHYS_SOLVER_SI) integrate_velocities(w, dt);
+    w->step_dt = dt;
+    if (w->speculative) {
+        /* uyanık kürelerin AABB'si adım içi yol kadar uzar → hızlı yaklaşan çift geniş fazdan geçer
+         * (spec_margin); entegrasyondaki phys_body_update_derived sıkı kutuya geri döndürür */
+        for (u32 i = 0; i < w->count; i++) {
+            Body* b = &w->bodies[i];
+            if (b->shape != SHAPE_SPHERE || !awake_dynamic(b)) continue;
+            Vec3 d = v3_scale(v3_add(b->vel, v3_scale(phys_gravity_at(w, b->pos), dt)), dt);
+            b->aabb_min = v3_add(b->aabb_min, v3(m_minf(d.x, 0.0f), m_minf(d.y, 0.0f), m_minf(d.z, 0.0f)));
+            b->aabb_max = v3_add(b->aabb_max, v3(m_maxf(d.x, 0.0f), m_maxf(d.y, 0.0f), m_maxf(d.z, 0.0f)));
+        }
+    }
 
     /* önceki manifoldları ara tabloya koy */
     Manifold* t = w->prev;

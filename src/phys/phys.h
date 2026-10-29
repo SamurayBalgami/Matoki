@@ -191,6 +191,10 @@ typedef struct PhysWorld {
     u32       joint_count, joint_cap;
     Body      world_body;   /* PHYS_NO_BODY eklem ucu için statik gövde */
     Vec3      gravity;
+    /* gezegen çekimi (planet_gm > 0): sabit g yerine g(h) = GM / (R + h)², h = gövde merkezinin y'si (zemin y = 0),
+     * yön −y. Kısa mesafede sabit g'ye iner; uzun düşüşte (h ~ R) ivme yükseklikle azalır (D32). */
+    f64       planet_gm;    /* m³/s² (Dünya 3.986004e14) */
+    f64       planet_radius;/* m (Dünya 6.371e6) */
     PhysSolver solver;
     u32       substeps;     /* soft: alt adım sayısı */
     f32       contact_hertz, contact_damping;
@@ -225,6 +229,7 @@ typedef struct PhysWorld {
     u32       plane_ids[PHYS_MAX_PLANES];
     u32       plane_count;
     f32       max_disp;     /* son adımda dinamik gövdelerin en büyük yer değiştirmesi (yumuşak aday sorgusu) */
+    f32       step_dt;      /* geçerli adımın dt'si (kürelerin hıza bağlı spekülatif payı) */
     /* BVH kalıcı çift kümesi: şişman AABB'leri kesişen tüm (dinamik, dinamik|statik) çiftler. Yalnızca
      * şişman kutusundan taşıp yeniden eklenen ("taşınan") vekiller ağacı sorgular (Box2D yaklaşımı). */
     u32*      pset;         /* anahtar a·2¹⁶ + b (a < b), sırasız */
@@ -252,6 +257,8 @@ typedef struct PhysWorld {
 
 void phys_world_init(PhysWorld* w, Arena* a, u32 max_bodies, u32 max_manifolds);
 void phys_world_set_solver(PhysWorld* w, i32 solver);
+/* y yüksekliğindeki çekim ivmesi (gezegen kapalıysa w->gravity) */
+Vec3 phys_gravity_at(const PhysWorld* w, Vec3 pos);
 /* dinamik ağacı gövdelerin güncel AABB'leriyle eşitle (BVH modunda adım içinde kendiliğinden çağrılır) */
 void phys_update_tree(PhysWorld* w);
 /* Sıkı AABB'si [mn, mx] ile kesişen gövdeler (düzlemler hariç), artan indeks sırasıyla. BVH modunda iki
@@ -283,6 +290,9 @@ u32  phys_collide_cores(const struct Core* a, const struct Core* b, Manifold* m)
 /* mesh × dinamik: üçgen başına manifold yazar (sub = üçgen + 1); dönüş = yazılan manifold.
  * edge_fix: iç kenar düzeltmesi (PhysWorld.mesh_edge_fix) */
 u32  phys_collide_mesh(const Body* a, const Body* b, Manifold* out, u32 max, b32 edge_fix);
+/* phys_collide gibi; küre-küre ve küre-düzlemde boşluk payı PHYS_MARGIN yerine 'margin' (hıza bağlı
+ * spekülatif temas: adım içinde kapanacak boşluk önceden manifold olur). Diğer çiftler phys_collide. */
+u32  phys_collide_margin(const Body* a, const Body* b, Manifold* m, f32 margin);
 
 /* ---- sorgular ve dış etkiler (phys/query.c) ---- */
 typedef struct RayHit {

@@ -1,6 +1,7 @@
 /* gfx3d/demo.c — 3D demo: wasm export'ları ve sahneler.
  * Sahne 1: dönen tuğla küp + zemin + 1000 küplük ızgara (kırpma/derinlik testi).
- * Sahne 2: ufka uzanan dama tahtası zemin; M tuşu mipmap'i açar/kapatır (moiré).
+ * Sahne 2: ufka uzanan dama tahtası zemin; M tuşu mipmap'i açar/kapatır (moiré). Sahne 7: FFT okyanus,
+ * sahne 8: üst üste düşen toplar (gezegen çekimi g(h)).
  * JS (web/3d.js) yalnızca girişi iletir ve framebuffer'ı canvas'a kopyalar. */
 #include "core/arena.h"
 #include "core/embed.h"
@@ -14,6 +15,7 @@
 #include "phys/shapes.h"
 #include "phys/vehicle.h"
 #include "phys/soft.h"
+#include "phys/ocean.h"
 #include "core/rng.h"
 
 #define ROCK_KINDS 4
@@ -25,6 +27,14 @@
 #define KEY_N 78
 #define KEY_K 75
 #define KEY_Y 89
+#define KEY_O 79
+#define KEY_P 80
+
+/* sahne 8: 3 sütun × 3 top; 240 Hz (hafif top bir 60 Hz karesinde birden çok çarpışabilir, D31) */
+#define DROP_COLS  3
+#define DROP_BALLS 3
+#define DROP_SUB   4
+#define DROP_RESET 7.0f
 
 /* sahne 4 oyun modu */
 enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
@@ -114,6 +124,21 @@ typedef struct Demo {
     Material m_sky;
     LitUniforms u_water;
     Material m_water;
+    /* sahne 7, istatistiksel okyanus (O tuşu ↔ Gerstner): FFT alanları CPU'da, mesh köşeleri her kare yazılır */
+    b32 ocean_on;
+    Ocean ocean;
+    Mesh* ocean_mesh;
+    f32* ocean_bx;       /* köşelerin düz konumu (yerel x, z) */
+    f32* ocean_bz;
+    Material m_ocean;
+    f64 ocean_ms;
+    /* sahne 8: üst üste bırakılan toplar (eşit / farklı kütle) */
+    u32 drop_id[DROP_COLS * DROP_BALLS];
+    f32 drop_start[DROP_COLS * DROP_BALLS];   /* bırakılış merkez yüksekliği */
+    f32 drop_peak[DROP_COLS * DROP_BALLS];    /* alttaki top zemine değdikten sonraki en yüksek nokta */
+    b32 drop_hit[DROP_COLS];
+    b32 drop_small_planet;   /* P: R = 20 m'lik gezegen (g yükseklikle belirgin azalır); kapalı: Dünya */
+    f32 drop_time;
     i32 shader_mode;     /* SHADER_* */
     Material m_flat;
     u32 stats[ST_COUNT];
@@ -642,6 +667,59 @@ static void soft_scene_build(void) {
     g.soft_time = 0.0f;
 }
 
+/* Sahne 8: üst üste bırakılan toplar (Galileo topu), aynı yoğunluk → yarıçap = 0,25·∛m. e = 0,9, sürtünmesiz,
+ * toplar 0,3 m arayla düşer → çarpışmalar sıralı (iki cisim formülü, tests/test_phys_drop.c kesin çözümü).
+ * 1. bölüm (sol) eşit kütle: hız yukarı aktarılır, en üstteki en çok sıçrar.
+ * 2. bölüm farklı kütle: orta = en ağır üstte (1, 2, 4 kg) → üstteki en az sıçrar (eşit sütundakinden az);
+ *    sağ = en ağır altta (4, 2, 1 kg) → katapult, en üstteki bırakıldığı yüksekliğin ~2 katına çıkar. */
+static const f32 DROP_MASS[DROP_COLS][DROP_BALLS] = { { 2, 2, 2 }, { 1, 2, 4 }, { 4, 2, 1 } };
+
+static f32 drop_col_x(u32 c) { return c == 0 ? -4.5f : c == 1 ? 1.0f : 4.5f; }   /* bölümler arası boşluk */
+
+static void drop_scene_build(void) {
+    PhysWorld* w = &g.phys;
+    phys_world_clear(w);
+    /* sabit g yerine g(h) = GM / (R + h)² (D32); küçük gezegende yüzey g'si yine 9,81 */
+    w->planet_radius = g.drop_small_planet ? 20.0 : 6.371e6;
+    w->planet_gm = g.drop_small_planet ? 9.81 * 20.0 * 20.0 : 3.986004418e14;
+    BodyDesc ground = phys_desc_plane(v3(0, 1, 0), 0.0f);
+    ground.restitution = 0.9f;
+    ground.friction = 0.0f;
+    phys_add_body(w, &ground);
+    for (u32 c = 0; c < DROP_COLS; c++) {
+        f32 y = 1.5f;   /* alttaki topun yüzeyi */
+        for (u32 i = 0; i < DROP_BALLS; i++) {
+            f32 m = DROP_MASS[c][i], r = 0.25f * m_powf(m, 1.0f / 3.0f);
+            BodyDesc d = phys_desc_sphere(v3(drop_col_x(c), y + r, 0.0f), r, m);
+            d.restitution = 0.9f;
+            d.friction = 0.0f;
+            u32 k = c * DROP_BALLS + i;
+            g.drop_id[k] = phys_add_body(w, &d);
+            g.drop_start[k] = g.drop_peak[k] = y + r;
+            y += 2.0f * r + 0.3f;
+        }
+        g.drop_hit[c] = FALSE;
+    }
+    g.drop_time = 0.0f;
+    g.phys_acc = 0.0f;
+}
+
+/* adım sonu: alttaki top zeminden sekince sütunun tepe ölçümü başlar */
+static void drop_track(void) {
+    for (u32 c = 0; c < DROP_COLS; c++) {
+        const Body* bottom = &g.phys.bodies[g.drop_id[c * DROP_BALLS]];
+        if (!g.drop_hit[c] && bottom->vel.y > 0.0f) {
+            g.drop_hit[c] = TRUE;
+            for (u32 i = 0; i < DROP_BALLS; i++) g.drop_peak[c * DROP_BALLS + i] = 0.0f;
+        }
+        if (!g.drop_hit[c]) continue;
+        for (u32 i = 0; i < DROP_BALLS; i++) {
+            u32 k = c * DROP_BALLS + i;
+            g.drop_peak[k] = m_maxf(g.drop_peak[k], g.phys.bodies[g.drop_id[k]].pos.y);
+        }
+    }
+}
+
 /* zamanla değişen rüzgâr (belirleyici: yalnızca simülasyon zamanına bağlı) */
 static Vec3 wind_at(f32 t) {
     return v3(6.0f + 2.5f * m_sinf(t * 0.7f), 0.0f, 1.5f * m_sinf(t * 0.37f) + 1.0f * m_sinf(t * 1.3f + 1.0f));
@@ -649,8 +727,18 @@ static Vec3 wind_at(f32 t) {
 
 static void scene_set(i32 s) {
     g.scene = s;
+    g.phys.planet_gm = 0.0;   /* gezegen çekimi yalnızca sahne 8'de */
     camera_set_mode(&g.cam, CAM_FLY);
     g.cam.use_look = FALSE;
+    if (s == 8) {
+        g.cam.pos = v3(0.0f, 3.4f, 9.0f);    /* üç sütuna önden bakar */
+        g.cam.yaw = 0.0f;
+        g.cam.pitch = 0.0f;
+        g.cam.zfar = 1000.0f;
+        g.cam.speed = 6.0f;
+        drop_scene_build();
+        return;
+    }
     if (s == 7) {
         g.cam.pos = v3(0.0f, 6.0f, 22.0f);    /* göle bakar */
         g.cam.yaw = 0.0f;
@@ -741,7 +829,25 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.ground = mesh_plane(&g.perm, 80.0f, 80.0f, 0.25f, 8);
     g.big_floor = mesh_plane(&g.perm, 4000.0f, 4000.0f, 0.5f, 1);
     g.water = mesh_plane(&g.perm, 40.0f, 40.0f, 0.15f, 128);   /* 129² köşe, 32 768 üçgen */
-
+    g.ocean_mesh = mesh_plane(&g.perm, 40.0f, 40.0f, 0.15f, 128);
+    g.ocean_bx = ARENA_ARRAY(&g.perm, f32, g.ocean_mesh->vertex_count);
+    g.ocean_bz = ARENA_ARRAY(&g.perm, f32, g.ocean_mesh->vertex_count);
+    for (u32 i = 0; i < g.ocean_mesh->vertex_count; i++) { g.ocean_bx[i] = g.ocean_mesh->px[i]; g.ocean_bz[i] = g.ocean_mesh->pz[i]; }
+    {
+        /* 40 m yama = göl mesh'i (kenarlar periyodik, dikişsiz); rüzgâr kameraya doğru (+z), hafif çapraz */
+        OceanDesc od;
+        od.n = 64;
+        od.size = 40.0f;
+        od.wind_x = 0.35f;
+        od.wind_z = 1.0f;
+        od.wind_speed = 5.5f;
+        od.rms_height = 0.16f;
+        od.reverse = 0.0f;     /* rüzgâra karşı dalga yok */
+        od.choppy = 0.9f;
+        od.seed = 2026;
+        ocean_init(&g.ocean, &g.perm, &od);
+    }
+    g.ocean_on = TRUE;
     lit_defaults(&g.u_bricks, g.tex_bricks, v3(1, 1, 1));
     lit_defaults(&g.u_grid[0], g.tex_grid, v3(1.0f, 0.55f, 0.45f));
     lit_defaults(&g.u_grid[1], g.tex_grid, v3(0.45f, 0.85f, 0.55f));
@@ -797,6 +903,8 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_water, g.tex_grid, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
     g.u_water.wrap = 0.5f;
     material(&g.m_water, &g.u_water);
+    material(&g.m_ocean, &g.u_water);
+    g.m_ocean.cull = CULL_NONE;
     g.m_water.cull = CULL_NONE;          /* dalga tepesinden arka yüz görünebilir */
     g.m_water.vert_params[0] = 0.22f;    /* amp (m) */
     g.m_water.vert_params[1] = 7.0f;     /* en uzun dalga boyu (m) */
@@ -844,7 +952,7 @@ static void set_frame_uniforms(void) {
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
     Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
-                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water };
+                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water, &g.m_ocean };
     /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
     VertexFn vf = g.vert_mode ? g_std_vert : NULL;
     PreludeFn vpre = g.vert_mode ? g_std_vert_pre : NULL;
@@ -861,6 +969,8 @@ static void set_frame_uniforms(void) {
     if (g_water && !g.capture) {
         g.m_water.shade = g_water;
         g.m_water.prelude = g_water_pre;
+        g.m_ocean.shade = g_water;   /* köşeler CPU'da yazılı: köşe aşaması std (Matoki / C) */
+        g.m_ocean.prelude = g_water_pre;
     }
     g.m_sky.shade = g_sky;
     g.m_sky.prelude = g_sky_pre;
@@ -963,9 +1073,31 @@ static void render_scene4(void) {
 }
 
 /* Sahne 7: dalgalı göl (wave_vert.mtk, her kare köşe aşamasında yeniden şekillenir) + içinde sütunlar */
+/* okyanus mesh'i: t anındaki FFT alanlarından köşe konumu (yükseklik + yatay λ·D) ve eğim normali */
+static void ocean_mesh_update(void) {
+    f64 t0 = sys_now_ms();
+    ocean_update(&g.ocean, (f64)g.time);
+    Mesh* m = g.ocean_mesh;
+    for (u32 i = 0; i < m->vertex_count; i++) {
+        Vec3 off, n;
+        ocean_sample(&g.ocean, g.ocean_bx[i], g.ocean_bz[i], &off, &n);
+        m->px[i] = g.ocean_bx[i] + off.x;
+        m->py[i] = off.y;
+        m->pz[i] = g.ocean_bz[i] + off.z;
+        m->nx[i] = n.x; m->ny[i] = n.y; m->nz[i] = n.z;
+    }
+    mesh_compute_bounds(m);
+    g.ocean_ms = sys_now_ms() - t0;
+}
+
 static void render_scene7(void) {
     draw(g.big_floor, &g.m_floor, mat4_identity());
-    draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
+    if (g.ocean_on) {
+        ocean_mesh_update();
+        draw(g.ocean_mesh, &g.m_ocean, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
+    } else {
+        draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
+    }
     for (i32 k = 0; k < 7; k++) {
         f32 a = (f32)k * (M_TAU_F / 7.0f) + 0.4f;
         Vec3 pos = v3(m_sinf(a) * 11.0f, 2.0f, -8.0f - m_cosf(a) * 11.0f);
@@ -976,7 +1108,33 @@ static void render_scene7(void) {
         f32 t = g.time * 0.8f + (f32)k * 1.6f;
         Vec3 pos = v3(-6.0f + (f32)k * 4.0f, 1.2f + 0.25f * m_sinf(t * 1.3f), -6.0f + 2.0f * m_cosf((f32)k));
         Mat4 rot = mat4_mul(mat4_rotate_z(0.15f * m_sinf(t)), mat4_rotate_x(0.12f * m_cosf(t * 0.9f)));
+        if (g.ocean_on) {   /* okyanusta: yüzey yüksekliğinde yüzer, yüzey normaline yatar */
+            Vec3 off, n;
+            ocean_sample(&g.ocean, pos.x, pos.z + 8.0f, &off, &n);
+            pos.y = 0.9f + off.y + 0.25f;
+            rot = mat4_mul(mat4_rotate_z(-n.x), mat4_rotate_x(n.z));
+        }
         draw(g.cube, &g.m_bricks, mat4_mul(mat4_translate(pos), mat4_mul(rot, mat4_scale(v3(1.4f, 1.4f, 1.4f)))));
+    }
+}
+
+/* Sahne 8: toplar kütleye göre renkli (1 kg mavi, 2 kg yeşil, 4 kg kırmızı). Her topun yanında iki çentik:
+ * gri = bırakıldığı yükseklik, top rengi = sekmeden sonra ulaştığı en yüksek nokta (aradaki fark = kayıp). */
+static void render_scene8(void) {
+    draw(g.ground, &g.m_ground, mat4_identity());
+    for (u32 c = 0; c < DROP_COLS; c++) {
+        f32 x = drop_col_x(c);
+        draw(g.cube, &g.m_pillar, mat4_mul(mat4_translate(v3(x, 4.5f, -0.9f)), mat4_scale(v3(0.12f, 9.0f, 0.12f))));   /* cetvel */
+        for (u32 i = 0; i < DROP_BALLS; i++) {
+            u32 k = c * DROP_BALLS + i;
+            const Body* b = &g.phys.bodies[g.drop_id[k]];
+            f32 m = DROP_MASS[c][i];
+            const Material* mat = m >= 4.0f ? &g.m_grid[0] : m >= 2.0f ? &g.m_grid[1] : &g.m_grid[2];
+            draw(g.sphere, mat, mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
+            f32 side = (f32)i * 0.42f;   /* çentikler cetvelin sağında, toplara göre kademeli */
+            draw(g.cube, &g.m_pillar, mat4_mul(mat4_translate(v3(x + 0.6f + side, g.drop_start[k], -0.9f)), mat4_scale(v3(0.36f, 0.05f, 0.1f))));
+            if (g.drop_hit[c]) draw(g.cube, mat, mat4_mul(mat4_translate(v3(x + 0.6f + side, g.drop_peak[k], -0.9f)), mat4_scale(v3(0.36f, 0.1f, 0.16f))));
+        }
     }
 }
 
@@ -1002,8 +1160,12 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (g.in.pressed[KEY_0 + 5]) scene_set(5);
     if (g.in.pressed[KEY_0 + 6]) scene_set(6);
     if (g.in.pressed[KEY_0 + 7]) scene_set(7);
+    if (g.in.pressed[KEY_0 + 8]) scene_set(8);
+    if (g.scene == 8 && g.in.pressed[KEY_T]) drop_scene_build();
+    if (g.scene == 8 && g.in.pressed[KEY_P]) { g.drop_small_planet = !g.drop_small_planet; drop_scene_build(); }
     if (g.in.pressed[KEY_K] && g_std_vert) g.vert_mode = !g.vert_mode;
     if (g.in.pressed[KEY_Y]) g.sky = !g.sky;
+    if (g.in.pressed[KEY_O]) g.ocean_on = !g.ocean_on;
     if (g.scene == 5 && g.in.pressed[KEY_T]) joints_scene_build();
     if (g.scene == 6 && g.in.pressed[KEY_T]) soft_scene_build();
     const u8* key = g.in.down;
@@ -1064,8 +1226,17 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
                 vehicle_update(&g.phys, &g.car, PHYS_DT);
                 if (walking) character_update(&g.phys, &g.chr, wish, jump && g.phys_steps == 0, PHYS_DT);
             }
-            phys_step(&g.phys, PHYS_DT);
-            g.phys_ms += g.phys.stats.step_ms;
+            if (g.scene == 8) {
+                for (u32 k = 0; k < DROP_SUB; k++) {
+                    phys_step(&g.phys, PHYS_DT / DROP_SUB);
+                    g.phys_ms += g.phys.stats.step_ms;
+                    drop_track();
+                }
+                g.drop_time += PHYS_DT;
+            } else {
+                phys_step(&g.phys, PHYS_DT);
+                g.phys_ms += g.phys.stats.step_ms;
+            }
             if (g.scene == 6) {
                 g.soft_time += PHYS_DT;
                 g.soft.wind = wind_at(g.soft_time);
@@ -1076,6 +1247,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
             g.phys_steps++;
         }
         if (g.phys_acc > PHYS_DT) g.phys_acc = 0.0f;
+        if (g.scene == 8 && g.drop_time > DROP_RESET) drop_scene_build();   /* kendiliğinden yeniden bırak */
     }
     if (g.in.pressed[KEY_M]) g.mip = !g.mip;
     if (g.in.pressed[KEY_N]) g.fb.samples = g.fb.samples == RASTER_MSAA ? 1u : RASTER_MSAA;
@@ -1117,6 +1289,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     else if (g.scene == 3) render_scene3();
     else if (g.scene == 4) render_scene4();
     else if (g.scene == 6) render_scene6();
+    else if (g.scene == 8) render_scene8();
     else render_scene5();
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
@@ -1212,6 +1385,7 @@ static const BenchView BENCH_VIEWS[] = {
     { 2, 0.0f, 1.7f, 0.0f, 0.3f, -0.08f },      /* 4: ufka uzanan mipmap zemini */
     { 6, -3.2f, 5.2f, 1.2f, -0.25f, 0.05f },    /* 5: bayrak yakından (kumaş ışığı) */
     { 7, 0.0f, 6.0f, 22.0f, 0.0f, -0.22f },     /* 6: dalgalı göl (wave_vert.mtk, 33 bin üçgen) */
+    { 8, 0.0f, 3.4f, 9.0f, 0.0f, 0.0f },       /* 7: üst üste toplar (--frames ile fizik ilerler) */
 };
 
 EXPORT(engine_bench_view_count) i32 engine_bench_view_count(void) { return (i32)ARRAY_COUNT(BENCH_VIEWS); }

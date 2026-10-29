@@ -60,11 +60,11 @@ static u32 reduce4(RawPoint* p, u32 n, Vec3 normal) {
 
 /* ---- küre ---- */
 
-static u32 sphere_sphere(const Body* A, const Body* B, Manifold* m) {
+static u32 sphere_sphere(const Body* A, const Body* B, Manifold* m, f32 margin) {
     Vec3 d = v3_sub(B->pos, A->pos);
     f32 dist2 = v3_dot(d, d);
     f32 rs = A->radius + B->radius;
-    if (dist2 > (rs + PHYS_MARGIN) * (rs + PHYS_MARGIN)) return 0;
+    if (dist2 > (rs + margin) * (rs + margin)) return 0;
     f32 dist = m_sqrtf(dist2);
     Vec3 n = dist > 1e-6f ? v3_scale(d, 1.0f / dist) : v3(0, 1, 0);
     set_normal(m, n);
@@ -75,9 +75,9 @@ static u32 sphere_sphere(const Body* A, const Body* B, Manifold* m) {
 }
 
 /* A küre, B düzlem */
-static u32 sphere_plane(const Body* A, const Body* B, Manifold* m) {
+static u32 sphere_plane(const Body* A, const Body* B, Manifold* m, f32 margin) {
     f32 dist = v3_dot(B->plane_n, A->pos) - B->plane_d;
-    if (dist > A->radius + PHYS_MARGIN) return 0;
+    if (dist > A->radius + margin) return 0;
     set_normal(m, v3_scale(B->plane_n, -1.0f));
     RawPoint p;
     p.depth = A->radius - dist;
@@ -720,18 +720,32 @@ u32 phys_collide(const Body* a, const Body* b, Manifold* m) {
     if (a->shape == SHAPE_MESH || b->shape == SHAPE_MESH) return 0;   /* phys_collide_mesh */
     if (b->shape == SHAPE_PLANE) {
         switch (a->shape) {
-        case SHAPE_SPHERE: return sphere_plane(a, b, m);
+        case SHAPE_SPHERE: return sphere_plane(a, b, m, PHYS_MARGIN);
         case SHAPE_CAPSULE: return capsule_plane(a, b, m);
         case SHAPE_BOX: return box_plane(a, b, m);
         case SHAPE_HULL: return hull_plane(a, b, m);
         default: return 0;
         }
     }
-    if (a->shape == SHAPE_SPHERE && b->shape == SHAPE_SPHERE) return sphere_sphere(a, b, m);
+    if (a->shape == SHAPE_SPHERE && b->shape == SHAPE_SPHERE) return sphere_sphere(a, b, m, PHYS_MARGIN);
     if (a->shape == SHAPE_SPHERE && b->shape == SHAPE_BOX) return sphere_box(a, b, m);
     if (a->shape == SHAPE_BOX && b->shape == SHAPE_BOX) return box_box(a, b, m);
     Core ca, cb;
     phys_body_core(a, &ca);
     phys_body_core(b, &cb);
     return phys_collide_cores(&ca, &cb, m);
+}
+
+u32 phys_collide_margin(const Body* a, const Body* b, Manifold* m, f32 margin) {
+    if (a->shape > b->shape) {
+        u32 n = phys_collide_margin(b, a, m, margin);
+        if (n) set_normal(m, v3_scale(m->normal, -1.0f));
+        return n;
+    }
+    if (a->shape == SHAPE_SPHERE && (b->shape == SHAPE_SPHERE || b->shape == SHAPE_PLANE)) {
+        m->count = 0;
+        m->sub = 0;
+        return b->shape == SHAPE_PLANE ? sphere_plane(a, b, m, margin) : sphere_sphere(a, b, m, margin);
+    }
+    return phys_collide(a, b, m);
 }
