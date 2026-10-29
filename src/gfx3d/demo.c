@@ -32,6 +32,7 @@
 #define KEY_P 80
 #define KEY_U 85
 #define KEY_J 74
+#define KEY_F2 113
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -51,6 +52,7 @@ enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
 #include "asset/gltf.h"
 #include "audio/audio.h"
 #include "audio/impact.h"
+#include "ui/editor.h"
 
 /* sahne 9: glTF kolu (bend_linear / STEP / CUBICSPLINE klipleri) + ECS hiyerarşisine bağlı dokunaçlar */
 #define ANIM_ARMS   3
@@ -189,10 +191,22 @@ typedef struct Demo {
     /* ses (M13 faz 4): çarpışma sesi köprüsü; bekleme tablosu kendi küçük arenasında */
     ImpactAudio impact;
     Arena impact_mem;
-    b32 mute;             /* L tuşu */
+    b32 mute;             /* J tuşu */
+    /* canlı shader editörü (M13 faz 6, F2): ilk açılışta ayrı arenalarda kurulur */
+    b32 edit_open, edit_ready;
+    Arena edit_mem;          /* editör yapısı + sözdizimi renklendirme */
+    Arena edit_code[2];      /* dönüşümlü derleme: biri yürürlükteki program, diğerine yeni deneme */
+    u32 edit_cur;            /* yürürlükteki derleme arenası (başta 1 → ilk deneme 0'a) */
+    CodeEditor* editor;
+    UiContext ui;
+    UiInput ui_in;
+    u32 edit_ok, edit_fail;
 } Demo;
 
 static Demo g;
+
+static b32 editor_setup(void);
+static void editor_draw(void);
 
 static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->tex = tex;
@@ -245,6 +259,15 @@ static ShadeFn lit_shader_for(i32 mode) {
 }
 
 /* .mtk'yi derle + JIT (aşama: frag / vert); uniform yerleşimi denetimi çağıranda. */
+/* lit ailesi shader'ın uniform'ları LitUniforms ile aynı yerde mi (açılış + canlı derleme aynı denetim) */
+static b32 lit_layout_ok(const MatokiProgram* p) {
+    const GlobalDecl* tex = matoki_find_uniform(p, "tex");
+    const GlobalDecl* tint = matoki_find_uniform(p, "tint");
+    const GlobalDecl* tr = matoki_find_uniform(p, "translucency");
+    return tex && tint && tex->offset == __builtin_offsetof(LitUniforms, tex) && tint->offset == __builtin_offsetof(LitUniforms, tint) &&
+           (!tr || tr->offset == __builtin_offsetof(LitUniforms, translucency));
+}
+
 static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) {
     const EmbedFile* ef = embed_find(file);
     char buf[320];
@@ -282,11 +305,7 @@ static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) {
                     nm->offset == __builtin_offsetof(VertUniforms, normal_mat) && tm->offset == __builtin_offsetof(VertUniforms, time) &&
                     pos->offset == ATTR3D_POS;
     } else {
-        const GlobalDecl* tex = matoki_find_uniform(p, "tex");
-        const GlobalDecl* tint = matoki_find_uniform(p, "tint");
-        const GlobalDecl* tr = matoki_find_uniform(p, "translucency");
-        layout_ok = tex && tint && tex->offset == __builtin_offsetof(LitUniforms, tex) && tint->offset == __builtin_offsetof(LitUniforms, tint) &&
-                    (!tr || tr->offset == __builtin_offsetof(LitUniforms, translucency));
+        layout_ok = lit_layout_ok(p);
     }
     if (!layout_ok) {
         sb_cstr(&sb, "matoki: uniform yerleşimi C yapısıyla (LitUniforms / VertUniforms) uyuşmuyor: ");
@@ -1195,7 +1214,7 @@ static void draw_hud(void) {
     f32 fps = g.fps_ms > 0.0f ? 1000.0f / g.fps_ms : 0.0f;
     fmt_format(buf[0], 128, "MATOKI   %.0f fps   kare %.2f ms   %dx%d   %u thread", (f64)fps,
                (f64)s[ST_TOTAL_US] * 0.001, g.fb.w, g.fb.h, jobs_threads());
-    fmt_format(buf[1], 128, "sahne %u   %s   MSAA %ux   karışım + font: MatokiEngine", s[ST_SCENE],
+    fmt_format(buf[1], 128, "sahne %u   %s   MSAA %ux   F2: shader editörü", s[ST_SCENE],
                SHADER_LABEL[g.shader_mode], s[ST_MSAA]);
     fmt_format(buf[2], 128, "üçgen %u / %u   piksel %u   nesne %u (elenen %u)", s[ST_TRI_DRAWN], s[ST_TRI_IN],
                s[ST_PIXELS], s[ST_OBJ_IN], s[ST_OBJ_CULLED]);
@@ -1448,6 +1467,24 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.time += dt;
     g.fps_ms = g.fps_ms > 0.0f ? g.fps_ms + (dt_ms - g.fps_ms) * 0.1f : dt_ms;
     if (g.in.pressed[KEY_U]) g.hud_on = !g.hud_on;
+    /* shader editörü (F2): açıkken girdi oyuna değil editöre gider; basılı tuş durumu kare ortasında geri yüklenir */
+    if (g.in.pressed[KEY_F2] && (g.edit_open || editor_setup())) g.edit_open = !g.edit_open;
+    b32 ui_frame = g.edit_open;
+    u8 held[256];
+    if (ui_frame) {
+        /* basılı ya da bu karede basılmış: iki kare arasında bas-bırak (yavaş karede hızlı dokunuş) kaybolmasın */
+        for (u32 k = 0; k < 256; k++) g.ui_in.keys[k] = g.in.down[k] | g.in.pressed[k];
+        g.ui_in.mouse_x = g.in.mouse_x;
+        g.ui_in.mouse_y = g.in.mouse_y;
+        g.ui_in.mouse_buttons = g.in.mouse_buttons | g.in.mouse_latch;
+        g.ui_in.wheel = g.in.wheel > 0.0f ? 1 : g.in.wheel < 0.0f ? -1 : 0;
+        g.ui_in.char_count = MIN(g.in.char_count, UI_MAX_CHARS);
+        mem_copy(g.ui_in.chars, g.in.chars, sizeof(u32) * g.ui_in.char_count);
+        mem_copy(held, g.in.down, sizeof(held));
+        mem_zero(g.in.down, sizeof(g.in.down));
+        mem_zero(g.in.pressed, sizeof(g.in.pressed));
+        g.in.mouse_dx = g.in.mouse_dy = g.in.wheel = 0.0f;
+    }
     if (g.in.pressed[KEY_J]) {   /* ses aç/kapa: master 0 ↔ synth varsayılanı */
         static f32 master_on = -1.0f;
         Synth* sy = audio_synth();
@@ -1580,7 +1617,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     } else if (walking) {
         g.cam.pos = character_eye(&g.chr);
     }
+    if (ui_frame) mem_copy(g.in.down, held, sizeof(held));
     g.in.mouse_dx = g.in.mouse_dy = g.in.wheel = 0.0f;
+    g.in.char_count = 0;
+    g.in.mouse_latch = 0;
     mem_zero(g.in.pressed, sizeof(g.in.pressed));
 
     f64 t0 = sys_now_ms();
@@ -1678,6 +1718,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
         draw_hud();
         g.stats[ST_HUD_US] = (u32)((sys_now_ms() - th) * 1000.0);
     }
+    if (g.edit_open && g.edit_ready) editor_draw();
     /* ses: halka tamponu 60 ms gecikmeye kadar doldur (AudioWorklet okur; ses başlamadıysa iş yok) */
     g.stats[ST_AUDIO_US] = 0;
     if (audio_is_running()) {
@@ -1900,13 +1941,28 @@ EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0
 
 EXPORT(engine_set_codegen_scalar) void engine_set_codegen_scalar(i32 on) { codegen_set_scalar(on != 0); }
 
+/* lit.mtk yerine geçecek kaynağı a'da derler; uniform yerleşimi uymazsa reddeder (yanlış ofsetten okuma olmasın).
+ * Başarıda Matoki lit yolu yeni programa geçer. Çağrı kare dışında / raster boşken (önceki program artık çalışmıyor). */
+static b32 lit_recompile(Arena* a, const char* src, u32 len, MatokiError* err, u32* wasm_bytes) {
+    MatokiProgram* p = ARENA_NEW(a, MatokiProgram);
+    mem_zero(err, sizeof(*err));
+    if (!matoki_compile(a, src, len, NULL, p, err) || !matoki_jit(a, p, err)) return FALSE;
+    if (!lit_layout_ok(p)) {
+        matoki_error(err, 1, 1, "uniform yerleşimi LitUniforms ile uyuşmuyor (tex, tint, translucency ilk sırada kalmalı)", NULL, 0);
+        return FALSE;
+    }
+    g_matoki_lit = p->fn_fast;
+    g_matoki_pre = p->prelude;
+    g_matoki_full = p->fn;
+    if (wasm_bytes) *wasm_bytes = p->wasm.len;
+    return TRUE;
+}
+
 EXPORT(engine_matoki_recompile) i32 engine_matoki_recompile(u32 len) {
     if (!g_src_buf || len > g_src_cap) return 0;
     usize mark = arena_mark(&g.perm);
-    MatokiProgram* p = ARENA_NEW(&g.perm, MatokiProgram);
     MatokiError e;
-    mem_zero(&e, sizeof(e));
-    if (!matoki_compile(&g.perm, g_src_buf, len, NULL, p, &e) || !matoki_jit(&g.perm, p, &e)) {
+    if (!lit_recompile(&g.perm, g_src_buf, len, &e, NULL)) {
         arena_reset(&g.perm, mark);
         char buf[300];
         StrBuf sb;
@@ -1916,11 +1972,68 @@ EXPORT(engine_matoki_recompile) i32 engine_matoki_recompile(u32 len) {
         log_sb(&sb);
         return 0;
     }
-    g_matoki_lit = p->fn_fast;
-    g_matoki_pre = p->prelude;
-    g_matoki_full = p->fn;
     return 1;
 }
+
+/* ---- canlı shader editörü (M13 faz 6): F2 açar / kapatır, Ctrl+Enter lit.mtk'yi derler ---- */
+#define EDIT_CODE_BYTES ((usize)8 << 20)   /* derleme başına (IR ≤ 65 536 komut + wasm + önsöz önbelleği) */
+
+static b32 editor_setup(void) {
+    if (g.edit_ready) return TRUE;
+    const EmbedFile* f = embed_find("lit.mtk");
+    if (!f || !arena_init_sys(&g.edit_mem, (usize)1 << 20)) return FALSE;
+    if (!arena_init_sys(&g.edit_code[0], EDIT_CODE_BYTES) || !arena_init_sys(&g.edit_code[1], EDIT_CODE_BYTES)) return FALSE;
+    g.editor = ARENA_NEW(&g.edit_mem, CodeEditor);
+    editor_init(g.editor, &g.edit_mem, (const char*)f->data, f->len);
+    ui_init(&g.ui, &g.fb);
+    g.edit_cur = 1;
+    g.edit_ready = TRUE;
+    return TRUE;
+}
+
+/* derleme isteği: yürürlükte olmayan arenaya; başarıda o arena yürürlüğe girer, eskisi sonraki denemede silinir */
+static void editor_compile(void) {
+    u32 next = g.edit_cur ^ 1u;
+    arena_reset(&g.edit_code[next], 0);
+    MatokiError e;
+    u32 bytes = 0;
+    f64 t0 = sys_now_ms();
+    b32 ok = lit_recompile(&g.edit_code[next], g.editor->buf, g.editor->len, &e, &bytes);
+    f64 ms = sys_now_ms() - t0;
+    if (ok) {
+        g.edit_cur = next;
+        g.shader_mode = SHADER_MATOKI;   /* sonucu hemen göster */
+        g.edit_ok++;
+    } else {
+        g.edit_fail++;
+    }
+    editor_set_diag(g.editor, ok ? NULL : &e, ms, bytes);
+}
+
+/* çözümlenmiş renge, panelin sağına (HUD sol üstte) */
+static void editor_draw(void) {
+    g.ui.fb = &g.fb;
+    i32 w = MIN(g.fb.w - 16, MAX(320, g.fb.w * 11 / 20));
+    i32 h = g.fb.h - 16;
+    ui_begin(&g.ui, &g.ui_in);
+    b32 compile = editor_update_and_draw(g.editor, &g.ui, &g.ui_in, g.fps_ms * 0.001f, g.fb.w - w - 8, 8, w, h);
+    ui_end(&g.ui);
+    if (compile) editor_compile();
+}
+
+EXPORT(engine_pointer) void engine_pointer(i32 x, i32 y, i32 buttons) {
+    g.in.mouse_x = x;
+    g.in.mouse_y = y;
+    g.in.mouse_latch |= (u32)buttons & ~g.in.mouse_buttons;
+    g.in.mouse_buttons = (u32)buttons;
+}
+
+EXPORT(engine_char) void engine_char(u32 cp) {
+    if (g.in.char_count < ARRAY_COUNT(g.in.chars)) g.in.chars[g.in.char_count++] = cp;
+}
+
+/* JS: 1 → fareyi kilitleme, imleç konumu + karakter gönder */
+EXPORT(engine_ui_active) i32 engine_ui_active(void) { return g.edit_open; }
 
 /* teşhis: yakalanan quad'larda varying sınıfları; kind 0 = denormal, 1 = inf/NaN, 2 = |x| > 1e6 */
 EXPORT(engine_capture_census) u32 engine_capture_census(i32 kind) {

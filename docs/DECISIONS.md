@@ -396,6 +396,13 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
   yüklenir → düz kopya yeter; özet işaretçi baytlarını değil değerleri (gövde durumu + warm start önbelleği) karıştırır.
   Anlık görüntü yalnız arenanın kullanılan kısmını kopyalar (arena hiç kullanılmadıysa tüm bölge): durum dışı
   yazılan alan geri sarmada korunmaz — durum daima `sim_state_alloc` / durum arenasıyla kurulur.
+- **Faz 6:** anlık mod arayüz (`ui/ui`), 8×8 bitmap font (`ui/bitfont`; src/font TrueType'tan ayrı ad) ve canlı
+  shader editörü (`ui/editor`) onlardan. Editör bizim `MatokiError` ve toplu `lex_source` ile çalışır. F2 açar;
+  açıkken girdi oyuna değil editöre gider (basılı tuş durumu kare içinde saklanıp geri yüklenir), JS fareyi
+  kilitlemez, imleç konumu + karakter iletir (AltGr karakterleri dahil). Canlı derleme (Ctrl+Enter) iki dönüşümlü
+  8 MB arenaya: yürürlükteki program bir arenada kalır, yeni deneme diğerine; başarısızlık / sık düzenleme ana
+  arenayı tüketip motoru düşüremez. Yeniden derleme açılıştaki uniform yerleşimi denetimini de yapar (önceden
+  `engine_matoki_recompile` yapmıyordu: değiştirilmiş uniform sırası yanlış ofsetten okurdu).
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

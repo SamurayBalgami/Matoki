@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0–5 TAMAM (2026-10-30) → sıradaki faz 6 (UI + canlı Matoki editörü).
+Durum: FAZ 0–6 TAMAM (2026-10-30) → sıradaki faz 7 (gölge / ertelenmiş çizim / WAT çekirdekleri, ölçümle).
 Kaynak sürümü: faz 0–3 0a7b782; faz 4'ten itibaren 2ac467a (onların 61 yeni commit'inde faz 0–3 dosyaları değişmedi). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
 CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
@@ -55,7 +55,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 3 ✓ | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
 | 4 ✓ | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
 | 5 ✓ | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
-| 6 | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
+| 6 ✓ | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
 | 7 | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
 | 8a | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
 | 8b | Matoki → WGSL hedefi; lit / lit_hq / water / sky iki arka uçta | — | 10 görünüm × shader görüntü farkı testi |
@@ -164,6 +164,25 @@ Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.
 
 - Ölçüm: 219/219 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi; sim demoda kullanılmadığı için
   engine.wasm aynı (553 363 bayt). Sayfada geri sarma gösterimi faz 6'nın arayüzüyle birlikte düşünülecek.
+
+## Faz 6 notları (2026-10-30)
+- Taşınan: `ui/ui` (panel, düğme, onay kutusu, kaydırıcı, kırpma yığını, kare grafiği, profiler tablosu),
+  `ui/bitfont` (onların `ui/font`'u; Türkçe glifli 8×8 / 8×16), `ui/editor` (satır numarası, renklendirme, seçim,
+  geri al / yinele halkası, pano, hata alt çizgisi + paneli). Uyarlama betiği `adapt_ui.py` mantığıyla: InputState →
+  `UiInput`, MtkDiag → `MatokiError`, akış lexer'ı → `lex_source` (editörün 512 KB arenası, çizim başına geri sarılır).
+- Onlarda bu modüllerin testi yoktu; `test_ui` (6): Türkçe glif + bozuk UTF-8, düğme yalnız içeride bas-bırakta,
+  kaydırıcı sınırda, kırpma dışına 0 piksel, editörde yazma / silme / Türkçe karakter / Ctrl+Enter / Ctrl+Z ve gerçek
+  `lit.mtk` bozulunca 1. satır hatası, 10 000 kare rastgele girdi altında tampon değişmezleri.
+- **Tarayıcıda bulunan hatalar:** (1) iki kare arasında kalan bas-bırak (yavaş kare) editöre hiç ulaşmıyordu → tuş
+  `down | pressed`, fare `mouse_latch`; (2) onların tuş tekrarı kare süresini sınırsız topluyordu: dt ≈ 1 s'de tek
+  Enter aynı karede ~10 boş satır ekledi → tekrar basış karesinde başlamaz, dt 0,1 s ile sınırlı (gerileme testi);
+  (3) sentetik / sanal klavye olaylarında ayrı Ctrl olayı yok → JS Ctrl / Shift durumunu her olayla eşitler;
+  (4) `engine_matoki_recompile` uniform yerleşimini denetlemiyordu → açılıştakiyle aynı `lit_layout_ok`.
+- Tarayıcıda doğrulandı (960×540): F2 → editör, yorum bozulunca "1:22: beklenmeyen karakter" + satır vurgusu,
+  Ctrl+Z ×2 + Ctrl+Enter → "OK (0,25 ms, 4920 B wasm)" ve sahne yeni Matoki shader'ıyla çiziliyor. Editör karesi
+  (480×300, renklendirme + çizim) testte ≈ 0,16 ms.
+- Ölçüm: 225/225 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi; tek thread A/B (15 tur, faz 4 →
+  faz 6) oranların medyanı 0,993, en iyi sürelerin oranı 1,004. engine.wasm 553 363 → 570 290 bayt.
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

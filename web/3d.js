@@ -77,17 +77,35 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
     img = ctx.createImageData(W, H);
   }
   addEventListener('resize', applySize);
-  const swallow = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F1']);
+  const swallow = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F1', 'F2', 'Tab', 'Backspace']);
+  // shader editörü (F2) açıkken: fare kilitlenmez, imleç konumu + yazılan karakterler motora gider
+  const uiOn = () => ex.engine_ui_active() !== 0;
+  // Ctrl / Shift durumu her olayla eşitlenir: bazı kaynaklar (sanal klavye, otomasyon) ayrı Ctrl olayı göndermez
+  const syncMods = (e) => { ex.engine_key(17, e.ctrlKey ? 1 : 0); ex.engine_key(16, e.shiftKey ? 1 : 0); };
   addEventListener('keydown', (e) => {
-    if (swallow.has(e.code)) e.preventDefault();
+    const ui = uiOn();
+    if (swallow.has(e.code) || (ui && (e.ctrlKey || e.metaKey))) e.preventDefault();
+    if (ui) syncMods(e);
     if (!e.repeat) ex.engine_key(e.keyCode, 1);
-    if (e.code === 'KeyH' && !e.repeat) { autoScale = false; scaleIdx = (scaleIdx + 1) % SCALES.length; applySize(); }
+    // tek karakter (AltGr ile gelenler dahil: Windows'ta AltGr = Ctrl + Alt, '{' '@' Türkçe klavyede böyle)
+    const altgr = e.getModifierState && e.getModifierState('AltGraph');
+    if (ui && [...e.key].length === 1 && (altgr || (!e.ctrlKey && !e.metaKey && !e.altKey))) ex.engine_char(e.key.codePointAt(0));
+    if (e.code === 'F2' && document.pointerLockElement === canvas) document.exitPointerLock();
+    if (!ui && e.code === 'KeyH' && !e.repeat) { autoScale = false; scaleIdx = (scaleIdx + 1) % SCALES.length; applySize(); }
   });
-  addEventListener('keyup', (e) => ex.engine_key(e.keyCode, 0));
+  addEventListener('keyup', (e) => { ex.engine_key(e.keyCode, 0); if (uiOn()) syncMods(e); });
   addEventListener('blur', () => ex.engine_release_keys());
-  canvas.addEventListener('click', () => canvas.requestPointerLock());
+  function sendPointer(e) {
+    if (!uiOn()) return;
+    const r = canvas.getBoundingClientRect();
+    ex.engine_pointer(Math.floor((e.clientX - r.left) * W / r.width), Math.floor((e.clientY - r.top) * H / r.height), e.buttons & 7);
+  }
+  canvas.addEventListener('click', () => { if (!uiOn()) canvas.requestPointerLock(); });
+  canvas.addEventListener('mousedown', sendPointer);
+  addEventListener('mouseup', sendPointer);
   addEventListener('mousemove', (e) => {
     if (document.pointerLockElement === canvas) ex.engine_mouse(e.movementX, e.movementY);
+    else sendPointer(e);
   });
   canvas.addEventListener('wheel', (e) => { e.preventDefault(); ex.engine_wheel(Math.sign(e.deltaY)); }, { passive: false });
 

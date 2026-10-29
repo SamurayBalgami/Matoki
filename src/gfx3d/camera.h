@@ -32,6 +32,12 @@ typedef struct InputState {
     u8  pressed[256];   /* bu karede basıldı (kenar) */
     f32 mouse_dx, mouse_dy;
     f32 wheel;
+    /* arayüz (shader editörü): fare kilitli değilken framebuffer konumu, tuşlar, kare başına yazılan karakterler */
+    i32 mouse_x, mouse_y;
+    u32 mouse_buttons;    /* bit0 sol, bit1 sağ, bit2 orta */
+    u32 mouse_latch;      /* bu karede basılan tuşlar: bas-bırak iki kare arasında kalsa da görülür */
+    u32 chars[32];        /* UTF-32 */
+    u32 char_count;
 } InputState;
 
 typedef enum CamMode {
