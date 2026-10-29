@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0, 1, 2 TAMAM (2026-10-29) → sıradaki faz 3 (ECS + animasyon + glTF). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
+Durum: FAZ 0, 1, 2, 3 TAMAM (2026-10-30) → sıradaki faz 4 (ses). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
 CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 
@@ -51,7 +51,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 0 ✓ | D37, yeniden adlandırma betiği (`tools/port_names.py`) + eşleme tablosu, çekirdek ekleri | — | 6 dosya (synth, json, base64, noise, ttf, gfx2d/anim) `-Werror` temiz; 148 dosyanın 112'si eksiksiz çevriliyor |
 | 1 ✓ | çekirdek: `fmt_format` + `LOG/PANIC/ASSERT` (19+7+7 kullanım), `mat3_2d`, `mat3_mul_point`, `mat4_inverse`, sabit nokta, profiler; sonra img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | `port_names.py --check` 148/148; testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
 | 2 ✓ | raster'a alfa karışımı (sprite / metin için; batch2d şimdilik opak + kesik), font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi; karışım SIMD = skaler |
-| 3 | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
+| 3 ✓ | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
 | 4 | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
 | 5 | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
 | 6 | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
@@ -105,6 +105,27 @@ Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.
   eklenmesi (panel kapalıyken bile; atlas'ı ayrı arenaya almak farkı kapatmadı → kod yerleşimi). Kare hash'leri 10
   görünümde 1T ve 16T'de değişmedi. Denenen ve etkisiz çıkanlar: `t->blend`'i döngü dışına almak, karışımı
   `noinline` yapmak (çıktı bayt bayt aynıydı).
+
+## Faz 3 notları (2026-10-30)
+- Taşınan: `scene/ecs`, `scene/transform`, `scene/scene_io`, `anim/skeleton`, `anim/clip`, `anim/skin` (+ `skin_wasm.c`
+  SIMD), `asset/gltf`, `img/png` (glTF dokuları için; onların `tex_init_mipmapped` → bizim `tex_create`).
+- Çakışma: iki depoda ayrı `Quat` → `core/quat.h` (fizikteki satır içi sürümler birebir; onların fonksiyon kopyaları
+  silindi, adlar `port_names.py` tablosunda). Mesh alan adları (`center/radius` → `sphere_center/sphere_radius`,
+  `mesh_alloc` renk argümanı yok) elle uyarlandı.
+- Testler (20 yeni, wasm'a uyarlandı): `test_ecs` (7; 1M işlem referans modelle, 100k derin zincir, kayıt/yükleme),
+  `test_anim` (7; glTF kolunda bağlama pozu ve 90° bükülme analitik sonuçla ±1e-5, 20 000 GLB mutasyonu, kaplama
+  SIMD ↔ skaler en büyük fark ≤ 1e-5), `test_asset_gltf` (6). Onların `system()` + node ile ayrı wasm kuran SIMD
+  testi, bizde testler zaten wasm SIMD'de koştuğu için doğrudan karşılaştırmaya çevrildi; g3d çizim adımı bizim
+  `pipe_*` ile (kaplanmış kol ekranda piksel kaplar).
+- **Bulunan yavaşlık:** `transform_set_parent` döngü denetimi için ebeveynin ata zincirini yürür (O(derinlik)). 100k
+  derin zinciri yukarıdan aşağı kuran test Σi ≈ 5·10⁹ adım → wasm'da **22,4 s**. Zincir aşağıdan yukarı kurulunca
+  (aynı ağaç, aynı kontrol sayısı) **12,7 ms**. Gerçek sahnelerde derinlik küçük; bilinen sınır olarak duruyor.
+- Sahne 9: ECS kök entity'sine bağlı 8 dokunaç (10 eklem, 41 halka × 12 dilim; eklemlerde ilerleyen dalga) +
+  gömülü `assets/arm_skin.glb` kolunun 3 klibi (bend_linear, STEP, CUBICSPLINE). Kaplama (iskelet matrisleri + köşe)
+  karede 0,12 ms (16 thread sayfa, ölçülen `ST_ANIM_US`). Panel 5. satırı sahne 9'da kaplama süresini gösterir.
+- Ölçüm: 200/200 test (worker'lı ve worker'sız), 10 görünüm kare hash'i değişmedi. Tek thread A/B (21 tur, faz 2 →
+  faz 3): oranların medyanı 1,000, en iyi sürelerin oranı 0,996 (9 turluk ilk koşuda görünüm 6'daki 1,22 tekrarlanmadı
+  → gürültü). engine.wasm 436 229 → 543 712 bayt (glTF + PNG çözücü + ECS + anim + gömülü GLB).
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

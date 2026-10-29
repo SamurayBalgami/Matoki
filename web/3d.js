@@ -33,11 +33,11 @@ const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected',
   'rasterMode', 'binItems', 'binFull', 'shaderMode', 'physBodies', 'physContacts', 'physUs', 'physSteps', 'physAwake',
   'playMode', 'carKmh', 'carWheels', 'charGrounded', 'softParticles', 'softUs', 'softContacts',
   'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes', 'msaa', 'resolveUs', 'vertMode', 'verts', 'batches', 'vertUs', 'setupUs',
-  'drawsDropped', 'trisDropped', 'frameKb', 'memFails', 'hudUs'];
+  'drawsDropped', 'trisDropped', 'frameKb', 'memFails', 'hudUs', 'animUs'];
 // ?prof: kareler rAF yerine art arda, sabit 1/60 sn adımla sürülür (vsync ve gizli sekmeden bağımsız);
 // her sahnede 60 kare ısınma + 180 kare ölçüm, aşama ortalamaları konsola ve window.__prof'a
 const PROF = qs.has('prof');
-const PROF_SCENES = [1, 2, 3, 4, 5, 6, 7, 8], PROF_WARM = 60, PROF_MEASURE = 180, PROF_DT = 1000 / 60;
+const PROF_SCENES = [1, 2, 3, 4, 5, 6, 7, 8, 9], PROF_WARM = 60, PROF_MEASURE = 180, PROF_DT = 1000 / 60;
 const PLAY_NAMES = ['SÜRÜŞ', 'YÜRÜYÜŞ', 'UÇUŞ'];
 const SHADER_NAMES = ['ref (skaler)', 'tablo (skaler)', 'SIMD', 'Matoki JIT', 'Matoki HQ (anizotropik)'];
 

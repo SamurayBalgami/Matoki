@@ -1,7 +1,7 @@
 /* gfx3d/demo.c — 3D demo: wasm export'ları ve sahneler.
  * Sahne 1: dönen tuğla küp + zemin + 1000 küplük ızgara (kırpma/derinlik testi).
  * Sahne 2: ufka uzanan dama tahtası zemin; M tuşu mipmap'i açar/kapatır (moiré). Sahne 7: FFT okyanus,
- * sahne 8: üst üste düşen toplar (gezegen çekimi g(h)).
+ * sahne 8: üst üste düşen toplar (gezegen çekimi g(h)), sahne 9: iskelet animasyonu (ECS + glTF, MatokiEngine'den).
  * JS (web/3d.js) yalnızca girişi iletir ve framebuffer'ı canvas'a kopyalar. */
 #include "core/arena.h"
 #include "core/embed.h"
@@ -44,6 +44,18 @@ enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
 #include "gfx3d/hud.h"
 #include "img/image.h"
 #include "img/procgen.h"
+#include "scene/transform.h"
+#include "anim/clip.h"
+#include "anim/skin.h"
+#include "asset/gltf.h"
+
+/* sahne 9: glTF kolu (bend_linear / STEP / CUBICSPLINE klipleri) + ECS hiyerarşisine bağlı dokunaçlar */
+#define ANIM_ARMS   3
+#define TENTACLES   8
+#define TENT_JOINTS 10
+#define TENT_RINGS  41
+#define TENT_SEGS   12
+#define TENT_LEN    4.0f
 
 #define GRID_N 10
 #define GRID_COUNT (GRID_N * GRID_N * GRID_N)
@@ -68,6 +80,7 @@ enum {
     ST_DRAWS_DROPPED, ST_TRIS_DROPPED,                   /* bellek dolduğu için atlanan çizim / üçgen (bu kare) */
     ST_FRAME_KB, ST_MEM_FAILS,                           /* kare arenası tepe (KB), toplam başarısız ayırma */
     ST_HUD_US,                                           /* motor içi panel çizimi (µs; kapalıyken 0) */
+    ST_ANIM_US,                                          /* sahne 9: iskelet + köşe kaplama (µs) */
     ST_COUNT
 };
 
@@ -155,6 +168,19 @@ typedef struct Demo {
     b32 hud_on;
     f32 fps_ms;          /* kareler arası süre, üstel ortalama */
     u32 stats[ST_COUNT];
+    /* sahne 9: ilk girişte ayrı arenada kurulur (g.perm yerleşimi ve diğer sahnelerin kare hash'leri değişmez) */
+    b32 anim_ready;
+    Arena anim_mem;
+    GltfModel arm;
+    Mesh* arm_out[ANIM_ARMS];
+    EcsWorld ecs;
+    EcsEntity anim_root, tent_ent[TENTACLES];
+    Skeleton tent_skel;
+    SkinnedMesh tent_skin;
+    Mesh* tent_out[TENTACLES];
+    LitUniforms u_arm, u_tent;
+    Material m_arm, m_tent;
+    f64 anim_ms;          /* kaplama (iskelet + köşe) süresi */
 } Demo;
 
 static Demo g;
@@ -730,11 +756,189 @@ static Vec3 wind_at(f32 t) {
     return v3(6.0f + 2.5f * m_sinf(t * 0.7f), 0.0f, 1.5f * m_sinf(t * 0.37f) + 1.0f * m_sinf(t * 1.3f + 1.0f));
 }
 
+/* Sahne 9 dokunacı: y ekseni boyunca TENT_LEN boyunda, uca doğru incelen tüp; köşe başına en yakın iki eklem
+ * (doğrusal geçiş). Eklem j yerelde y = j·L'de; ters bağlama matrisi bağlama pozunun dünya matrisinin tersi. */
+static void tentacle_build(Arena* a) {
+    const f32 L = TENT_LEN / (f32)TENT_JOINTS;
+    u32 ring_v = TENT_SEGS + 1u, vn = TENT_RINGS * ring_v + 1u;
+    Mesh* m = mesh_alloc(a, vn, (TENT_RINGS - 1u) * TENT_SEGS * 6u + TENT_SEGS * 3u);
+    u16* jts = ARENA_ARRAY(a, u16, vn * 4u);
+    f32* wts = ARENA_ARRAY(a, f32, vn * 4u);
+    for (u32 i = 0; i < TENT_RINGS; i++) {
+        f32 t = (f32)i / (f32)(TENT_RINGS - 1u), y = t * TENT_LEN;
+        f32 r = 0.32f * (1.0f - 0.85f * t);
+        f32 sj = y / L;
+        u32 j0 = (u32)sj < TENT_JOINTS - 1u ? (u32)sj : TENT_JOINTS - 1u;
+        f32 f = j0 < TENT_JOINTS - 1u ? sj - (f32)j0 : 0.0f;
+        for (u32 k = 0; k <= TENT_SEGS; k++) {
+            u32 v = i * ring_v + k;
+            f32 th = (f32)k * (M_TAU_F / (f32)TENT_SEGS), c = m_cosf(th), sn = m_sinf(th);
+            m->px[v] = r * c; m->py[v] = y; m->pz[v] = r * sn;
+            m->nx[v] = c; m->ny[v] = 0.0f; m->nz[v] = sn;
+            m->u[v] = (f32)k / (f32)TENT_SEGS; m->v[v] = t * 6.0f;
+            jts[v * 4u] = (u16)j0;
+            jts[v * 4u + 1u] = (u16)(j0 + 1u < TENT_JOINTS ? j0 + 1u : j0);
+            wts[v * 4u] = 1.0f - f;
+            wts[v * 4u + 1u] = f;
+        }
+    }
+    u32 tip = vn - 1u;
+    m->px[tip] = 0.0f; m->py[tip] = TENT_LEN; m->pz[tip] = 0.0f;
+    m->nx[tip] = 0.0f; m->ny[tip] = 1.0f; m->nz[tip] = 0.0f;
+    m->u[tip] = 0.5f; m->v[tip] = 6.0f;
+    jts[tip * 4u] = TENT_JOINTS - 1u;
+    wts[tip * 4u] = 1.0f;
+    u32 n = 0;
+    for (u32 i = 0; i + 1u < TENT_RINGS; i++) {
+        for (u32 k = 0; k < TENT_SEGS; k++) {
+            u32 a0 = i * ring_v + k, b0 = a0 + ring_v;
+            u32 q[6] = { a0, b0, a0 + 1u, a0 + 1u, b0, b0 + 1u };
+            for (u32 e = 0; e < 6u; e++) m->indices[n++] = q[e];
+        }
+    }
+    for (u32 k = 0; k < TENT_SEGS; k++) {
+        u32 a0 = (TENT_RINGS - 1u) * ring_v + k;
+        m->indices[n++] = a0;
+        m->indices[n++] = tip;
+        m->indices[n++] = a0 + 1u;
+    }
+    mesh_compute_bounds(m);
+
+    Skeleton* sk = &g.tent_skel;
+    skeleton_init(sk, a, TENT_JOINTS);
+    for (u32 j = 0; j < TENT_JOINTS; j++) {
+        sk->parents[j] = (i32)j - 1;
+        sk->bind_pose[j] = joint_pose_trs(v3(0.0f, j ? L : 0.0f, 0.0f), quat_identity(), v3(1.0f, 1.0f, 1.0f));
+    }
+    Mat4 world[TENT_JOINTS];
+    skeleton_compute_matrices(sk, NULL, world, NULL);
+    for (u32 j = 0; j < TENT_JOINTS; j++) sk->inv_bind[j] = mat4_inverse(world[j]);
+    g.tent_skin.bind_mesh = m;
+    g.tent_skin.vertex_count = vn;
+    g.tent_skin.joints = jts;
+    g.tent_skin.weights = wts;
+    for (u32 i = 0; i < TENTACLES; i++) g.tent_out[i] = skin_clone_mesh(a, m);
+}
+
+/* Sahne 9 kurulumu (bir kez): glTF kolu (gömülü assets/arm_skin.glb) + ECS: kök entity'nin çocukları dokunaçlar */
+static b32 anim_scene_build(void) {
+    if (g.anim_ready) return TRUE;
+    if (!arena_init_sys(&g.anim_mem, (usize)4 << 20)) return FALSE;
+    Arena scratch = arena_sub(&g.anim_mem, (usize)1 << 20);
+    const EmbedFile* f = embed_find("arm_skin.glb");
+    if (!f || !gltf_load(f->data, f->len, &g.anim_mem, &scratch, NULL, NULL, &g.arm) || g.arm.draw_count == 0 ||
+        !g.arm.draws[0].skinned || g.arm.anim_count < ANIM_ARMS) {
+        LOG("sahne 9: arm_skin.glb yüklenemedi (%s)", g.arm.err);
+        return FALSE;
+    }
+    for (u32 k = 0; k < ANIM_ARMS; k++) g.arm_out[k] = skin_clone_mesh(&g.anim_mem, g.arm.draws[0].skinned->bind_mesh);
+    tentacle_build(&g.anim_mem);
+
+    ecs_world_init(&g.ecs, &g.anim_mem, 64);
+    transform_register(&g.ecs);
+    EcsCompId tr = transform_comp_id(&g.ecs);
+    g.anim_root = ecs_spawn(&g.ecs);
+    Transform t = transform_identity();
+    ecs_set(&g.ecs, g.anim_root, tr, &t);
+    for (u32 i = 0; i < TENTACLES; i++) {
+        f32 a = (f32)i * (M_TAU_F / (f32)TENTACLES);
+        Vec3 out = v3(m_sinf(a), 0.0f, m_cosf(a));
+        /* kökte halka üzerinde, dışa doğru 0,3 rad eğik (eğim ekseni teğet) */
+        Quat tilt = quat_from_axis_angle(v3_cross(v3(0.0f, 1.0f, 0.0f), out), 0.3f);
+        Transform ti = transform_trs(v3_scale(out, 1.1f), tilt, v3(1.0f, 1.0f, 1.0f));
+        g.tent_ent[i] = ecs_spawn(&g.ecs);
+        ecs_set(&g.ecs, g.tent_ent[i], tr, &ti);
+        transform_set_parent(&g.ecs, g.tent_ent[i], g.anim_root);
+    }
+
+    lit_defaults(&g.u_arm, g.tex_grid, v3(0.95f, 0.75f, 0.35f));
+    lit_defaults(&g.u_tent, g.tex_grid, v3(0.9f, 0.35f, 0.55f));
+    g.u_tent.wrap = 0.6f;
+    g.u_tent.translucency = 0.25f;
+    material(&g.m_arm, &g.u_arm);
+    material(&g.m_tent, &g.u_tent);
+    g.m_arm.cull = CULL_NONE;
+    g.m_tent.cull = CULL_NONE;
+    g.anim_ready = TRUE;
+    return TRUE;
+}
+
+/* Sahne 9 karesi: ECS kökü döner, dokunaç eklemlerinde ilerleyen dalga, kollar kendi kliplerini döngüyle oynatır.
+ * Kaplama CPU'da (anim/skin, wasm SIMD); çıktı mesh'leri kare sonuna dek sabit kalır (pipe_end'de çizilir). */
+static void anim_scene_update(void) {
+    if (!g.anim_ready) return;
+    f64 t0 = sys_now_ms();
+    f32 t = g.time;
+    EcsCompId tr = transform_comp_id(&g.ecs);
+    Transform* root = (Transform*)ecs_get(&g.ecs, g.anim_root, tr);
+    root->rot = quat_from_axis_angle(v3(0.0f, 1.0f, 0.0f), t * 0.25f);
+    transform_update(&g.ecs);
+
+    const f32 L = TENT_LEN / (f32)TENT_JOINTS;
+    JointPose poses[TENT_JOINTS];
+    Mat4 skin_m[TENT_JOINTS];
+    for (u32 i = 0; i < TENTACLES; i++) {
+        f32 ph = (f32)i * 0.9f;
+        for (u32 j = 0; j < TENT_JOINTS; j++) {
+            f32 w = 2.2f * t - 0.55f * (f32)j + ph;
+            Quat bend = quat_mul(quat_from_axis_angle(v3(0.0f, 0.0f, 1.0f), 0.22f * m_sinf(w)),
+                                 quat_from_axis_angle(v3(1.0f, 0.0f, 0.0f), 0.16f * m_cosf(0.7f * w)));
+            poses[j] = joint_pose_trs(v3(0.0f, j ? L : 0.0f, 0.0f), bend, v3(1.0f, 1.0f, 1.0f));
+        }
+        skeleton_compute_matrices(&g.tent_skel, poses, NULL, skin_m);
+        skin_mesh(&g.tent_skin, skin_m, TENT_JOINTS, g.tent_out[i]);
+    }
+
+    const Skeleton* sk = &g.arm.skins[g.arm.draws[0].skin];
+    JointPose ap[SKEL_MAX_JOINTS < 16 ? SKEL_MAX_JOINTS : 16];
+    Mat4 am[16];
+    if (sk->joint_count <= 16) {
+        for (u32 k = 0; k < ANIM_ARMS; k++) {
+            const AnimClip* c = &g.arm.animations[k];
+            /* klip sonunda 0,5 s bekle → bükülme ve dönüş ayrı görülsün */
+            f32 period = c->duration + 0.5f;
+            f32 lt = t - period * m_floorf(t / period);
+            clip_sample(c, sk, m_minf(lt, c->duration), FALSE, ap);
+            skeleton_compute_matrices(sk, ap, NULL, am);
+            skin_mesh(g.arm.draws[0].skinned, am, sk->joint_count, g.arm_out[k]);
+        }
+    }
+    g.anim_ms = sys_now_ms() - t0;
+}
+
+static void draw(const Mesh* mesh, const Material* mat, Mat4 model);
+
+static void render_scene9(void) {
+    draw(g.ground, &g.m_ground, mat4_identity());
+    if (!g.anim_ready) return;
+    EcsCompId tr = transform_comp_id(&g.ecs);
+    draw(g.cylinder, &g.m_pole, mat4_mul(mat4_translate(v3(0.0f, 0.15f, 0.0f)),
+                                         mat4_mul(mat4_rotate_z(M_HALF_PI_F), mat4_scale(v3(0.3f, 2.6f, 2.6f)))));
+    for (u32 i = 0; i < TENTACLES; i++) {
+        const Transform* ti = (const Transform*)ecs_get(&g.ecs, g.tent_ent[i], tr);
+        draw(g.tent_out[i], &g.m_tent, mat4_mul(mat4_translate(v3(0.0f, 0.3f, 0.0f)), ti->world));
+    }
+    for (u32 k = 0; k < ANIM_ARMS; k++) {
+        Mat4 place = mat4_mul(mat4_translate(v3(-4.0f + 4.0f * (f32)k, 0.0f, -4.5f)), mat4_scale(v3(1.4f, 1.4f, 1.4f)));
+        draw(g.arm_out[k], &g.m_arm, mat4_mul(place, g.arm.draws[0].world));
+    }
+}
+
 static void scene_set(i32 s) {
     g.scene = s;
     g.phys.planet_gm = 0.0;   /* gezegen çekimi yalnızca sahne 8'de */
     camera_set_mode(&g.cam, CAM_FLY);
     g.cam.use_look = FALSE;
+    if (s == 9) {
+        g.cam.pos = v3(0.0f, 3.6f, 10.5f);   /* dokunaçlar önde, glTF kolları arkada */
+        g.cam.yaw = 0.0f;
+        g.cam.pitch = -0.16f;
+        g.cam.zfar = 1000.0f;
+        g.cam.speed = 6.0f;
+        phys_world_clear(&g.phys);   /* önceki sahnenin gövdeleri adımlanmasın */
+        anim_scene_build();
+        return;
+    }
     if (s == 8) {
         g.cam.pos = v3(0.0f, 3.4f, 9.0f);    /* üç sütuna önden bakar */
         g.cam.yaw = 0.0f;
@@ -982,8 +1186,13 @@ static void draw_hud(void) {
                s[ST_PIXELS], s[ST_OBJ_IN], s[ST_OBJ_CULLED]);
     fmt_format(buf[3], 128, "geometri %.2f ms   raster %.2f ms   çözümleme %.2f ms", (f64)s[ST_GEO_US] * 0.001,
                (f64)s[ST_FLUSH_US] * 0.001, (f64)s[ST_RESOLVE_US] * 0.001);
-    fmt_format(buf[4], 128, "fizik %u gövde   %u temas   %u uyanık   %.2f ms", s[ST_PHYS_BODIES], s[ST_PHYS_CONTACTS],
-               s[ST_PHYS_AWAKE], (f64)s[ST_PHYS_US] * 0.001);
+    if (g.scene == 9) {
+        fmt_format(buf[4], 128, "kaplama %u dokunaç + %u glTF kol   %.2f ms   (ECS + anim + glTF: MatokiEngine)", TENTACLES,
+                   ANIM_ARMS, (f64)s[ST_ANIM_US] * 0.001);
+    } else {
+        fmt_format(buf[4], 128, "fizik %u gövde   %u temas   %u uyanık   %.2f ms", s[ST_PHYS_BODIES], s[ST_PHYS_CONTACTS],
+                   s[ST_PHYS_AWAKE], (f64)s[ST_PHYS_US] * 0.001);
+    }
     fmt_format(buf[5], 128, "bellek: kare %u KB   karo %u KB   başarısız ayırma %u", s[ST_FRAME_KB], s[ST_ARENA_KB],
                s[ST_MEM_FAILS]);
     fmt_format(buf[6], 128, "U: paneli kapat");
@@ -1003,7 +1212,8 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 
 static void set_frame_uniforms(void) {
     LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
-                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky, &g.u_pole };
+                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky, &g.u_pole,
+                           &g.u_arm, &g.u_tent };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = g.cam.pos;
         all[i]->use_mip = g.mip;
@@ -1011,7 +1221,8 @@ static void set_frame_uniforms(void) {
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
     Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
-                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water, &g.m_ocean, &g.m_pole };
+                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water, &g.m_ocean, &g.m_pole,
+                         &g.m_arm, &g.m_tent };
     /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
     VertexFn vf = g.vert_mode ? g_std_vert : NULL;
     PreludeFn vpre = g.vert_mode ? g_std_vert_pre : NULL;
@@ -1226,6 +1437,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (g.in.pressed[KEY_0 + 6]) scene_set(6);
     if (g.in.pressed[KEY_0 + 7]) scene_set(7);
     if (g.in.pressed[KEY_0 + 8]) scene_set(8);
+    if (g.in.pressed[KEY_0 + 9]) scene_set(9);
     if (g.scene == 8 && g.in.pressed[KEY_T]) drop_scene_build();
     if (g.scene == 8 && g.in.pressed[KEY_P]) { g.drop_small_planet = !g.drop_small_planet; drop_scene_build(); }
     if (g.in.pressed[KEY_K] && g_std_vert) g.vert_mode = !g.vert_mode;
@@ -1344,6 +1556,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     raster_set_depth(&g.raster, TRUE, TRUE, DEPTH_LESS);
     raster_begin(&g.raster, &g.bins);
     set_frame_uniforms();
+    if (g.scene == 9) anim_scene_update();
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     draw_sky();
@@ -1354,6 +1567,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     else if (g.scene == 4) render_scene4();
     else if (g.scene == 6) render_scene6();
     else if (g.scene == 8) render_scene8();
+    else if (g.scene == 9) render_scene9();
     else render_scene5();
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
@@ -1404,6 +1618,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_PHYS_BODIES] = g.phys.count;
     g.stats[ST_PHYS_CONTACTS] = g.phys.stats.contacts;
     g.stats[ST_PHYS_US] = (u32)(g.phys_ms * 1000.0);
+    g.stats[ST_ANIM_US] = g.scene == 9 ? (u32)(g.anim_ms * 1000.0) : 0u;
     g.stats[ST_PHYS_STEPS] = g.phys_steps;
     g.stats[ST_PHYS_AWAKE] = g.phys.stats.awake;
     g.stats[ST_PLAY_MODE] = (u32)g.play;

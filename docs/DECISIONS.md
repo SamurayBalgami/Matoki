@@ -377,6 +377,13 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
   üçgen başına; boru hattı raster'ın o anki ayarını alır. Font (TrueType, işaretli alan AA, raf atlas, metin
   düzeni) MatokiEngine'den; motor içi panel (`gfx3d/hud`) çözümlenmiş renge CPU'da yazar, raster'dan geçmez.
   Panel varsayılan kapalı (ölçüm araçları, kare hash'leri değişmez), sayfa açar (U, `?nohud`).
+- **Faz 3:** tek `Quat` tipi `core/quat.h`'de (fizikteki satır içi işlemler birebir taşındı → fizik ve kare hash'leri
+  aynı; onların `scene/transform` kopyası kaldırıldı, `quat_norm` → `quat_normalize`, `quat_rotate_vec3` →
+  `quat_rotate`). ECS (seyrek küme, nesilli tutamak), dönüşüm hiyerarşisi, sahne JSON kaydı, iskelet + klip (STEP /
+  LINEAR / CUBICSPLINE) + LBS kaplama (skaler + wasm SIMD), glTF/GLB yükleyici ve PNG çözücü taşındı; glTF dokuları
+  bizim `tex_create` (sRGB-doğru mip) ile kurulur. Motor varlıkları `assets/` altında gömülür (`build.py`; testte
+  `tests/assets` ile aynı ad bir kez). Sahne 9 ilk girişte ayrı arenada kurulur → `g.perm` yerleşimi ve diğer
+  sahneler değişmez.
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

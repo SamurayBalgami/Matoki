@@ -72,12 +72,18 @@ def clang(args):
 
 
 def gen_embed(test=False):
-    """shaders/*.mtk (+ testte tests/assets/* — .py hariç) → build/gen/embed_*.c (NUL sonlu bayt dizileri)."""
+    """shaders/*.mtk + assets/* (+ testte tests/assets/*; .py hariç, aynı ad bir kez) → build/gen/embed_*.c
+    (NUL sonlu bayt dizileri)."""
     gen = os.path.join(BUILD, "gen")
     os.makedirs(gen, exist_ok=True)
     files = sources("shaders/*.mtk")
-    if test:
-        files += [f for f in sources("tests/assets/*") if os.path.isfile(f) and not f.endswith(".py")]
+    extra = sources("assets/*") + (sources("tests/assets/*") if test else [])
+    seen = {os.path.basename(f) for f in files}
+    for f in extra:
+        name = os.path.basename(f)
+        if os.path.isfile(f) and not f.endswith(".py") and name not in seen:
+            files.append(f)
+            seen.add(name)
     path = os.path.join(gen, "embed_tests.c" if test else "embed_files.c")
     lines = ["/* build.py tarafından üretildi — elle düzenleme */", '#include "core/embed.h"']
     for i, f in enumerate(files):

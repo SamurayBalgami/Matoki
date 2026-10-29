@@ -47,6 +47,10 @@ RENAME = {
     "vec4": "v4", "vec4_add": "v4_add", "vec4_sub": "v4_sub", "vec4_scale": "v4_scale", "vec4_dot": "v4_dot",
     # rng.h: onların rng_range tamsayı [lo, hi); bizimki f32
     "rng_range": "rng_range_i32",
+    # quaternion (core/quat.h; onların scene/transform.h'sindeki tanımlar kaldırılır)
+    "quat_norm": "quat_normalize", "quat_rotate_vec3": "quat_rotate",
+    # platform
+    "plat_time_ms": "sys_now_ms",
 }
 
 # ---- imzası farklı çağrılar: (onların adı, argüman sayısı koşulu, yeniden yazıcı) ----
