@@ -16,6 +16,7 @@
 #include "phys/vehicle.h"
 #include "phys/soft.h"
 #include "phys/ocean.h"
+#include "phys/dem.h"
 #include "core/rng.h"
 
 #define ROCK_KINDS 4
@@ -30,10 +31,9 @@
 #define KEY_O 79
 #define KEY_P 80
 
-/* sahne 8: 3 sütun × 3 top; 240 Hz (hafif top bir 60 Hz karesinde birden çok çarpışabilir, D31) */
+/* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
 #define DROP_BALLS 3
-#define DROP_SUB   4
 #define DROP_RESET 7.0f
 
 /* sahne 4 oyun modu */
@@ -69,6 +69,7 @@ enum {
 typedef struct Demo {
     b32 ready;
     Arena perm, frame, bins;
+    Arena fbmem;         /* framebuffer + MSAA örnekleri; engine_resize'da sıfırlanır */
     Framebuffer fb;
     Raster raster;
     Pipeline pipe;
@@ -84,6 +85,9 @@ typedef struct Demo {
     Texture* tex_bricks;
     Texture* tex_grid;
     Texture* tex_checker;
+    Texture* tex_white;     /* 4×4 beyaz: düz renkli malzemeler (direk, cetvel) — ince gövdede doku uzamasın */
+    LitUniforms u_pole;
+    Material m_pole;
     LitUniforms u_bricks, u_grid[3], u_ground, u_floor, u_pillar;
     Material m_bricks, m_grid[3], m_ground, m_floor, m_pillar;
     Mat4* grid_models;
@@ -133,7 +137,7 @@ typedef struct Demo {
     Material m_ocean;
     f64 ocean_ms;
     /* sahne 8: üst üste bırakılan toplar (eşit / farklı kütle) */
-    u32 drop_id[DROP_COLS * DROP_BALLS];
+    DemWorld dem;            /* toplar; sahne kurulurken n = 0 */
     f32 drop_start[DROP_COLS * DROP_BALLS];   /* bırakılış merkez yüksekliği */
     f32 drop_peak[DROP_COLS * DROP_BALLS];    /* alttaki top zemine değdikten sonraki en yüksek nokta */
     b32 drop_hit[DROP_COLS];
@@ -667,36 +671,30 @@ static void soft_scene_build(void) {
     g.soft_time = 0.0f;
 }
 
-/* Sahne 8: üst üste bırakılan toplar (Galileo topu), aynı yoğunluk → yarıçap = 0,25·∛m. e = 0,9, sürtünmesiz,
- * toplar 0,3 m arayla düşer → çarpışmalar sıralı (iki cisim formülü, tests/test_phys_drop.c kesin çözümü).
- * 1. bölüm (sol) eşit kütle: hız yukarı aktarılır, en üstteki en çok sıçrar.
- * 2. bölüm farklı kütle: orta = en ağır üstte (1, 2, 4 kg) → üstteki en az sıçrar (eşit sütundakinden az);
- *    sağ = en ağır altta (4, 2, 1 kg) → katapult, en üstteki bırakıldığı yüksekliğin ~2 katına çıkar. */
+/* Sahne 8: üst üste, 2 mm aralıkla bırakılan toplar (Galileo topu); aynı yoğunluk → yarıçap = 0,25·∛m.
+ * Katı cisim çözücüsü yerine Hertz temaslı DEM (phys/dem.c, D34): çarpışma esnek temaslarla aynı anda yayılır,
+ * e = 0,9 (sert kauçuk, E = 50 MPa), çekim g(h) = GM/(R+h)² (Dünya; P ile R = 20 m'lik gezegen).
+ * Oranlar (sekme / bırakılış, tests/test_dem.c): sol eşit kütle 0,30 / 0,90 / 1,09 — en üstteki en çok;
+ * orta en ağır üstte (1, 2, 4 kg) 0,16 / 0,38 / 1,15 — katapult yok, alttaki hafif sıkışır; sağ en ağır altta
+ * (4, 2, 1 kg) 0,21 / 0,63 / 2,76 — enerji üste aktarılır. Model kesin olay çözümüyle doğrulandı (D34). */
 static const f32 DROP_MASS[DROP_COLS][DROP_BALLS] = { { 2, 2, 2 }, { 1, 2, 4 }, { 4, 2, 1 } };
 
 static f32 drop_col_x(u32 c) { return c == 0 ? -4.5f : c == 1 ? 1.0f : 4.5f; }   /* bölümler arası boşluk */
 
 static void drop_scene_build(void) {
-    PhysWorld* w = &g.phys;
-    phys_world_clear(w);
-    /* sabit g yerine g(h) = GM / (R + h)² (D32); küçük gezegende yüzey g'si yine 9,81 */
+    phys_world_clear(&g.phys);   /* sahne 8 katı cisim dünyasını kullanmaz */
+    DemWorld* w = &g.dem;
+    w->n = 0;
     w->planet_radius = g.drop_small_planet ? 20.0 : 6.371e6;
     w->planet_gm = g.drop_small_planet ? 9.81 * 20.0 * 20.0 : 3.986004418e14;
-    BodyDesc ground = phys_desc_plane(v3(0, 1, 0), 0.0f);
-    ground.restitution = 0.9f;
-    ground.friction = 0.0f;
-    phys_add_body(w, &ground);
     for (u32 c = 0; c < DROP_COLS; c++) {
-        f32 y = 1.5f;   /* alttaki topun yüzeyi */
+        f32 y = 1.5f;   /* alttaki topun yüzeyi; toplar 2 mm aralıklı (yerleştirilmiş, yapışık değil) */
         for (u32 i = 0; i < DROP_BALLS; i++) {
             f32 m = DROP_MASS[c][i], r = 0.25f * m_powf(m, 1.0f / 3.0f);
-            BodyDesc d = phys_desc_sphere(v3(drop_col_x(c), y + r, 0.0f), r, m);
-            d.restitution = 0.9f;
-            d.friction = 0.0f;
+            dem_add(w, drop_col_x(c), y + r, 0.0, r, m);
             u32 k = c * DROP_BALLS + i;
-            g.drop_id[k] = phys_add_body(w, &d);
             g.drop_start[k] = g.drop_peak[k] = y + r;
-            y += 2.0f * r + 0.3f;
+            y += 2.0f * r + 0.002f;
         }
         g.drop_hit[c] = FALSE;
     }
@@ -704,22 +702,20 @@ static void drop_scene_build(void) {
     g.phys_acc = 0.0f;
 }
 
-/* adım sonu: alttaki top zeminden sekince sütunun tepe ölçümü başlar */
+/* kare sonu: alttaki top zeminden sekince sütunun tepe ölçümü başlar */
 static void drop_track(void) {
     for (u32 c = 0; c < DROP_COLS; c++) {
-        const Body* bottom = &g.phys.bodies[g.drop_id[c * DROP_BALLS]];
-        if (!g.drop_hit[c] && bottom->vel.y > 0.0f) {
+        if (!g.drop_hit[c] && g.dem.b[c * DROP_BALLS].v[1] > 0.0) {
             g.drop_hit[c] = TRUE;
             for (u32 i = 0; i < DROP_BALLS; i++) g.drop_peak[c * DROP_BALLS + i] = 0.0f;
         }
         if (!g.drop_hit[c]) continue;
         for (u32 i = 0; i < DROP_BALLS; i++) {
             u32 k = c * DROP_BALLS + i;
-            g.drop_peak[k] = m_maxf(g.drop_peak[k], g.phys.bodies[g.drop_id[k]].pos.y);
+            g.drop_peak[k] = m_maxf(g.drop_peak[k], (f32)g.dem.b[k].x[1]);
         }
     }
 }
-
 /* zamanla değişen rüzgâr (belirleyici: yalnızca simülasyon zamanına bağlı) */
 static Vec3 wind_at(f32 t) {
     return v3(6.0f + 2.5f * m_sinf(t * 0.7f), 0.0f, 1.5f * m_sinf(t * 0.37f) + 1.0f * m_sinf(t * 1.3f + 1.0f));
@@ -797,20 +793,39 @@ static void scene_set(i32 s) {
     }
 }
 
-EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
-    if (w <= 0 || h <= 0) return 0;
-    if (!arena_init_sys(&g.perm, (usize)112 << 20)) return 0;   /* MSAA örnek tamponları 720p'de ~30 MB */
-    if (!arena_init_sys(&g.frame, (usize)32 << 20)) return 0;
-    if (!arena_init_sys(&g.bins, (usize)48 << 20)) return 0;
-    if (!arena_init_sys(&g.soft_arena, (usize)8 << 20)) return 0;
+/* en büyük çözünürlük: 1920×1080 (renk + derinlik + 4 MSAA örneği = 40 bayt/piksel → ~83 MB) */
+#define FB_MAX_PIXELS (1920u * 1080u)
 
+/* framebuffer'ı (yeniden) ayır; çözünürlük sabit 640×360 değil, sayfanın gerçek piksel boyutu (web/3d.js) */
+static b32 fb_alloc(i32 w, i32 h) {
+    if (w <= 0 || h <= 0 || (u64)w * (u64)h > FB_MAX_PIXELS) return FALSE;
+    arena_reset(&g.fbmem, 0);
+    usize n = (usize)w * (usize)h;
     g.fb.w = w;
     g.fb.h = h;
-    g.fb.color = ARENA_ARRAY(&g.perm, u32, (usize)w * (usize)h);
-    g.fb.depth = ARENA_ARRAY(&g.perm, f32, (usize)w * (usize)h);
+    g.fb.color = ARENA_ARRAY(&g.fbmem, u32, n);
+    g.fb.depth = ARENA_ARRAY(&g.fbmem, f32, n);
     /* MSAA 4x örnek tamponları (N tuşu açar/kapatır; varsayılan açık) */
-    g.fb.color_ms = ARENA_ARRAY(&g.perm, u32, (usize)w * (usize)h * RASTER_MSAA);
-    g.fb.depth_ms = ARENA_ARRAY(&g.perm, f32, (usize)w * (usize)h * RASTER_MSAA);
+    g.fb.color_ms = ARENA_ARRAY(&g.fbmem, u32, n * RASTER_MSAA);
+    g.fb.depth_ms = ARENA_ARRAY(&g.fbmem, f32, n * RASTER_MSAA);
+    return TRUE;
+}
+
+EXPORT(engine_resize) i32 engine_resize(i32 w, i32 h) {
+    if (!g.ready || !fb_alloc(w, h)) return 0;
+    g.cam.aspect = (f32)w / (f32)h;
+    return 1;
+}
+
+EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
+    if (w <= 0 || h <= 0) return 0;
+    if (!arena_init_sys(&g.perm, (usize)64 << 20)) return 0;
+    if (!arena_init_sys(&g.fbmem, (usize)FB_MAX_PIXELS * 40u + ((usize)1 << 20))) return 0;
+    if (!arena_init_sys(&g.frame, (usize)32 << 20)) return 0;
+    if (!arena_init_sys(&g.bins, (usize)96 << 20)) return 0;   /* 1080p: karo sayısı 640×360'ın 9 katı */
+    if (!arena_init_sys(&g.soft_arena, (usize)8 << 20)) return 0;
+
+    if (!fb_alloc(w, h)) return 0;
     g.fb.samples = RASTER_MSAA;
     raster_init(&g.raster, &g.fb);
     camera_init(&g.cam, (f32)w / (f32)h);
@@ -824,6 +839,9 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.tex_checker = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
     procgen_checker(g.tex_checker, 32, color_pack(240, 240, 240, 255), color_pack(25, 25, 30, 255));
     tex_build_mips(g.tex_checker);
+
+    g.tex_white = tex_create(&g.perm, 4, 4, 0);
+    for (u32 i = 0; i < 16; i++) g.tex_white->px[i] = color_pack(255, 255, 255, 255);
 
     g.cube = mesh_cube(&g.perm);
     g.ground = mesh_plane(&g.perm, 80.0f, 80.0f, 0.25f, 8);
@@ -866,6 +884,8 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     material(&g.m_ground, &g.u_ground);
     material(&g.m_floor, &g.u_floor);
     material(&g.m_pillar, &g.u_pillar);
+    lit_defaults(&g.u_pole, g.tex_white, v3(0.55f, 0.56f, 0.6f));   /* mat metal gri */
+    material(&g.m_pole, &g.u_pole);
     g.m_flat.shade = shade_flat;
     g.m_flat.uniforms = NULL;
     g.m_flat.cull = CULL_BACK;
@@ -918,6 +938,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     material(&g.m_flag, &g.u_flag);
     material(&g.m_jelly, &g.u_jelly);
     phys_world_init(&g.phys, &g.perm, 1024, 8192);
+    dem_init(&g.dem, &g.perm, DROP_COLS * DROP_BALLS, 5.0e7, 0.45, 0.9);
     g.phys.allow_sleep = TRUE;
 
     g.mip = TRUE;
@@ -944,7 +965,7 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 
 static void set_frame_uniforms(void) {
     LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
-                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky };
+                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky, &g.u_pole };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = g.cam.pos;
         all[i]->use_mip = g.mip;
@@ -952,7 +973,7 @@ static void set_frame_uniforms(void) {
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
     Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
-                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water, &g.m_ocean };
+                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water, &g.m_ocean, &g.m_pole };
     /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
     VertexFn vf = g.vert_mode ? g_std_vert : NULL;
     PreludeFn vpre = g.vert_mode ? g_std_vert_pre : NULL;
@@ -995,6 +1016,8 @@ static void render_scene1(void) {
 /* her şekil için çizim (kapsül = silindir + iki küre; hull = önceden üretilmiş düz mesh) */
 static void draw_body(const Body* b, u32 i) {
     const Material* box_mat = b->inv_mass > 0.0f ? &g.m_bricks : &g.m_pillar;
+    f32 hmin = m_minf(b->half.x, m_minf(b->half.y, b->half.z)), hmax = m_maxf(b->half.x, m_maxf(b->half.y, b->half.z));
+    if (b->shape == SHAPE_BOX && hmax > 8.0f * hmin) box_mat = &g.m_pole;   /* direk: tuğla dokusu uzar */
     switch (b->shape) {
     case SHAPE_BOX:
         draw(g.cube, box_mat, mat4_from_pos_rot_scale(b->pos, b->rot, v3_scale(b->half, 2.0f)));
@@ -1124,15 +1147,17 @@ static void render_scene8(void) {
     draw(g.ground, &g.m_ground, mat4_identity());
     for (u32 c = 0; c < DROP_COLS; c++) {
         f32 x = drop_col_x(c);
-        draw(g.cube, &g.m_pillar, mat4_mul(mat4_translate(v3(x, 4.5f, -0.9f)), mat4_scale(v3(0.12f, 9.0f, 0.12f))));   /* cetvel */
+        draw(g.cube, &g.m_pole, mat4_mul(mat4_translate(v3(x, 4.5f, -0.9f)), mat4_scale(v3(0.12f, 9.0f, 0.12f))));   /* cetvel */
         for (u32 i = 0; i < DROP_BALLS; i++) {
             u32 k = c * DROP_BALLS + i;
-            const Body* b = &g.phys.bodies[g.drop_id[k]];
+            const DemBall* b = &g.dem.b[k];
+            Vec3 pos = v3((f32)b->x[0], (f32)b->x[1], (f32)b->x[2]);
+            f32 rad = (f32)b->r;
             f32 m = DROP_MASS[c][i];
             const Material* mat = m >= 4.0f ? &g.m_grid[0] : m >= 2.0f ? &g.m_grid[1] : &g.m_grid[2];
-            draw(g.sphere, mat, mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
+            draw(g.sphere, mat, mat4_from_pos_rot_scale(pos, quat_identity(), v3(rad, rad, rad)));
             f32 side = (f32)i * 0.42f;   /* çentikler cetvelin sağında, toplara göre kademeli */
-            draw(g.cube, &g.m_pillar, mat4_mul(mat4_translate(v3(x + 0.6f + side, g.drop_start[k], -0.9f)), mat4_scale(v3(0.36f, 0.05f, 0.1f))));
+            draw(g.cube, &g.m_pole, mat4_mul(mat4_translate(v3(x + 0.6f + side, g.drop_start[k], -0.9f)), mat4_scale(v3(0.36f, 0.05f, 0.1f))));
             if (g.drop_hit[c]) draw(g.cube, mat, mat4_mul(mat4_translate(v3(x + 0.6f + side, g.drop_peak[k], -0.9f)), mat4_scale(v3(0.36f, 0.1f, 0.16f))));
         }
     }
@@ -1227,11 +1252,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
                 if (walking) character_update(&g.phys, &g.chr, wish, jump && g.phys_steps == 0, PHYS_DT);
             }
             if (g.scene == 8) {
-                for (u32 k = 0; k < DROP_SUB; k++) {
-                    phys_step(&g.phys, PHYS_DT / DROP_SUB);
-                    g.phys_ms += g.phys.stats.step_ms;
-                    drop_track();
-                }
+                f64 t0 = sys_now_ms();
+                dem_step(&g.dem, PHYS_DT);
+                g.phys_ms += sys_now_ms() - t0;
+                drop_track();
                 g.drop_time += PHYS_DT;
             } else {
                 phys_step(&g.phys, PHYS_DT);
@@ -1386,6 +1410,9 @@ static const BenchView BENCH_VIEWS[] = {
     { 6, -3.2f, 5.2f, 1.2f, -0.25f, 0.05f },    /* 5: bayrak yakından (kumaş ışığı) */
     { 7, 0.0f, 6.0f, 22.0f, 0.0f, -0.22f },     /* 6: dalgalı göl (wave_vert.mtk, 33 bin üçgen) */
     { 8, 0.0f, 3.4f, 9.0f, 0.0f, 0.0f },       /* 7: üst üste toplar (--frames ile fizik ilerler) */
+    { 3, 0.0f, 5.0f, 16.0f, 0.0f, -0.2f },     /* 8: fizik yığınları (--frames ile devrilir) */
+    { 4, 0.0f, 4.0f, 9.0f, 0.0f, -0.1f },      /* 9: araba sahnesi (takip kamerası) */
+    { 5, 0.0f, 9.0f, 24.0f, 0.0f, -0.28f },    /* 10: eklemler + şekiller */
 };
 
 EXPORT(engine_bench_view_count) i32 engine_bench_view_count(void) { return (i32)ARRAY_COUNT(BENCH_VIEWS); }

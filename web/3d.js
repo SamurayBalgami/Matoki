@@ -1,7 +1,14 @@
 // web/3d.js — MATOKI 3D demo yükleyicisi (yalnızca platform işi).
 // wasm yükleme, giriş olaylarını motora iletme, framebuffer'ı canvas'a kopyalama ve
 // istatistik metni. Tüm motor mantığı C'de (src/gfx3d/demo.c).
-const W = 640, H = 360;
+// Çözünürlük: canvas'ın ekrandaki gerçek piksel boyutu (CSS genişliği × devicePixelRatio) × ölçek, en çok 1920×1080.
+// ?res=WxH sabitler; H tuşu ölçeği %100 → %75 → %50 gezer (yavaş makinede hız için).
+let W = 640, H = 360;
+const MAX_PIXELS = 1920 * 1080;
+const SCALES = [1, 0.75, 0.5];
+let scaleIdx = 0;
+let autoScale = true;   // FPS < 25 sürerse ölçek kendiliğinden iner; H'ye basınca kapanır
+let slowWindows = 0;
 const canvas = document.getElementById('screen');
 const info = document.getElementById('info');
 const errBox = document.getElementById('err');
@@ -29,7 +36,7 @@ const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected',
 // ?prof: kareler rAF yerine art arda, sabit 1/60 sn adımla sürülür (vsync ve gizli sekmeden bağımsız);
 // her sahnede 60 kare ısınma + 180 kare ölçüm, aşama ortalamaları konsola ve window.__prof'a
 const PROF = qs.has('prof');
-const PROF_SCENES = [1, 2, 3, 4, 5, 6, 7], PROF_WARM = 60, PROF_MEASURE = 180, PROF_DT = 1000 / 60;
+const PROF_SCENES = [1, 2, 3, 4, 5, 6, 7, 8], PROF_WARM = 60, PROF_MEASURE = 180, PROF_DT = 1000 / 60;
 const PLAY_NAMES = ['SÜRÜŞ', 'YÜRÜYÜŞ', 'UÇUŞ'];
 const SHADER_NAMES = ['ref (skaler)', 'tablo (skaler)', 'SIMD', 'Matoki JIT', 'Matoki HQ (anizotropik)'];
 
@@ -37,19 +44,40 @@ async function main() {
   if (!crossOriginIsolated) throw new Error('SharedArrayBuffer yok: sayfa COOP/COEP başlıklarıyla sunulmalı (python build.py serve)');
   const { state, ex, module } = await loadEngine(await WebAssembly.compileStreaming(fetch('engine.wasm')), log);
   mem = state.memory;
+  const fixed = qs.has('res') ? qs.get('res').split('x').map(Number) : null;
+  function targetSize() {
+    if (fixed) return fixed;
+    const dpr = window.devicePixelRatio || 1;
+    let w = Math.round(canvas.clientWidth * dpr * SCALES[scaleIdx]);
+    let h = Math.round(w * 9 / 16);
+    const k = Math.sqrt(Math.min(1, MAX_PIXELS / (w * h)));
+    w = Math.max(160, Math.floor(w * k / 2) * 2);
+    h = Math.max(90, Math.floor(h * k / 2) * 2);
+    return [w, h];
+  }
+  [W, H] = targetSize();
   if (!ex.engine_init(W, H)) throw new Error('engine_init başarısız');
-  // kare döngüsü worker'lar hazır olunca başlar (başaramazsa tek thread devam)
+  canvas.width = W; canvas.height = H;  // kare döngüsü worker'lar hazır olunca başlar (başaramazsa tek thread devam)
   try {
     threads = 1 + (await startWorkers(state, ex, module, WANT_WORKERS)).length;
   } catch (e) {
     console.error('worker başlatılamadı, tek thread', e);
   }
-  const img = ctx.createImageData(W, H);
-
+  let img = ctx.createImageData(W, H);
+  function applySize() {
+    const [w, h] = targetSize();
+    if (w === W && h === H) return;
+    if (!ex.engine_resize(w, h)) return;
+    W = w; H = h;
+    canvas.width = W; canvas.height = H;
+    img = ctx.createImageData(W, H);
+  }
+  addEventListener('resize', applySize);
   const swallow = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F1']);
   addEventListener('keydown', (e) => {
     if (swallow.has(e.code)) e.preventDefault();
     if (!e.repeat) ex.engine_key(e.keyCode, 1);
+    if (e.code === 'KeyH' && !e.repeat) { autoScale = false; scaleIdx = (scaleIdx + 1) % SCALES.length; applySize(); }
   });
   addEventListener('keyup', (e) => ex.engine_key(e.keyCode, 0));
   addEventListener('blur', () => ex.engine_release_keys());
@@ -100,6 +128,9 @@ async function main() {
     for (const k in ms) sum[k] = (sum[k] || 0) + ms[k];
     if (acc >= 500) {
       fps = frames * 1000 / acc;
+      // iki ardışık yavaş pencere (1 s) → bir kademe düşük çözünürlük (profil modunda değil)
+      slowWindows = fps < 25 ? slowWindows + 1 : 0;
+      if (autoScale && !PROF && !fixed && slowWindows >= 2 && scaleIdx < SCALES.length - 1) { scaleIdx++; applySize(); slowWindows = 0; }
       for (const k in sum) { avg[k] = sum[k] / frames; sum[k] = 0; }
       acc = 0; frames = 0;
     }
@@ -125,7 +156,7 @@ async function main() {
       info.textContent =
         (PROF ? (prof.i < PROF_SCENES.length ? `PROFİL: sahne ${PROF_SCENES[prof.i]} ölçülüyor…\n` : 'PROFİL bitti (konsol / window.__prof)\n') : '') +
         `sahne ${st.scene}   mipmap ${st.mip ? 'AÇIK' : 'kapalı'}   kamera ${['uçuş', 'orbit', 'oyun'][st.cam] || '?'}\n` +
-        `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H}   ${threads} thread\n` +
+        `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H} (%${Math.round(SCALES[scaleIdx] * 100)})   ${threads} thread\n` +
         `  temizle ${f('clear')}  geometri ${f('geo')}  boyama ${f('flush')}  fizik ${f('phys')}  yumuşak ${f('soft')}  kopya ${f('copy')}\n` +
         `raster ${st.rasterMode ? 'SIMD' : 'skaler'}   shader ${SHADER_NAMES[st.shaderMode]}   MSAA ${st.msaa}x (çözümleme ${f('resolve')} ms)\n` +
         `köşe aşaması ${st.vertMode ? 'Matoki' : 'C'} ${f('vert')} ms   üçgen kurulumu ${f('setup')} ms   ${st.verts} köşe, ${st.batches} parti\n` +

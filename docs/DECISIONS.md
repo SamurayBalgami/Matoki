@@ -294,6 +294,29 @@ Testte rüzgâra karşı enerji tam 0; zaman kaydırmalı çapraz ilinti asimetr
 - Genlikler Parseval ile hedef rms'ye ölçeklenir (test: 0,2000). Faz f64'te 2π'ye indirgenir.
 - Alanlar CPU'da, köşeler her kare mesh'e yazılır (Matoki köşe aşamasında doku okuma yok); `O` ile Gerstner
   (wave_vert.mtk) geri gelir. Bench görünümü 6'nın hash'i bu yüzden değişti. Okyanus maliyeti ayrıca ölçülmedi.
+## D34. Değen top yığınları için Hertz temaslı DEM (2026-10-29)
+Sorun: D31'deki katı cisim çözücüsü topları 0,3 m arayla düşürüyordu; sıralı iki cisim darbesi modelinde eşit kütleler
+hızı birebir devreder → her top kabaca kendi yüksekliğine döner ("hepsi aynı yükseklikte zıplıyor"). Gerçek yığında
+toplar birbirine değer ve çarpışma esnek temaslarla AYNI ANDA yayılır; bunu darbe (impuls) modeli veremez.
+- **phys/dem.c:** küre + zemin, f64. F = k·δ^{3/2} + γ·√(m*·k)·δ^{1/4}·δ̇ (Hertz + Tsuji sönümü), k = (4/3)·E*·√R*,
+  E* = E/(2(1−ν²)). Tsuji'de e hızdan bağımsız (boyutsuz analiz) → γ(e) tek boyutsuz çarpışmada bisection ile.
+  Hız Verlet, alt adım = en kısa Hertz temas süresi / 40. Çekim sabit g ya da g(h) (D32).
+- **Doğrulama (tests/test_dem.c):** tek top sekme/düşme 0,808–0,809 (hedef e² = 0,81, 0,5–4 m'de aynı); e = 1'de
+  toplam enerji (kinetik + çekim + esneklik) sapması 1,5e-4; gezegen düşüşü kesin formülle 5 hane.
+- **Kesin çözümle doğrulama:** toplar 0,3 m aralıklıyken (sıralı çarpışmalar) DEM, test_phys_drop.c'nin olay tabanlı
+  kesin çözümüyle örtüşür: üst toplar 2,440 ↔ 2,439, 2,171 ↔ 2,205, 7,279 ↔ 7,283 m. Yakınsama: alt adım t_c/40 →
+  t_c/80'de sonuç %0,04 değişir.
+- **Kurulum:** toplar tam değerken çarpışmalar üst üste biner; ağır altta (4,2,1) orta top enerjisini üste aktaramaz
+  (0,90 geri sıçrar, üstteki 2,41). 2 mm aralıkla (yerleştirilmiş, yapışık değil) çarpışmalar ayrışır: orta 0,63,
+  üstteki 2,76; eşit kütlede üstteki yine en çok (0,30 / 0,90 / 1,09); ağır üstte 0,16 / 0,38 / 1,15. Sahne 8 2 mm.
+
+## D35. Çözünürlük: sabit 640×360 → ekranın gerçek piksel boyutu (2026-10-29)
+Sayfa 640×360 kareyi ~1000 px'e `image-rendering: pixelated` ile büyütüyordu (kaba bloklar). Artık canvas boyutu
+CSS genişliği × devicePixelRatio (en çok 1920×1080), `engine_resize` framebuffer'ı ayrı `fbmem` arenasında yeniden
+ayırır (40 bayt/piksel, MSAA dahil); `H` ölçeği %100/75/50 gezer, `?res=WxH` sabitler. Maliyet piksel sayısıyla
+doğrusal: 16 thread, HQ + MSAA, görünümler arası 640×360 3,8–7,2 ms, 1280×720 13,5–23,3 ms,
+1920×1080 29,6–52,3 ms (tools/bench_res.mjs). Sayfada FPS 1 s boyunca 25'in altındaysa ölçek kendiliğinden bir kademe iner
+(H'ye basılınca kapanır). İnce statik kutular (direk, cetvel) düz gri malzemeyle (doku uzaması).
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.
