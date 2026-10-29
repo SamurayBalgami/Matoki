@@ -384,6 +384,12 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
   bizim `tex_create` (sRGB-doğru mip) ile kurulur. Motor varlıkları `assets/` altında gömülür (`build.py`; testte
   `tests/assets` ile aynı ad bir kez). Sahne 9 ilk girişte ayrı arenada kurulur → `g.perm` yerleşimi ve diğer
   sahneler değişmez.
+- **Faz 4 (kaynak 2ac467a'ya güncellendi):** ses = onların synth + halka tampon + AudioWorklet'i. Sesi ana thread
+  üretir (karede `audio_pump`, hedef doluluk 60 ms); worklet paylaşılan bellekten kopyalar. Halka ses başlarken ön
+  doldurulur (açılış kesintisi yok). Çarpışma sesi `audio/impact` köprüsü yalnız okur: soft çözücünün adım başı
+  yaklaşma hızı (rijit) ve çekim dışı hız sıçraması (DEM), cisim başına 0,12 s bekleme, adımda en güçlü 4 aday,
+  eşitlikte indeks sırası → simülasyon ve fizik hash'leri ses açık/kapalı aynı (test). Onların testsiz deniz/hava
+  efektleri uç girdi testiyle alındı. Sınır: sayfa gizliyken / ana thread durunca ses kesilir (üretici ana thread).
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

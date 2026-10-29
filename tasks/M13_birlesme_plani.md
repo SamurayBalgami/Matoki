@@ -1,6 +1,7 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0, 1, 2, 3 TAMAM (2026-10-30) → sıradaki faz 4 (ses). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
+Durum: FAZ 0, 1, 2, 3, 4 TAMAM (2026-10-30) → sıradaki faz 5 (sim: geri sarma / tekrar oynatma).
+Kaynak sürümü: faz 0–3 0a7b782; faz 4'ten itibaren 2ac467a (onların 61 yeni commit'inde faz 0–3 dosyaları değişmedi). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
 CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 
@@ -52,7 +53,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 1 ✓ | çekirdek: `fmt_format` + `LOG/PANIC/ASSERT` (19+7+7 kullanım), `mat3_2d`, `mat3_mul_point`, `mat4_inverse`, sabit nokta, profiler; sonra img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | `port_names.py --check` 148/148; testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
 | 2 ✓ | raster'a alfa karışımı (sprite / metin için; batch2d şimdilik opak + kesik), font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi; karışım SIMD = skaler |
 | 3 ✓ | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
-| 4 | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
+| 4 ✓ | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
 | 5 | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
 | 6 | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
 | 7 | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
@@ -126,6 +127,25 @@ Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.
 - Ölçüm: 200/200 test (worker'lı ve worker'sız), 10 görünüm kare hash'i değişmedi. Tek thread A/B (21 tur, faz 2 →
   faz 3): oranların medyanı 1,000, en iyi sürelerin oranı 0,996 (9 turluk ilk koşuda görünüm 6'daki 1,22 tekrarlanmadı
   → gürültü). engine.wasm 436 229 → 543 712 bayt (glTF + PNG çözücü + ECS + anim + gömülü GLB).
+
+## Faz 4 notları (2026-10-30)
+- Onların deposu güncellendi (0a7b782 → 2ac467a, 61 commit). Faz 0–3'te taşınan dosyaların hiçbiri değişmemiş
+  (`git diff --stat`); değişen yalnız `audio/synth` (+6 deniz/hava efekti, onların mesajında "yarım iş, testsiz").
+  Ses bu sürümden alındı; `port_names.py` kaynak notu artık 2ac467a.
+- Taşınan: `audio/synth` (osilatörler, ADSR, SVF, yankı, sıralayıcı), `audio/audio` (halka tampon; onların
+  `thread/atomic.h` → `__atomic_*`), `web/audio.js`, `web/audio_worklet.js`. Yeni: `audio/impact` (çarpışma sesi).
+- Testler: `test_audio` (9, onların; statik 1,1 MB tampon ilk belleği aşıyordu → test_arena), `test_impact` (4, yeni):
+  deniz/hava efektleri 9 uç girdide (NaN, ±sonsuz, negatif, 1e9) × 7 efekt = 63 durumda sonlu, [-1, 1] içinde ve
+  zarf sonunda susuyor; 3 m'den düşen kutu tek vuruş (≈ adım 43), yerde duran kutu 2 s sessiz, fizik hash'i ses
+  açık/kapalı aynı; DEM topu zemine çarpınca tek vuruş.
+- **Bulunan hata (onlarda da var):** halka ses başlarken boştu; worklet ilk motor karesine dek okuyup kesinti saydı
+  (ölçülen 15 872 kare ≈ 0,33 s). `engine_audio_init` artık hedef gecikmeye kadar ön dolduruyor → 0. Onların
+  `audio_ring_stream_matches_direct` testi ön doldurulan sessizliği okunmuş sayacak şekilde güncellendi.
+- Tarayıcı ölçümü (48 kHz, 16 thread): normal akışta doluluk sabit 2880 kare (60 ms), 4 s'de kesinti 0; sentez
+  karede 0,01–0,02 ms (4 ses). 16 ses + yankı 1 s ses: 7,4 ms (test). Sahne 3'te piramit yıkılırken 52 vuruş sesi.
+- Demo: J ses aç/kapa (L zaten shader), `?nosound`; panel son satırı: çalan ses, vuruş, sentez ms, kesinti.
+- Ölçüm: 213/213 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi; tek thread A/B (15 tur, faz 3 →
+  faz 4) oranların medyanı 0,997, en iyi sürelerin oranı 0,990. engine.wasm 543 712 → 553 363 bayt.
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

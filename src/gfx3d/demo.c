@@ -31,6 +31,7 @@
 #define KEY_O 79
 #define KEY_P 80
 #define KEY_U 85
+#define KEY_J 74
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -48,6 +49,8 @@ enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
 #include "anim/clip.h"
 #include "anim/skin.h"
 #include "asset/gltf.h"
+#include "audio/audio.h"
+#include "audio/impact.h"
 
 /* sahne 9: glTF kolu (bend_linear / STEP / CUBICSPLINE klipleri) + ECS hiyerarşisine bağlı dokunaçlar */
 #define ANIM_ARMS   3
@@ -81,6 +84,8 @@ enum {
     ST_FRAME_KB, ST_MEM_FAILS,                           /* kare arenası tepe (KB), toplam başarısız ayırma */
     ST_HUD_US,                                           /* motor içi panel çizimi (µs; kapalıyken 0) */
     ST_ANIM_US,                                          /* sahne 9: iskelet + köşe kaplama (µs) */
+    ST_AUDIO_US, ST_AUDIO_VOICES, ST_IMPACTS,            /* ses: sentez (µs), çalan ses, toplam vuruş sesi */
+    ST_AUDIO_UNDERRUNS,                                  /* worklet'in boş bulduğu toplam kare (kesinti) */
     ST_COUNT
 };
 
@@ -181,6 +186,10 @@ typedef struct Demo {
     LitUniforms u_arm, u_tent;
     Material m_arm, m_tent;
     f64 anim_ms;          /* kaplama (iskelet + köşe) süresi */
+    /* ses (M13 faz 4): çarpışma sesi köprüsü; bekleme tablosu kendi küçük arenasında */
+    ImpactAudio impact;
+    Arena impact_mem;
+    b32 mute;             /* L tuşu */
 } Demo;
 
 static Demo g;
@@ -926,6 +935,7 @@ static void render_scene9(void) {
 
 static void scene_set(i32 s) {
     g.scene = s;
+    impact_reset(&g.impact);
     g.phys.planet_gm = 0.0;   /* gezegen çekimi yalnızca sahne 8'de */
     camera_set_mode(&g.cam, CAM_FLY);
     g.cam.use_look = FALSE;
@@ -1166,6 +1176,11 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     /* ayrı arena: atlas (~200 KB) g.perm'e girince sonraki sahne ayırmalarının yerleşimi kayıyor, ölçümde
      * panel kapalıyken %2,5–4,5 yavaşlık görüldü (tools/bench_ab.mjs); başarısızsa panel çizilmez */
     if (arena_init_sys(&g.hud_mem, (usize)1 << 20)) hud_init(&g.hud, &g.hud_mem, &g.frame);
+    {
+        static u8 impact_buf[1024 * sizeof(f32) + 64];
+        arena_init(&g.impact_mem, impact_buf, sizeof(impact_buf));
+        impact_init(&g.impact, &g.impact_mem, 1024);   /* = phys_world_init gövde kapasitesi */
+    }
     scene_set(1);
     g.ready = TRUE;
     return 1;
@@ -1195,7 +1210,12 @@ static void draw_hud(void) {
     }
     fmt_format(buf[5], 128, "bellek: kare %u KB   karo %u KB   başarısız ayırma %u", s[ST_FRAME_KB], s[ST_ARENA_KB],
                s[ST_MEM_FAILS]);
-    fmt_format(buf[6], 128, "U: paneli kapat");
+    if (!audio_is_running()) {
+        fmt_format(buf[6], 128, "U: paneli kapat   ses: bir tuşa basınca başlar");
+    } else {
+        fmt_format(buf[6], 128, "U: paneli kapat   J: ses %s   çalan %u   vuruş %u   sentez %.2f ms   kesinti %u", g.mute ? "KAPALI" : "açık",
+                   s[ST_AUDIO_VOICES], s[ST_IMPACTS], (f64)s[ST_AUDIO_US] * 0.001, s[ST_AUDIO_UNDERRUNS]);
+    }
     const char* lines[7] = { buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6] };
     hud_draw_lines(&g.hud, &g.fb, 8, 8, lines, 7);
 }
@@ -1428,6 +1448,14 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.time += dt;
     g.fps_ms = g.fps_ms > 0.0f ? g.fps_ms + (dt_ms - g.fps_ms) * 0.1f : dt_ms;
     if (g.in.pressed[KEY_U]) g.hud_on = !g.hud_on;
+    if (g.in.pressed[KEY_J]) {   /* ses aç/kapa: master 0 ↔ synth varsayılanı */
+        static f32 master_on = -1.0f;
+        Synth* sy = audio_synth();
+        if (master_on < 0.0f) master_on = sy->master;
+        g.mute = !g.mute;
+        if (g.mute) synth_stop_all(sy);
+        sy->master = g.mute ? 0.0f : master_on;
+    }
 
     if (g.in.pressed[KEY_0 + 1]) scene_set(1);
     if (g.in.pressed[KEY_0 + 2]) scene_set(2);
@@ -1503,15 +1531,23 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
                 vehicle_update(&g.phys, &g.car, PHYS_DT);
                 if (walking) character_update(&g.phys, &g.chr, wish, jump && g.phys_steps == 0, PHYS_DT);
             }
+            b32 snd = audio_is_running() && !g.mute;
+            if (snd) impact_advance(&g.impact, PHYS_DT);
             if (g.scene == 8) {
+                static f32 vb[DROP_COLS * DROP_BALLS * 3];
+                for (u32 i = 0; snd && i < g.dem.n && i < DROP_COLS * DROP_BALLS; i++) {
+                    for (u32 j = 0; j < 3; j++) vb[i * 3 + j] = (f32)g.dem.b[i].v[j];
+                }
                 f64 t0 = sys_now_ms();
                 dem_step(&g.dem, PHYS_DT);
                 g.phys_ms += sys_now_ms() - t0;
+                if (snd && g.dem.n <= DROP_COLS * DROP_BALLS) impact_from_dem(&g.impact, audio_synth(), &g.dem, vb, PHYS_DT, 4);
                 drop_track();
                 g.drop_time += PHYS_DT;
             } else {
                 phys_step(&g.phys, PHYS_DT);
                 g.phys_ms += g.phys.stats.step_ms;
+                if (snd) impact_from_phys(&g.impact, audio_synth(), &g.phys, 4);
             }
             if (g.scene == 6) {
                 g.soft_time += PHYS_DT;
@@ -1633,11 +1669,21 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_CAM_X] = (u32)(i32)(g.cam.pos.x * 100.0f);
     g.stats[ST_CAM_Y] = (u32)(i32)(g.cam.pos.y * 100.0f);
     g.stats[ST_CAM_Z] = (u32)(i32)(g.cam.pos.z * 100.0f);
+    g.stats[ST_AUDIO_VOICES] = audio_is_running() ? synth_active_voices(audio_synth()) : 0u;
+    g.stats[ST_IMPACTS] = g.impact.played;
+    g.stats[ST_AUDIO_UNDERRUNS] = audio_is_running() ? __atomic_load_n(&audio_ring()->underruns, __ATOMIC_RELAXED) : 0u;
     g.stats[ST_HUD_US] = 0;
     if (g.hud_on) {
         f64 th = sys_now_ms();
         draw_hud();
         g.stats[ST_HUD_US] = (u32)((sys_now_ms() - th) * 1000.0);
+    }
+    /* ses: halka tamponu 60 ms gecikmeye kadar doldur (AudioWorklet okur; ses başlamadıysa iş yok) */
+    g.stats[ST_AUDIO_US] = 0;
+    if (audio_is_running()) {
+        f64 ta = sys_now_ms();
+        audio_pump(AUDIO_LATENCY_S);
+        g.stats[ST_AUDIO_US] = (u32)((sys_now_ms() - ta) * 1000.0);
     }
 }
 

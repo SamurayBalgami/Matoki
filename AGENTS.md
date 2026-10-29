@@ -29,6 +29,7 @@ GPU kullanmadan tarayıcıda çalışan yazılım render motoru. C11, freestandi
 - `src/img` doku/mip/prosedürel/filtre · `src/gfx3d` 3D boru hattı, kamera, mesh, motor içi panel, demo
 - `src/gfx2d` sprite, 2D kamera, karo haritası · `src/font` TrueType, atlas, metin · `src/asset` JSON, base64, glTF/GLB
   · `src/scene` ECS, dönüşüm hiyerarşisi, sahne kaydı · `src/anim` iskelet, klip, LBS kaplama · `src/img/png`
+  · `src/audio` sentez, halka tampon (JS: `web/audio.js`, `audio_worklet.js`), çarpışma sesi (`impact`, bizim)
   (bunlar MatokiEngine'den, `tools/port_names.py` ile; plan `tasks/M13_birlesme_plani.md`, karar D37)
 - `assets/` motora gömülen varlıklar (`build.py`; ör. sahne 9'un `arm_skin.glb`'si)
 - `src/matoki` shader dili derleyicisi · `src/jit` JIT yükleme · `src/phys` fizik motoru · `shaders/` .mtk dosyaları

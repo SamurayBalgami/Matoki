@@ -18,7 +18,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE_REPO = "Xassemblianist/MatokiEngine"
-SOURCE_REV = "0a7b782"
+SOURCE_REV = "2ac467a"
 
 # ---- düz yeniden adlandırma (kelime sınırında) ----
 RENAME = {
