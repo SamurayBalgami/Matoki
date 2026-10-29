@@ -337,6 +337,34 @@ doğrusal: 16 thread, HQ + MSAA, görünümler arası 640×360 3,8–7,2 ms, 128
 - **Matoki:** iç içe ifade/blok derinliği 200 ile sınırlı (20 000 derinlik yığını taşırıp motoru düşürüyordu);
   4800 mutasyon + 3000 jeton çorbası: çökme yok, her hata konumlu. Canlı yeniden derleme başarısızlıkta kalıcı
   arenayı geri sarar.
+## D37. İki deponun birleşmesi: MatokiEngine sistemleri bu depoya, seçerek (2026-10-29)
+Xassemblianist/MatokiEngine (WebGPU, ses, arayüz, font, glTF, animasyon, ECS, rollback) ile bu depo (fizik, DEM,
+okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birleşir. İki depo da aynı ekibin yönetiminde.
+- **Ana depo bu depo** (SamurayBalgami/Matoki). Ortak git geçmişi yok, aynı yoldaki 55 dosyanın hiçbiri aynı değil →
+  `git merge` değil, alt sistem alt sistem taşıma (tasks/M13_birlesme_plani.md). MatokiEngine taşıma bitince arşivlenir.
+- **Adlar bizim kalır.** `tools/port_names.py` eşleme tablosuyla çevirir (`vec3_add` → `v3_add`, `m_sin` → `m_sinf`,
+  `arena_push` → `arena_alloc`, `mat4_mul_vec4(M, v)` → `mat4_mul_v4(&M, v)`, `rng_seed` → `rng_make`); dize sabitlerine
+  dokunmaz; bizim çekirdekte olmayan ad / bulunmayan include kalırsa çıkış 1 — iki ad kümesi depoda kalıcı olmaz.
+  Doğrulanmış anlam eşitlikleri: arena (sıfırlanmış bellek, dolunca panik), Vec/Mat düzeni (sütun öncelikli),
+  `mat4_perspective` (0..1 derinlik, aynı formül), `mat4_look_at`. Farklı: RNG (onlar PCG32, biz xorshift64*) →
+  taşınan kodun rastgele dizileri değişir, belirlenimcilik korunur; onların `rng_range` tamsayı → `rng_range_i32`;
+  `b32` onlarda u32, bizde i32.
+- **Tek iş sistemi** `core/jobs` (belirlenimci, 1T ↔ 16T bit-bit testli); onların `thread/` kullanımları buna çevrilir.
+- **Rol bölümü: işlemci simülasyon, ekran kartı çizim.** Fizik / DEM / rollback / animasyon / ECS / eleme CPU'da ve
+  bit-bit belirlenimci kalır (GPU'lar arası float farkı geri sarma ve ağ eşitlemesini bozar). GPU'ya yalnızca görsel
+  iş: üçgen çizimi, shader, okyanus FFT görüntüsü, parçacık, gölge, MSAA, post-process. Boru hattı: CPU N+1. karenin
+  simülasyonunu yaparken GPU N. kareyi çizer; kare süresi ≈ max(CPU, GPU). Sayfada CPU ms / GPU ms (zaman sorgusu) /
+  kare ms ayrı gösterilir.
+- **WebGPU ikinci arka uç, en son faz.** Ortak giriş aynı çizim listesi (`DrawRec`); Matoki'ye WGSL hedefi eklenir
+  (shader bir kez yazılır). Yazılım render referans kalır: her görünüm iki yolda çizilip piksel farkı eşikle test
+  edilir. WebGPU yoksa / açılamazsa motor sessizce yazılım render'a döner ("GPU kullanmadan çalışır" garantisi).
+  JS tarafı yalnız komut akışını WebGPU çağrısına çevirir; çizim kararları C'de.
+- **Çekirdeğe eklenenler (faz 0):** `isize`, `KB/MB/ALIGN_UP/IS_POW2/I32_MAX/I32_MIN/U32_MAX`, `IVec2`/`iv2`,
+  `v2_*`, `v4_add/sub/scale`, `m_ceilf/m_truncf`, `M_HALF_PI_F/M_DEG2RAD_F/M_RAD2DEG_F`, `arena_sub`,
+  `ARENA_ARRAY_NOZERO`, `rng_range_i32`. İlk sınama: synth, json, base64, noise, ttf, gfx2d/anim çevrilip
+  `-Werror` ile hatasız derlendi. Onların 148 taşınabilir dosyasından 112'si bugün eksiksiz çevriliyor; kalan 36'nın
+  ihtiyacı: printf tarzı `fmt_format` + `LOG/PANIC/ASSERT`, profiler, sabit nokta (`fixed.h`), SIMD yardımcıları,
+  `mat3_2d` / `mat3_mul_point`, `mat4_inverse` → faz 1.
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

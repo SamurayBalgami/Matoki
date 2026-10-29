@@ -73,6 +73,18 @@ void* arena_try_array(Arena* a, usize elem, usize count, usize align) {
     return arena_try(a, n, align);
 }
 
+void* arena_alloc_array_nozero(Arena* a, usize elem, usize count, usize align) {
+    usize n;
+    if (!array_bytes(elem, count, &n)) sys_panic("arena: dizi boyutu taşması");
+    return arena_alloc_nozero(a, n, align);
+}
+
+Arena arena_sub(Arena* parent, usize cap) {
+    Arena c;
+    arena_init(&c, arena_alloc_nozero(parent, cap, 16), cap);
+    return c;
+}
+
 usize arena_mark(const Arena* a) { return a->used; }
 
 void arena_reset(Arena* a, usize mark) {

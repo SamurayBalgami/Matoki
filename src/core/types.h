@@ -17,6 +17,7 @@ typedef float            f32;
 typedef double           f64;
 typedef i32              b32;
 typedef __SIZE_TYPE__    usize;
+typedef __PTRDIFF_TYPE__ isize;
 typedef __UINTPTR_TYPE__ uptr;
 
 #define TRUE  1
@@ -30,6 +31,13 @@ typedef __UINTPTR_TYPE__ uptr;
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define CLAMP(x, lo, hi) MIN(MAX((x), (lo)), (hi))
 #define UNUSED(x) ((void)(x))
+#define ALIGN_UP(x, a) (((x) + ((a) - 1)) & ~((a) - 1))   /* a: 2'nin kuvveti */
+#define IS_POW2(x) ((x) != 0 && (((x) & ((x) - 1)) == 0))
+#define KB(n) ((usize)(n) << 10)
+#define MB(n) ((usize)(n) << 20)
+#define U32_MAX 0xFFFFFFFFu
+#define I32_MAX 0x7FFFFFFF
+#define I32_MIN (-I32_MAX - 1)
 
 #if defined(__wasm__)
 #define EXPORT(name) __attribute__((export_name(#name)))

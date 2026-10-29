@@ -1,6 +1,8 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: PLAN (onay bekliyor). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782, 2026-10-29).
+Durum: FAZ 0 TAMAM (2026-10-29) → sıradaki faz 1. Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
+Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
+CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 
 ## Durum tespiti (ölçüm)
 - Ortak git geçmişi yok (onlar 83 commit / bizim 9). Aynı yoldaki 55 dosyanın hiçbiri aynı değil → `git merge`
@@ -14,8 +16,8 @@ Durum: PLAN (onay bekliyor). Kaynak: https://github.com/Xassemblianist/MatokiEng
 | `thread/job.h` (`job_parallel_for`) | `core/jobs.h` (`jobs_parallel_for`, belirlenimci) |
 | `mtk_compile_ir`, `mtk_compile_wasm`, `g3d_*` | `matoki_compile`, `matoki_jit`, `pipe_*` |
 
-- **Lisans dosyası yok** → kod "tüm hakları saklı". Taşımadan önce arkadaşın yazılı izni şart (onlar bizim fizik için
-  aynı izni aldı). Her taşınan dosyanın başına: "Xassemblianist/MatokiEngine'den uyarlandı (izinle)".
+- Lisans dosyası yok; iki depo da aynı ekibin yönetiminde, taşıma izinli. Her taşınan dosyanın başına betik
+  kaynak notu yazar: "Kaynak: Xassemblianist/MatokiEngine@0a7b782 (yol), izinle uyarlandı".
 
 ## Bağımlılık haritası (onların src/)
 | alt sistem | satır | bağımlı olduğu | zorluk |
@@ -46,15 +48,17 @@ Durum: PLAN (onay bekliyor). Kaynak: https://github.com/Xassemblianist/MatokiEng
 ## Fazlar (her faz: taşı → yeniden adlandır → `-Werror` derle → onların testlerini `tests/` çatısına taşı → ölç → commit)
 | faz | içerik | ~satır | çıktı / kabul |
 |---|---|---|---|
-| 0 | izin, lisans, D37, yeniden adlandırma betiği (`tools/port_names.py`) + eşleme tablosu | — | betik onların bir dosyasını bizim adlarla derler |
-| 1 | img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
+| 0 ✓ | D37, yeniden adlandırma betiği (`tools/port_names.py`) + eşleme tablosu, çekirdek ekleri | — | 6 dosya (synth, json, base64, noise, ttf, gfx2d/anim) `-Werror` temiz; 148 dosyanın 112'si eksiksiz çevriliyor |
+| 1 | çekirdek: `fmt_format` + `LOG/PANIC/ASSERT` (19+7+7 kullanım), `mat3_2d`, `mat3_mul_point`, `mat4_inverse`, sabit nokta, profiler; sonra img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | `port_names.py --check` 148/148; testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
 | 2 | font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi |
 | 3 | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
 | 4 | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
 | 5 | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
 | 6 | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
 | 7 | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
-| 8 | (karar 2'ye bağlı) mbin/masm + WebGPU RHI + Matoki→WGSL, onlarda M15_C düzeldikten sonra | ~9 000 | yazılım ve GPU yolu aynı sahnede görsel karşılaştırma |
+| 8a | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
+| 8b | Matoki → WGSL hedefi; lit / lit_hq / water / sky iki arka uçta | — | 10 görünüm × shader görüntü farkı testi |
+| 8c | GPU'da doku, MSAA, gölge, okyanus FFT görüntüsü; CPU/GPU boru hattı örtüşmesi; sayfada CPU ms / GPU ms / kare ms | — | 1080p önce/sonra ölçüm tablosu (bugün 30–52 ms) |
 
 Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.mjs`) mevcut görünümlerde değişmemeli.
 

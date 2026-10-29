@@ -29,6 +29,12 @@ static inline f32 rng_f32(Rng* r) { return (f32)(rng_u32(r) >> 8) * (1.0f / 1677
 
 static inline f32 rng_range(Rng* r, f32 lo, f32 hi) { return lo + (hi - lo) * rng_f32(r); }
 
+/* [lo, hi) tamsayı (hi <= lo → lo); 64 bit çarpma ile modulo sapması yok denecek kadar az */
+static inline i32 rng_range_i32(Rng* r, i32 lo, i32 hi) {
+    if (hi <= lo) return lo;
+    return lo + (i32)(((u64)rng_u32(r) * (u64)(u32)(hi - lo)) >> 32);
+}
+
 static inline u32 hash_u32(u32 x) {
     x ^= x >> 16;
     x *= 0x7feb352du;

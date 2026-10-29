@@ -26,10 +26,14 @@ void* arena_try_nozero(Arena* a, usize size, usize align);
 /* eleman × sayı taşmasız; taşma = dolu */
 void* arena_alloc_array(Arena* a, usize elem, usize count, usize align);
 void* arena_try_array(Arena* a, usize elem, usize count, usize align);
+void* arena_alloc_array_nozero(Arena* a, usize elem, usize count, usize align);
 usize arena_mark(const Arena* a);
 void  arena_reset(Arena* a, usize mark);
+/* parent'tan cap baytlık alt arena (16 hizalı); alt arena ayrı sıfırlanır, parent'a geri verilmez */
+Arena arena_sub(Arena* parent, usize cap);
 
 #define ARENA_ARRAY(a, T, n) ((T*)arena_alloc_array((a), sizeof(T), (usize)(n), _Alignof(T)))
+#define ARENA_ARRAY_NOZERO(a, T, n) ((T*)arena_alloc_array_nozero((a), sizeof(T), (usize)(n), _Alignof(T)))
 #define ARENA_TRY_ARRAY(a, T, n) ((T*)arena_try_array((a), sizeof(T), (usize)(n), _Alignof(T)))
 #define ARENA_NEW(a, T) ARENA_ARRAY(a, T, 1)
 

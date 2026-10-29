@@ -8,7 +8,11 @@
 
 #define M_PI_F  3.14159265358979f
 #define M_TAU_F 6.28318530717959f
+#define M_HALF_PI_F 1.57079632679490f
+#define M_DEG2RAD_F 0.01745329251994f
+#define M_RAD2DEG_F 57.2957795130823f
 
+typedef struct IVec2 { i32 x, y; } IVec2;
 typedef struct Vec2 { f32 x, y; } Vec2;
 typedef struct Vec3 { f32 x, y, z; } Vec3;
 typedef struct Vec4 { f32 x, y, z, w; } Vec4;
@@ -19,6 +23,8 @@ typedef struct Mat4 { f32 m[16]; } Mat4;  /* sütun-öncelikli: m[c*4 + r] */
 static inline f32 m_sqrtf(f32 x) { return __builtin_sqrtf(x); }
 static inline f32 m_absf(f32 x) { return __builtin_fabsf(x); }
 static inline f32 m_floorf(f32 x) { return __builtin_floorf(x); }
+static inline f32 m_ceilf(f32 x) { return __builtin_ceilf(x); }
+static inline f32 m_truncf(f32 x) { return __builtin_truncf(x); }
 static inline f32 m_minf(f32 a, f32 b) { return a < b ? a : b; }
 static inline f32 m_maxf(f32 a, f32 b) { return a > b ? a : b; }
 static inline f32 m_clampf(f32 x, f32 lo, f32 hi) { return x < lo ? lo : (x > hi ? hi : x); }
@@ -55,6 +61,19 @@ static inline f32 m_expf(f32 x) { return m_exp2f(x * 1.44269504f); }
 static inline f32 m_logf(f32 x) { return m_log2f(x) * 0.693147181f; }
 static inline f32 m_powf(f32 x, f32 y) { return m_exp2f(y * m_log2f(x)); }
 
+/* ---- IVec2 / Vec2 ---- */
+static inline IVec2 iv2(i32 x, i32 y) { IVec2 r = { x, y }; return r; }
+static inline Vec2 v2(f32 x, f32 y) { Vec2 r = { x, y }; return r; }
+static inline Vec2 v2_add(Vec2 a, Vec2 b) { return v2(a.x + b.x, a.y + b.y); }
+static inline Vec2 v2_sub(Vec2 a, Vec2 b) { return v2(a.x - b.x, a.y - b.y); }
+static inline Vec2 v2_scale(Vec2 a, f32 s) { return v2(a.x * s, a.y * s); }
+static inline f32  v2_dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
+static inline f32  v2_len(Vec2 a) { return m_sqrtf(v2_dot(a, a)); }
+static inline Vec2 v2_norm(Vec2 a) {
+    f32 l = v2_len(a);
+    return l > 0.0f ? v2_scale(a, 1.0f / l) : a;
+}
+
 /* ---- Vec3 ---- */
 static inline Vec3 v3(f32 x, f32 y, f32 z) { Vec3 r = { x, y, z }; return r; }
 static inline Vec3 v3_add(Vec3 a, Vec3 b) { return v3(a.x + b.x, a.y + b.y, a.z + b.z); }
@@ -77,6 +96,9 @@ static inline Vec3 v3_lerp(Vec3 a, Vec3 b, f32 t) {
 /* ---- Vec4 ---- */
 static inline Vec4 v4(f32 x, f32 y, f32 z, f32 w) { Vec4 r = { x, y, z, w }; return r; }
 static inline Vec4 v4_from3(Vec3 a, f32 w) { return v4(a.x, a.y, a.z, w); }
+static inline Vec4 v4_add(Vec4 a, Vec4 b) { return v4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w); }
+static inline Vec4 v4_sub(Vec4 a, Vec4 b) { return v4(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w); }
+static inline Vec4 v4_scale(Vec4 a, f32 s) { return v4(a.x * s, a.y * s, a.z * s, a.w * s); }
 static inline f32  v4_dot(Vec4 a, Vec4 b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
 
 /* ---- Mat4 ---- */
