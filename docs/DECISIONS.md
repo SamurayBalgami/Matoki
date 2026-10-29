@@ -317,6 +317,26 @@ ayırır (40 bayt/piksel, MSAA dahil); `H` ölçeği %100/75/50 gezer, `?res=WxH
 doğrusal: 16 thread, HQ + MSAA, görünümler arası 640×360 3,8–7,2 ms, 1280×720 13,5–23,3 ms,
 1920×1080 29,6–52,3 ms (tools/bench_res.mjs). Sayfada FPS 1 s boyunca 25'in altındaysa ölçek kendiliğinden bir kademe iner
 (H'ye basılınca kapanır). İnce statik kutular (direk, cetvel) düz gri malzemeyle (doku uzaması).
+## D36. Temel sağlamlık: bellek, rasterizer fuzz, fizik koruması, uyku, derleyici derinliği (2026-10-29)
+- **Bellek:** `arena_try` / `ARENA_TRY_ARRAY` dolunca NULL + `fails` sayacı; dizi boyutu taşması yakalanır. Kalıcı
+  (başlangıç) bellek panik olarak kaldı. Kare başına: raster parça tablosu / üçgen / kutu sığmazsa üçgen atlanır
+  (`tris_dropped`, `overflows`), boru hattında çizim sınırı ya da kare belleği dolarsa çizim atlanır (`draws_dropped`).
+  Sayfada doluluk satırı. Bulunan hata: `raster_begin` aynı arenayla tekrar çağrılınca parça tablosunu sızdırıyordu.
+- **Rasterizer fuzz:** 6000 rastgele üçgen (dev, dejenere, NaN, sonsuz, piksel merkezine tam denk) i64 kesin referansla
+  (24.8 sabit nokta + top-left) piksel piksel: 2,66 M piksel, 0 fark; SIMD = skaler (MSAA açık/kapalı); çöp mesh'ler
+  (NaN, w ≈ 0, aralık dışı indeks) 400 bin üçgende tampon dışına yazmaz (nöbetçi değerler).
+- **Fizik:** adım başı/sonu `guard_bodies` (NaN/sonsuz → son geçerli poz, hız sınırı 1000 m/s, 1000 rad/s);
+  bozuk `BodyDesc` temizlenir. NaN'lı gövdeden ayrı adadaki yığın temiz koşuyla bit-bit aynı.
+- **Uyku (üç hata):** (1) uyanan ada o adımda zeminsiz kalıp g·dt düşüyordu — uyandırma sonrası çiftler yeniden
+  toplanır; (2) değmeyen komşu adalar AABB örtüşmesiyle birbirini sonsuz döngüde uyandırıyordu — uyandırma yalnızca
+  dar fazda gerçek temasla; (3) küreler sonsuza dek yuvarlanıyor / yerinde dönüyordu — yuvarlanma + burulma direnci
+  (tork ≤ μ_r·r·J_n, küre/kapsül μ_r = 0,02; J_n soft'ta alt adım itkilerinin toplamı `jn_sum`, SIMD'de aynı sıra).
+  Kesin formül a = μ_r·g/1,4: soft 2,6562 / SI 2,6555 ↔ 2,6496 m/s. 300 ve 50 gövdelik yığın varsayılan 4 alt
+  adımda tamamen uyur (önce hiç uyumuyordu). bench_phys, uyku açık: 100 gövde oturmuş 0,158 → 0,007 ms/adım,
+  500: 0,924 → 0,533; uyku kapalı durum hash'leri değişmedi.
+- **Matoki:** iç içe ifade/blok derinliği 200 ile sınırlı (20 000 derinlik yığını taşırıp motoru düşürüyordu);
+  4800 mutasyon + 3000 jeton çorbası: çökme yok, her hata konumlu. Canlı yeniden derleme başarısızlıkta kalıcı
+  arenayı geri sarar.
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

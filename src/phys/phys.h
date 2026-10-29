@@ -40,6 +40,7 @@ typedef struct BodyDesc {
     f32  mass;          /* 0 → statik */
     f32  friction;
     f32  restitution;
+    f32  rolling;       /* yuvarlanma direnci μ_r: tork ≤ μ_r·N·r (küre, kapsül varsayılan 0,02) */
     Vec3 vel, ang_vel;
 } BodyDesc;
 
@@ -81,6 +82,7 @@ typedef struct Body {
     Vec3 pos0;            /* adım başı pozu (süpürme başlangıcı) */
     Quat rot0;
     u32  proxy;           /* dünya BVH yaprağı (statik ya da dinamik ağaçta); düzlem: TREE_NULL */
+    f32  rolling;         /* yuvarlanma direnci μ_r */
 } Body;
 
 typedef struct ContactPoint {
@@ -96,6 +98,7 @@ typedef struct ContactPoint {
     f32  s0;            /* hazırlıkta ayrılma = -depth */
     f32  rel_vel;       /* hazırlıkta normal göreli hız (restitüsyon) */
     f32  max_jn;
+    f32  jn_sum;        /* soft: alt adım sonu itkilerinin toplamı = adımda uygulanan normal itki (yuvarlanma direnci) */
 } ContactPoint;
 
 typedef struct Manifold {
@@ -104,6 +107,8 @@ typedef struct Manifold {
     Vec3 normal;        /* A → B */
     Vec3 t1, t2;
     f32  friction, restitution;
+    f32  rolling;       /* max(A, B); yuvarlak gövde yarıçapı rolling_r */
+    f32  rolling_r;
     u32  count;
     ContactPoint p[PHYS_MAX_POINTS];
 } Manifold;
@@ -126,6 +131,9 @@ typedef struct PhysStats {
     f64 step_ms;
     f64 collide_ms;     /* geniş + dar faz */
     f64 solve_ms;       /* ön hesap + iterasyonlar + entegrasyon */
+    /* sağlamlık (kümülatif, sıfırlanmaz): sayısal olmayan durumdan geri alınan gövde, hız sınırına çekilen gövde */
+    u32 nan_resets;
+    u32 speed_clamps;
 } PhysStats;
 
 typedef enum PhysBroadphase {
@@ -134,6 +142,9 @@ typedef enum PhysBroadphase {
 } PhysBroadphase;
 
 #define PHYS_MAX_PLANES 16
+/* fiziksel olmayan hız sınırı (normal sahnelerde hiç devreye girmez; mermi 160 m/s) */
+#define PHYS_MAX_SPEED     1000.0f   /* m/s */
+#define PHYS_MAX_ANG_SPEED 1000.0f   /* rad/s */
 #define PHYS_TREE_MARGIN 0.1f   /* dinamik ağaç şişman AABB payı (m) */
 
 typedef enum PhysSolver {

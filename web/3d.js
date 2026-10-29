@@ -32,7 +32,8 @@ const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected',
   'triEmitted', 'triBack', 'triDegen', 'triDrawn', 'quads', 'pixels', 'frameUs', 'arenaKb', 'camX', 'camY', 'camZ',
   'rasterMode', 'binItems', 'binFull', 'shaderMode', 'physBodies', 'physContacts', 'physUs', 'physSteps', 'physAwake',
   'playMode', 'carKmh', 'carWheels', 'charGrounded', 'softParticles', 'softUs', 'softContacts',
-  'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes', 'msaa', 'resolveUs', 'vertMode', 'verts', 'batches', 'vertUs', 'setupUs'];
+  'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes', 'msaa', 'resolveUs', 'vertMode', 'verts', 'batches', 'vertUs', 'setupUs',
+  'drawsDropped', 'trisDropped', 'frameKb', 'memFails'];
 // ?prof: kareler rAF yerine art arda, sabit 1/60 sn adımla sürülür (vsync ve gizli sekmeden bağımsız);
 // her sahnede 60 kare ısınma + 180 kare ölçüm, aşama ortalamaları konsola ve window.__prof'a
 const PROF = qs.has('prof');
@@ -181,7 +182,8 @@ async function main() {
         `  boş/dejenere ${st.triDegen}\n` +
         `  çizilen      ${st.triDrawn}\n` +
         `quad ${st.quads}   piksel ${st.pixels}\n` +
-        `raster arena tepe ${st.arenaKb} KB\n` +
+        `bellek: raster tepe ${st.arenaKb} KB / 96 MB, kare tepe ${st.frameKb} KB / 32 MB` +
+        (st.memFails ? `   DOLU: ${st.memFails} ayırma, atlanan ${st.drawsDropped} çizim / ${st.trisDropped} üçgen` : '') + '\n' +
         `konum ${i32(st.camX).toFixed(1)}, ${i32(st.camY).toFixed(1)}, ${i32(st.camZ).toFixed(1)}`;
     }
     if (PROF && prof.i < PROF_SCENES.length) profChan.port2.postMessage(0);

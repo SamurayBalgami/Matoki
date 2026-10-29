@@ -1,6 +1,7 @@
 /* matoki/parser.c — özyinelemeli iniş parser'ı (Token → AST).
  * İşleç önceliği (düşükten yükseğe): || && | ^ & (== !=) (< <= > >=) (<< >>) (+ -) (* / %)
- * tekli (- ! ~) sonek (çağrı, .swizzle). İlk hatada durur; hata konumu satır:sütun. */
+ * tekli (- ! ~) sonek (çağrı, .swizzle). İlk hatada durur; hata konumu satır:sütun.
+ * İç içe ifade / blok derinliği MATOKI_MAX_DEPTH ile sınırlı: aşırı derin girdi yığını taşırıp motoru düşürmez, hata olur. */
 #include "matoki/ast.h"
 #include "core/fmt.h"
 #include "core/mem.h"
@@ -11,7 +12,10 @@ typedef struct Parser {
     u32          pos;
     u32          count;
     MatokiError* err;
+    u32          depth;     /* parse_unary / parse_block özyineleme derinliği */
 } Parser;
+
+#define MATOKI_MAX_DEPTH 200
 
 void matoki_error(MatokiError* e, i32 line, i32 col, const char* msg, const char* detail, u32 detail_len) {
     if (e->failed) return;
@@ -194,7 +198,28 @@ static Node* parse_postfix(Parser* p) {
     return e;
 }
 
+static Node* parse_unary_inner(Parser* p);
+
+/* derinlik sınırı: aşılırsa hata + yer tutucu sabit (çağıranlar NULL beklemez) */
+static b32 depth_enter(Parser* p) {
+    if (++p->depth <= MATOKI_MAX_DEPTH) return TRUE;
+    error_at(p, peek(p), "iç içe ifade/blok çok derin (en çok 200):");
+    return FALSE;
+}
+
+static Node* placeholder(Parser* p) {
+    Node* n = node_new(p, NK_FLOAT, peek(p));
+    n->fval = 0.0f;
+    return n;
+}
+
 static Node* parse_unary(Parser* p) {
+    Node* n = depth_enter(p) ? parse_unary_inner(p) : placeholder(p);
+    p->depth--;
+    return n;
+}
+
+static Node* parse_unary_inner(Parser* p) {
     const Token* t = peek(p);
     if (t->kind == T_MINUS || t->kind == T_BANG || t->kind == T_TILDE) {
         advance(p);
@@ -358,6 +383,10 @@ static Node* parse_stmt(Parser* p) {
 }
 
 static Node* parse_block(Parser* p) {
+    if (!depth_enter(p)) {
+        p->depth--;
+        return node_new(p, NK_BLOCK, peek(p));
+    }
     const Token* t = expect(p, T_LBRACE, "'{'");
     Node* blk = node_new(p, NK_BLOCK, t);
     Node** tail = &blk->list;
@@ -367,6 +396,7 @@ static Node* parse_block(Parser* p) {
         tail = &s->next;
     }
     expect(p, T_RBRACE, "'}'");
+    p->depth--;
     return blk;
 }
 
@@ -397,6 +427,7 @@ b32 parse_module(Arena* a, const TokenList* toks, Module* out, MatokiError* err)
     p.pos = 0;
     p.count = toks->count;
     p.err = err;
+    p.depth = 0;
     mem_zero(out, sizeof(*out));
     GlobalDecl** gtail = &out->globals;
     FnDecl** ftail = &out->fns;

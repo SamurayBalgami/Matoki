@@ -57,6 +57,7 @@ typedef struct DrawRec {
     struct ClipVert* cv;      /* parti içinde: köşe aşaması çıktısı */
     u32*            oc;       /* outcode */
     u32             vert_base, tri_base;   /* parti içi önek toplamları */
+    u32             nv, nt;   /* partide işlenecek köşe / üçgen (bellek yetmezse 0: çizim atlanır) */
 } DrawRec;
 
 /* std_vert.mtk'nin C kâhini: wp = model·p, klip = view_proj·(wp, 1), n = normal_mat·n, uv geçer */
@@ -78,6 +79,7 @@ typedef struct PipeStats {
     u32 tris_guard_clipped;
     u32 tris_emitted;         /* raster'a giden (kırpma sonrası fan dahil) */
     u32 verts_transformed;
+    u32 draws_dropped;        /* kare belleği ya da PIPE_MAX_DRAWS yetmediği için atlanan çizim */
 } PipeStats;
 
 typedef struct Pipeline {

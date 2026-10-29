@@ -126,6 +126,7 @@ BodyDesc phys_desc_sphere(Vec3 pos, f32 radius, f32 mass) {
     d.mass = mass;
     d.friction = 0.6f;
     d.restitution = 0.2f;
+    d.rolling = 0.02f;   /* gerçek top yuvarlanırken yavaşlar; yoksa küre yığını hiç uyumaz */
     return d;
 }
 
@@ -223,6 +224,11 @@ static inline void mark_moved(PhysWorld* w, u32 i) {
     w->moved[w->moved_count++] = i;
 }
 
+/* sonlu ve makul: NaN / ±sonsuz / 1e30 üstü reddedilir */
+static inline b32 f_ok(f32 x) { return m_absf(x) <= 1e30f; }
+static inline b32 v3_ok(Vec3 v) { return f_ok(v.x) && f_ok(v.y) && f_ok(v.z); }
+static inline b32 quat_ok(Quat q) { return f_ok(q.x) && f_ok(q.y) && f_ok(q.z) && f_ok(q.w); }
+
 u32 phys_add_body(PhysWorld* w, const BodyDesc* d) {
     if (w->count >= w->cap) sys_panic("phys: gövde kapasitesi dolu");
     u32 id = w->count++;
@@ -233,6 +239,14 @@ u32 phys_add_body(PhysWorld* w, const BodyDesc* d) {
     b->rot = quat_normalize(d->rot);
     b->vel = d->vel;
     b->ang_vel = d->ang_vel;
+    /* bozuk girdi: konum orijine, dönüş birime, hızlar sıfıra (dünya zehirlenmez) */
+    if (!v3_ok(b->pos) || !quat_ok(b->rot) || !v3_ok(b->vel) || !v3_ok(b->ang_vel)) {
+        if (!v3_ok(b->pos)) b->pos = v3(0, 0, 0);
+        if (!quat_ok(b->rot)) b->rot = quat_identity();
+        if (!v3_ok(b->vel)) b->vel = v3(0, 0, 0);
+        if (!v3_ok(b->ang_vel)) b->ang_vel = v3(0, 0, 0);
+        w->stats.nan_resets++;
+    }
     b->half = d->half;
     b->radius = d->radius;
     b->half_height = d->half_height;
@@ -242,6 +256,7 @@ u32 phys_add_body(PhysWorld* w, const BodyDesc* d) {
     b->plane_d = d->plane_d;
     b->friction = d->friction;
     b->restitution = d->restitution;
+    b->rolling = d->rolling >= 0.0f && d->rolling <= 1.0f ? d->rolling : 0.0f;   /* NaN / aralık dışı → 0 */
     if (d->mass > 0.0f && d->shape != SHAPE_PLANE && d->shape != SHAPE_MESH) {
         f32 m = d->mass;
         b->inv_mass = 1.0f / m;
@@ -403,7 +418,12 @@ static void finalize_manifold(PhysWorld* w, Manifold* m) {
     const Body* B = &w->bodies[ib];
     m->friction = m_sqrtf(A->friction * B->friction);
     m->restitution = m_maxf(A->restitution, B->restitution);
-    for (u32 i = 0; i < m->count; i++) m->p[i].local_a = mat3_tmul_v3(&A->rot_m, v3_sub(m->p[i].pos, A->pos));
+    m->rolling = m_maxf(A->rolling, B->rolling);
+    {   /* direnç kolu: yuvarlak gövdenin yarıçapı (ikisi de yuvarlaksa küçüğü) */
+        b32 ra = A->shape == SHAPE_SPHERE || A->shape == SHAPE_CAPSULE, rb = B->shape == SHAPE_SPHERE || B->shape == SHAPE_CAPSULE;
+        m->rolling_r = ra && rb ? m_minf(A->radius, B->radius) : ra ? A->radius : rb ? B->radius : 0.0f;
+        if (m->rolling_r <= 0.0f) m->rolling = 0.0f;
+    }    for (u32 i = 0; i < m->count; i++) m->p[i].local_a = mat3_tmul_v3(&A->rot_m, v3_sub(m->p[i].pos, A->pos));
     /* warm start: önceki adımdaki aynı çiftin yakın noktası */
     const Manifold* pm = w->warm_start ? prev_find(w, ia, ib, m->sub) : NULL;
     if (pm) {
@@ -592,8 +612,8 @@ static void pairs_sap(PhysWorld* w) {
     }
 }
 
-static void broadphase(PhysWorld* w) {
-    f64 t0 = sys_now_ms();
+/* aday çiftler (BVH ya da SAP) + düzlem çiftleri, kanonik sırayla */
+static void gather_pairs(PhysWorld* w) {
     if (w->broadphase == PHYS_BP_BVH) {
         pairs_bvh(w);
     } else {
@@ -613,15 +633,33 @@ static void broadphase(PhysWorld* w) {
         w->pairs[k * 2] = w->pair_tmp[k] >> 16;
         w->pairs[k * 2 + 1] = w->pair_tmp[k] & 0xFFFFu;
     }
+}
+
+/* uyanık a, uyuyan b gerçekten temas ediyor mu (dar faz; spekülatif pay dahil). Yalnızca AABB örtüşmesiyle
+ * uyandırmak, değmeyen komşu adaları sırayla uyutup uyandıran sonsuz döngü yaratır (D36). */
+static b32 pair_touches(const PhysWorld* w, u32 ia, u32 ib) {
+    const Body* A = &w->bodies[ia];
+    const Body* B = &w->bodies[ib];
+    if (A->shape == SHAPE_MESH || B->shape == SHAPE_MESH) return TRUE;   /* mesh statik: buraya gelmez, güvenli */
+    Manifold m;
+    return phys_collide_margin(A, B, &m, spec_margin(w, A, B)) > 0;
+}
+
+static void broadphase(PhysWorld* w) {
+    f64 t0 = sys_now_ms();
+    gather_pairs(w);
     w->stats.broad_ms = sys_now_ms() - t0;
-    /* 2) uyanık bir gövdeye değen uyuyan adaları uyandır (yayılım için birkaç tur) */
+    /* 2) uyanık bir gövdeye değen uyuyan adaları uyandır. Uyandırma olduysa çiftler YENİDEN toplanır: ilk liste
+     *    uyuyan-statik / uyuyan-uyuyan çiftleri içermez → yeni uyanan gövde bu adımda zeminsiz kalıp g·dt düşer,
+     *    sekip komşuları yine uyandırır (yığın hiç uyuyamaz). Yeni liste yayılımı da sürdürür. */
     for (u32 round = 0; round < 8; round++) {
         b32 changed = FALSE;
         for (u32 k = 0; k < w->pair_count; k++) {
             Body* a = &w->bodies[w->pairs[k * 2]];
             Body* b = &w->bodies[w->pairs[k * 2 + 1]];
-            if (awake_dynamic(a) && (b->flags & BODY_ASLEEP)) { wake_island(w, b->island); changed = TRUE; }
-            else if (awake_dynamic(b) && (a->flags & BODY_ASLEEP)) { wake_island(w, a->island); changed = TRUE; }
+            u32 ia = w->pairs[k * 2], ib = w->pairs[k * 2 + 1];
+            if (awake_dynamic(a) && (b->flags & BODY_ASLEEP) && pair_touches(w, ia, ib)) { wake_island(w, b->island); changed = TRUE; }
+            else if (awake_dynamic(b) && (a->flags & BODY_ASLEEP) && pair_touches(w, ia, ib)) { wake_island(w, a->island); changed = TRUE; }
         }
         /* eklemle bağlı gövdeler de birlikte uyanır */
         for (u32 k = 0; k < w->joint_count; k++) {
@@ -633,6 +671,7 @@ static void broadphase(PhysWorld* w) {
             else if (awake_dynamic(b) && (a->flags & BODY_ASLEEP)) { wake_island(w, a->island); changed = TRUE; }
         }
         if (!changed) break;
+        gather_pairs(w);
     }
     /* 3) dar faz: en az biri uyanık hareketli */
     for (u32 k = 0; k < w->pair_count; k++) {
@@ -831,6 +870,7 @@ static void soft_prepare(PhysWorld* w) {
             c->mass_t2 = eff_mass(A, B, c->ra, c->rb, m->t2);
             c->rel_vel = v3_dot(v3_sub(point_vel(B, c->rb), point_vel(A, c->ra)), m->normal);
             c->max_jn = 0.0f;
+            c->jn_sum = 0.0f;
             /* spekülatif boşluk: restitüsyon hedefi çarpma anındaki hız. Sabit dış ivmeyle (yerçekimi)
              * yaklaşan çift boşluğu kapatana dek hızlanır: v² + 2·a·s. Bu olmadan zemine düşen top adım
              * başındaki (g·dt kadar küçük) hızla seker → her sıçramada ~%6 yükseklik kaybı (D31). */
@@ -966,6 +1006,21 @@ static void soft_solve(PhysWorld* w, f32 h, Softness soft, b32 use_bias) {
     for (; k < w->cur_count; k++) solve_manifold(w, &w->cur[solve_index(w, k)], inv_h, soft, use_bias);
 }
 
+/* alt adım sonu: adımda uygulanan normal itki (warm start + çözüm farkları = alt adım sonu jn) toplanır */
+static void soft_accum_jn(PhysWorld* w) {
+    u32 k = 0;
+#if PHYS_HAVE_SIMD
+    if (use_simd(w)) {
+        solver_simd_accum_jn(w);
+        k = w->color_start[PHYS_COLORS];   /* taşma rengi skaler */
+    }
+#endif
+    for (; k < w->cur_count; k++) {
+        Manifold* m = &w->cur[solve_index(w, k)];
+        for (u32 i = 0; i < m->count; i++) m->p[i].jn_sum += m->p[i].jn;
+    }
+}
+
 static void soft_restitution(PhysWorld* w) {
     for (u32 k = 0; k < w->cur_count; k++) {
         Manifold* m = &w->cur[solve_index(w, k)];
@@ -982,6 +1037,41 @@ static void soft_restitution(PhysWorld* w) {
             c->jn = nn;
             apply_impulse(A, B, c->ra, c->rb, v3_scale(m->normal, imp));
         }
+    }
+}
+
+/* Yuvarlanma + burulma direnci (çözücüden sonra, skaler; SIMD ↔ skaler eşitliği bozulmaz): göreli açısal hız üç
+ * eksende (t1, t2: yuvarlanma; n: yerinde dönme) adımdaki normal itkiyle orantılı tork sınırıyla (μ_r·r·J_n)
+ * azaltılır — Coulomb sürtünmesinin açısal eşi. Burulma olmazsa yığındaki küreler yerinde sonsuza dek döner. Sürtünme kayan temas noktasını sonraki adımda yeniden yuvarlar → küre a = μ_r·g / 1,4 ile yavaşlar.
+ * Adım itkisi J_n: SI'da jn; soft'ta jn_sum (alt adım sonu itkilerinin toplamı — son alt adımın jn'i mikro sekmede
+ * 0 olabilir, en büyüğü × alt adım ise ~2 kat fazla sayar). */
+static void rolling_resistance(PhysWorld* w, b32 soft) {
+    for (u32 mi = 0; mi < w->cur_count; mi++) {
+        Manifold* m = &w->cur[mi];
+        if (m->rolling <= 0.0f) continue;
+        Body* A = &w->bodies[m->a];
+        Body* B = &w->bodies[m->b];
+        f32 jn = 0.0f;
+        for (u32 i = 0; i < m->count; i++) jn += soft ? m->p[i].jn_sum : m->p[i].jn;
+        f32 limit = m->rolling * m->rolling_r * jn;
+        if (limit <= 0.0f) continue;
+        Vec3 wr = v3_sub(B->ang_vel, A->ang_vel);
+        Vec3 ax[3] = { m->t1, m->t2, m->normal };
+        f32 lam[3];
+        for (u32 k = 0; k < 3; k++) {
+            f32 kk = v3_dot(ax[k], mat3_mul_v3(&A->inv_inertia_world, ax[k])) + v3_dot(ax[k], mat3_mul_v3(&B->inv_inertia_world, ax[k]));
+            lam[k] = kk > 0.0f ? -v3_dot(wr, ax[k]) / kk : 0.0f;
+        }
+        f32 len2 = lam[0] * lam[0] + lam[1] * lam[1] + lam[2] * lam[2];
+        if (len2 > limit * limit) {
+            f32 s = limit / m_sqrtf(len2);
+            lam[0] *= s;
+            lam[1] *= s;
+            lam[2] *= s;
+        }
+        Vec3 L = v3_add(v3_add(v3_scale(ax[0], lam[0]), v3_scale(ax[1], lam[1])), v3_scale(ax[2], lam[2]));
+        A->ang_vel = v3_sub(A->ang_vel, mat3_mul_v3(&A->inv_inertia_world, L));
+        B->ang_vel = v3_add(B->ang_vel, mat3_mul_v3(&B->inv_inertia_world, L));
     }
 }
 
@@ -1032,11 +1122,13 @@ static void soft_step(PhysWorld* w, f32 dt) {
         integrate_positions(w, h);
         joints_solve(w, h, FALSE, TRUE);
         soft_solve(w, h, soft, FALSE);
+        soft_accum_jn(w);
     }
 #if PHYS_HAVE_SIMD
     if (use_simd(w)) solver_simd_store(w);
 #endif
     soft_restitution(w);
+    rolling_resistance(w, TRUE);
 }
 
 /* ---- CCD: hızlı gövdeyi adım sonunda ilk çarpma anına geri çek (Box2D v3 yaklaşımı) ----
@@ -1258,8 +1350,39 @@ static void continuous(PhysWorld* w, f32 dt) {
     }
 }
 
+/* Sayısal koruma: uyanık hareketli gövdede NaN / sonsuz → adım başı pozuna (pos0, rot0) dön, hızları sıfırla;
+ * fiziksel olmayan hız → sınıra ölçekle. Adım başında (dışarıdan yazılan bozuk hız AABB'ye / ağaca girmesin) ve
+ * entegrasyondan sonra (CCD ve ağaç güncellemesinden önce) çağrılır. Normal sahnede hiçbir koşul tetiklenmez. */
+static void guard_bodies(PhysWorld* w) {
+    for (u32 i = 0; i < w->count; i++) {
+        Body* b = &w->bodies[i];
+        if (!awake_dynamic(b)) continue;
+        if (!v3_ok(b->pos) || !quat_ok(b->rot) || !v3_ok(b->vel) || !v3_ok(b->ang_vel)) {
+            if (!v3_ok(b->pos) || !quat_ok(b->rot)) {
+                b->pos = v3_ok(b->pos0) ? b->pos0 : v3(0, 0, 0);
+                b->rot = quat_ok(b->rot0) ? b->rot0 : quat_identity();
+            }
+            b->vel = b->ang_vel = v3(0, 0, 0);
+            b->force = b->torque = v3(0, 0, 0);
+            phys_body_update_derived(b);
+            w->stats.nan_resets++;
+            continue;
+        }
+        f32 v2 = v3_dot(b->vel, b->vel), a2 = v3_dot(b->ang_vel, b->ang_vel);
+        if (v2 > PHYS_MAX_SPEED * PHYS_MAX_SPEED) {
+            b->vel = v3_scale(b->vel, PHYS_MAX_SPEED / m_sqrtf(v2));
+            w->stats.speed_clamps++;
+        }
+        if (a2 > PHYS_MAX_ANG_SPEED * PHYS_MAX_ANG_SPEED) {
+            b->ang_vel = v3_scale(b->ang_vel, PHYS_MAX_ANG_SPEED / m_sqrtf(a2));
+            w->stats.speed_clamps++;
+        }
+    }
+}
+
 void phys_step(PhysWorld* w, f32 dt) {
     f64 t0 = sys_now_ms();
+    guard_bodies(w);
     w->stats.pairs = w->stats.contacts = w->stats.warm_hits = 0;
     w->stats.ccd_bodies = w->stats.ccd_hits = 0;
     w->stats.tree_moves = 0;
@@ -1308,8 +1431,10 @@ void phys_step(PhysWorld* w, f32 dt) {
             joints_solve(w, dt, TRUE, FALSE);
             solve(w);
         }
+        rolling_resistance(w, FALSE);
         integrate_positions(w, dt);
     }
+    guard_bodies(w);
     if (w->continuous) continuous(w, dt);
     for (u32 i = 0; i < w->count; i++) {
         w->bodies[i].force = v3(0, 0, 0);

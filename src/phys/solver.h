@@ -21,6 +21,8 @@ void solver_simd_warm_start(PhysWorld* w);
 void solver_simd_solve(PhysWorld* w, f32 inv_h, Softness soft, b32 use_bias);
 /* biriken itkileri manifoldlara geri yaz (restitüsyon ve sonraki adımın warm start'ı için) */
 void solver_simd_store(PhysWorld* w);
+/* alt adım sonu: her temas noktasında jn_sum += jn */
+void solver_simd_accum_jn(PhysWorld* w);
 #else
 #define PHYS_HAVE_SIMD 0
 #endif

@@ -25,7 +25,7 @@ typedef union F4 {
 typedef struct WidePoint {
     F4 la[3], lb[3], ra[3], rb[3];
     F4 s0, mass_n, mass_t1, mass_t2;
-    F4 jn, jt1, jt2, max_jn;
+    F4 jn, jt1, jt2, max_jn, jn_sum;
     F4 mask;   /* lane'de bu nokta var: tüm bitler 1 */
 } WidePoint;
 
@@ -84,6 +84,7 @@ void solver_simd_prepare(PhysWorld* w) {
                     p->jt1.f[l] = cp->jt1;
                     p->jt2.f[l] = cp->jt2;
                     p->max_jn.f[l] = cp->max_jn;
+                    p->jn_sum.f[l] = cp->jn_sum;
                     p->mask.u[l] = 0xFFFFFFFFu;
                 }
             }
@@ -106,6 +107,7 @@ void solver_simd_store(PhysWorld* w) {
                 cp->jt1 = x->p[i].jt1.f[l];
                 cp->jt2 = x->p[i].jt2.f[l];
                 cp->max_jn = x->p[i].max_jn.f[l];
+                cp->jn_sum = x->p[i].jn_sum.f[l];
             }
         }
     }
@@ -327,5 +329,17 @@ void solver_simd_solve(PhysWorld* w, f32 inv_h, Softness soft, b32 use_bias) {
         }
         scatter(w, x->a, &A);
         scatter(w, x->b, &B);
+    }
+}
+
+/* alt adım sonu: jn_sum += jn (skaler soft_step'teki toplama ile aynı sıra → bit-bit eşit) */
+void solver_simd_accum_jn(PhysWorld* w) {
+    WideContact* wc = (WideContact*)w->wide;
+    for (u32 g = 0; g < w->wide_count; g++) {
+        WideContact* x = &wc[g];
+        for (u32 i = 0; i < x->max_count; i++) {
+            WidePoint* p = &x->p[i];
+            p->jn_sum.v = SEL(p->mask.v, ADD(p->jn_sum.v, p->jn.v), p->jn_sum.v);
+        }
     }
 }

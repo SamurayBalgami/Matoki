@@ -130,7 +130,7 @@ void pipe_begin(Pipeline* p, Raster* r, Arena* frame, Mat4 view, Mat4 proj, Vec3
     p->guard_y = 1.0f + 2.0f * PIPE_GUARD_PX / p->vh;
     p->time = 0.0f;
     p->frame_mark = arena_mark(frame);
-    p->draws = ARENA_ARRAY(frame, DrawRec, PIPE_MAX_DRAWS);
+    p->draws = ARENA_TRY_ARRAY(frame, DrawRec, PIPE_MAX_DRAWS);   /* NULL: bu kare çizim kaydı yok (sayılır) */
     p->ndraws = 0;
     p->batches = 0;
     p->vert_ms = p->setup_ms = p->raster_ms = 0.0;
@@ -195,12 +195,15 @@ void pipe_draw(Pipeline* p, const DrawItem* d) {
         p->stats.objects_culled++;
         return;
     }
-    if (p->ndraws >= PIPE_MAX_DRAWS) sys_panic("pipe_draw: çizim sınırı (PIPE_MAX_DRAWS)");
+    VertUniforms* vu = p->draws && p->ndraws < PIPE_MAX_DRAWS ? ARENA_TRY_ARRAY(p->frame, VertUniforms, 1) : NULL;
+    if (!vu) {   /* çizim sınırı ya da kare belleği doldu: motor durmaz, çizim atlanır */
+        p->stats.draws_dropped++;
+        return;
+    }
     DrawRec* r = &p->draws[p->ndraws++];
     mem_zero(r, sizeof(*r));
     r->mesh = m;
     r->mat = mat;
-    VertUniforms* vu = ARENA_NEW(p->frame, VertUniforms);
     vu->model = d->model;
     vu->view_proj = p->view_proj;
     vu->normal_mat = mat3_normal_from_mat4(&d->model);
@@ -304,7 +307,7 @@ static void vertex_job(void* ctx, u32 index, u32 tid) {
     u32 di = find_draw(p, gc->d0, gc->d1, g0, FALSE);
     while (g0 < g1 && di < gc->d1) {
         DrawRec* d = &p->draws[di];
-        u32 vc = d->mesh->vertex_count;
+        u32 vc = d->nv;
         u32 a = g0 - d->vert_base, b = MIN(vc, g1 - d->vert_base);
         if (a < b) vertex_range(gc, d, a, b, tid);
         g0 = d->vert_base + b;
@@ -396,7 +399,7 @@ static void triangle_job(void* ctx, u32 index, u32 tid) {
     RasterAlloc ra = { NULL, NULL, 0 };
     while (g0 < g1 && di < gc->d1) {
         const DrawRec* d = &p->draws[di];
-        u32 tc = d->mesh->index_count / 3;
+        u32 tc = d->nt;
         u32 a = g0 - d->tri_base, b = MIN(tc, g1 - d->tri_base);
         if (a < b) triangle_range(gc, chunk, d, a, b, th, &ra);
         g0 = d->tri_base + b;
@@ -419,10 +422,17 @@ static void run_batch(Pipeline* p, u32 d0, u32 d1) {
         u32 vc = d->mesh->vertex_count;
         d->vert_base = tv;
         d->tri_base = tt;
-        d->cv = (ClipVert*)arena_alloc_nozero(p->frame, sizeof(ClipVert) * (vc ? vc : 1), _Alignof(ClipVert));
-        d->oc = (u32*)arena_alloc_nozero(p->frame, sizeof(u32) * (vc ? vc : 1), _Alignof(u32));
-        tv += vc;
-        tt += d->mesh->index_count / 3;
+        d->cv = (ClipVert*)arena_try_array(p->frame, sizeof(ClipVert), vc ? vc : 1, _Alignof(ClipVert));
+        d->oc = d->cv ? (u32*)arena_try_array(p->frame, sizeof(u32), vc ? vc : 1, _Alignof(u32)) : NULL;
+        if (!d->oc) {   /* köşe belleği yok: çizim bu partide atlanır */
+            d->nv = d->nt = 0;
+            p->stats.draws_dropped++;
+            continue;
+        }
+        d->nv = vc;
+        d->nt = d->mesh->index_count / 3;
+        tv += d->nv;
+        tt += d->nt;
     }
     gc->total_verts = tv;
     gc->total_tris = tt;
@@ -452,6 +462,7 @@ static void run_batch(Pipeline* p, u32 d0, u32 d1) {
         R->tris_degenerate += rs->tris_degenerate;
         R->tris_empty += rs->tris_empty;
         R->tris_overflow += rs->tris_overflow;
+        R->tris_dropped += rs->tris_dropped;
         R->bin_items += rs->bin_items;
         R->bin_full += rs->bin_full;
     }

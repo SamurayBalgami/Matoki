@@ -63,6 +63,8 @@ enum {
     ST_MSAA, ST_RESOLVE_US,                              /* örnek sayısı, MSAA çözümleme (µs) */
     ST_VERT_MODE, ST_VERTS, ST_BATCHES,                  /* köşe aşaması: 0 C, 1 Matoki; köşe; geometri partisi */
     ST_VERT_US, ST_SETUP_US,                             /* köşe aşaması, üçgen kurulumu (µs) */
+    ST_DRAWS_DROPPED, ST_TRIS_DROPPED,                   /* bellek dolduğu için atlanan çizim / üçgen (bu kare) */
+    ST_FRAME_KB, ST_MEM_FAILS,                           /* kare arenası tepe (KB), toplam başarısız ayırma */
     ST_COUNT
 };
 
@@ -1345,6 +1347,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_FLUSH_US] = (u32)(g.pipe.raster_ms * 1000.0);
     g.stats[ST_VERT_US] = (u32)(g.pipe.vert_ms * 1000.0);
     g.stats[ST_SETUP_US] = (u32)(g.pipe.setup_ms * 1000.0);
+    g.stats[ST_DRAWS_DROPPED] = ps->draws_dropped;
+    g.stats[ST_TRIS_DROPPED] = rs->tris_dropped;
+    g.stats[ST_FRAME_KB] = (u32)(g.frame.peak >> 10);
+    g.stats[ST_MEM_FAILS] = g.frame.fails + g.bins.fails;
     g.stats[ST_TOTAL_US] = (u32)((t_res - t_start) * 1000.0);
     g.stats[ST_PRELUDES] = rs->preludes;
     g.stats[ST_MSAA] = fb_msaa(&g.fb) ? RASTER_MSAA : 1u;
@@ -1565,10 +1571,13 @@ EXPORT(engine_replay_bench) f64 engine_replay_bench(i32 mode, i32 iters) {
 EXPORT(engine_replay_preludes) u32 engine_replay_preludes(void) { return g_replay_preludes; }
 
 /* ölçüm/teşhis: lit shader'ı verilen kaynakla yeniden derle (uniform yerleşimi aynı olmalı).
- * engine_scratch(n) kaynağın yazılacağı belleği verir. Başarı → 1. */
+ * engine_scratch(n) kaynağın yazılacağı belleği verir (sığmazsa 0). Başarı → 1. Başarısız derleme kalıcı
+ * arenayı geri sarar (sık düzenlemede bellek sızmaz); başarılı programın belleği JIT kodu kullandığı için kalır. */
 static char* g_src_buf;
+static u32 g_src_cap;
 EXPORT(engine_scratch) char* engine_scratch(u32 n) {
-    g_src_buf = (char*)arena_alloc(&g.perm, n + 1, 1);
+    g_src_buf = n < 0xFFFFFFFFu ? (char*)arena_try(&g.perm, (usize)n + 1, 1) : NULL;
+    g_src_cap = g_src_buf ? n : 0;
     return g_src_buf;
 }
 
@@ -1587,9 +1596,13 @@ EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0
 EXPORT(engine_set_codegen_scalar) void engine_set_codegen_scalar(i32 on) { codegen_set_scalar(on != 0); }
 
 EXPORT(engine_matoki_recompile) i32 engine_matoki_recompile(u32 len) {
+    if (!g_src_buf || len > g_src_cap) return 0;
+    usize mark = arena_mark(&g.perm);
     MatokiProgram* p = ARENA_NEW(&g.perm, MatokiProgram);
     MatokiError e;
+    mem_zero(&e, sizeof(e));
     if (!matoki_compile(&g.perm, g_src_buf, len, NULL, p, &e) || !matoki_jit(&g.perm, p, &e)) {
+        arena_reset(&g.perm, mark);
         char buf[300];
         StrBuf sb;
         sb_init(&sb, buf, sizeof(buf));

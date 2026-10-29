@@ -117,7 +117,10 @@ void raster_reset_stats(Raster* r) { mem_zero(&r->stats, sizeof(r->stats)); }
 static void chunks_reset(Raster* r) {
     r->tiles_x = (r->fb->w + RASTER_TILE - 1) >> RASTER_TILE_SHIFT;
     r->tiles_y = (r->fb->h + RASTER_TILE - 1) >> RASTER_TILE_SHIFT;
-    r->chunk_bins = ARENA_ARRAY(r->arena, Bin*, RASTER_MAX_CHUNKS);
+    /* parça tablosu ve karo listesi flush sonrası boş arenanın başında; sığmazsa raster bu tur kapalı (üçgenler sayılır) */
+    r->chunk_bins = ARENA_TRY_ARRAY(r->arena, Bin*, RASTER_MAX_CHUNKS);
+    r->tile_list = ARENA_TRY_ARRAY(r->arena, u32, (u32)(r->tiles_x * r->tiles_y));
+    if (!r->tile_list) r->chunk_bins = NULL;
     r->nchunks = 0;
     r->serial_chunk = -1;
     r->pending = 0;
@@ -125,6 +128,8 @@ static void chunks_reset(Raster* r) {
 }
 
 void raster_begin(Raster* r, Arena* arena) {
+    /* aynı arenayla yeniden başlama: önceki parça tablosunu geri ver (yoksa her çağrı ~16 KB sızdırır) */
+    if (r->arena == arena && r->chunk_bins && r->arena_mark <= arena->used) arena_reset(arena, r->arena_mark);
     r->arena = arena;
     r->arena_mark = arena_mark(arena);
     chunks_reset(r);
@@ -132,14 +137,21 @@ void raster_begin(Raster* r, Arena* arena) {
 
 static u32 tiles_count(const Raster* r) { return (u32)(r->tiles_x * r->tiles_y); }
 
+/* n parça ayırır, ilkinin indeksini döndürür. Sınırı ya da belleği aşan parçalar NULL / aralık dışı kalır:
+ * raster_triangle_to onlara giden üçgenleri tris_dropped olarak sayar (çökme yok). */
 u32 raster_chunks_alloc(Raster* r, u32 n) {
-    if (!r->chunk_bins) sys_panic("raster_chunks_alloc: önce raster_begin");
-    if (r->nchunks + n > RASTER_MAX_CHUNKS) raster_flush(r);
-    if (r->nchunks + n > RASTER_MAX_CHUNKS) sys_panic("raster_chunks_alloc: parça sınırı");
+    if (r->chunk_bins && r->nchunks + n > RASTER_MAX_CHUNKS) raster_flush(r);
+    if (!r->chunk_bins) return RASTER_MAX_CHUNKS;   /* hepsi aralık dışı */
     u32 first = r->nchunks;
-    for (u32 i = 0; i < n; i++) r->chunk_bins[r->nchunks++] = ARENA_ARRAY(r->arena, Bin, tiles_count(r));
+    for (u32 i = 0; i < n && r->nchunks < RASTER_MAX_CHUNKS; i++) {
+        r->chunk_bins[r->nchunks++] = ARENA_TRY_ARRAY(r->arena, Bin, tiles_count(r));
+    }
     r->serial_chunk = -1;   /* sonraki seri üçgenler yeni parçaya (sıra) */
     return first;
+}
+
+static inline Bin* chunk_at(const Raster* r, u32 chunk) {
+    return r->chunk_bins && chunk < r->nchunks ? r->chunk_bins[chunk] : NULL;
 }
 
 usize raster_room(const Raster* r) { return r->arena->cap - r->arena->used; }
@@ -214,6 +226,7 @@ static void flush_tile(void* ctx, u32 index, u32 tid) {
     i32 x0 = tx << RASTER_TILE_SHIFT, y0 = ty << RASTER_TILE_SHIFT;
     i32 x1 = MIN(x0 + RASTER_TILE - 1, fb->w - 1), y1 = MIN(y0 + RASTER_TILE - 1, fb->h - 1);
     for (u32 ch = 0; ch < r->nchunks; ch++) {
+        if (!r->chunk_bins[ch]) continue;
         for (const BinChunk* c = r->chunk_bins[ch][tile].head; c; c = c->next) {
             for (u32 i = 0; i < c->count; i++) {
                 TriSetup* t = c->items[i].t;
@@ -249,14 +262,14 @@ static void flush_tile(void* ctx, u32 index, u32 tid) {
 void raster_flush(Raster* r) {
     if (!r->chunk_bins) return;
     r->stats.flushes++;
-    if (r->overflow) sys_panic("raster arena paralel kurulumda doldu (pipeline bütçesi)");
-    if (r->pending) {
+    if (r->overflow) r->stats.overflows++;   /* sığan üçgenler yine çizilir */
+    if (r->pending && r->tile_list) {
         u32 n_tiles = tiles_count(r);
-        u32* tiles = ARENA_ARRAY(r->arena, u32, n_tiles);
+        u32* tiles = r->tile_list;
         u32 n = 0;
         for (u32 i = 0; i < n_tiles; i++) {
             for (u32 ch = 0; ch < r->nchunks; ch++) {
-                if (r->chunk_bins[ch][i].head) {
+                if (r->chunk_bins[ch] && r->chunk_bins[ch][i].head) {
                     tiles[n++] = i;
                     break;
                 }
@@ -383,15 +396,21 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
         usize need = tri_bytes + sizeof(BinChunk) * (usize)((tx1 - tx0 + 1) * (ty1 - ty0 + 1)) + RASTER_ARENA_SLACK;
         if (r->arena->cap - r->arena->used < need) {
             raster_flush(r);
-            if (r->arena->cap - r->arena->used < need) sys_panic("raster arena çok küçük");
             /* flush parçaları sıfırladı: seri parça yeniden açılır */
             r->serial_chunk = (i32)raster_chunks_alloc(r, 1);
-            bins = r->chunk_bins[r->serial_chunk];
+            bins = chunk_at(r, (u32)r->serial_chunk);
+            if (!bins || r->arena->cap - r->arena->used < need) {   /* tek üçgen bile sığmıyor: atla */
+                st->tris_dropped++;
+                return;
+            }
         }
     }
 
     TriSetup* t = (TriSetup*)ralloc(r, tri_bytes, _Alignof(TriSetup), ra);
-    if (!t) return;
+    if (!t) {
+        st->tris_dropped++;
+        return;
+    }
     t->shade = s->shade;
     t->prelude = s->prelude;
     t->uniforms = s->uniforms;
@@ -423,8 +442,8 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
     if (atomic) ra->tris++;   /* r->pending'e iş sonunda bir kez eklenir (raster_alloc_done) */
     else r->pending++;
     if (tx0 == tx1 && ty0 == ty1) {
-        bin_push(r, &bins[ty0 * r->tiles_x + tx0], t, 0, ra);
-        st->bin_items++;
+        if (bin_push(r, &bins[ty0 * r->tiles_x + tx0], t, 0, ra)) st->bin_items++;
+        else st->tris_dropped++;
         return;
     }
     for (i32 ty = ty0; ty <= ty1; ty++) {
@@ -447,7 +466,10 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
                 if ((a | b | c | d) < 0) full = 0;
             }
             if (outside) continue;
-            if (!bin_push(r, &bins[ty * r->tiles_x + tx], t, full, ra)) return;
+            if (!bin_push(r, &bins[ty * r->tiles_x + tx], t, full, ra)) {   /* kısmen bin'lendi: sığan karolar çizilir */
+                st->tris_dropped++;
+                return;
+            }
             st->bin_items++;
             st->bin_full += full;
         }
@@ -455,15 +477,27 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
 }
 
 void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, const RasterVert* vc) {
-    if (!r->chunk_bins) sys_panic("raster_triangle: önce raster_begin");
-    if (r->serial_chunk < 0) r->serial_chunk = (i32)raster_chunks_alloc(r, 1);
+    if (!r->arena) sys_panic("raster_triangle: önce raster_begin");
+    if (r->serial_chunk < 0 || !chunk_at(r, (u32)r->serial_chunk)) r->serial_chunk = (i32)raster_chunks_alloc(r, 1);
+    Bin* bins = chunk_at(r, (u32)r->serial_chunk);
+    if (!bins) {
+        r->stats.tris_in++;
+        r->stats.tris_dropped++;
+        return;
+    }
     RasterState s = { r->shade, r->prelude, r->uniforms, r->var_count, r->cull, r->depth_test, r->depth_write, r->depth_func };
-    tri_setup(r, r->chunk_bins[r->serial_chunk], &s, va, vb, vc, &r->stats, NULL);
+    tri_setup(r, bins, &s, va, vb, vc, &r->stats, NULL);
 }
 
 void raster_triangle_to(Raster* r, u32 chunk, const RasterState* s, const RasterVert* a, const RasterVert* b,
                         const RasterVert* c, RasterStats* st, RasterAlloc* ra) {
-    tri_setup(r, r->chunk_bins[chunk], s, a, b, c, st, ra);
+    Bin* bins = chunk_at(r, chunk);
+    if (!bins) {
+        st->tris_in++;
+        st->tris_dropped++;
+        return;
+    }
+    tri_setup(r, bins, s, a, b, c, st, ra);
 }
 
 void raster_alloc_done(Raster* r, RasterAlloc* ra) {

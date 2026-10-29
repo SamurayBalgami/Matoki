@@ -61,6 +61,8 @@ typedef struct RasterStats {
     u32 bin_full;         /* bunlardan tam kaplananlar (kenar testi atlanan) */
     u32 flushes;          /* arena dolduğu için yapılan ara flush'lar dahil */
     u32 preludes;         /* çağrılan çizim önsözü sayısı */
+    u32 tris_dropped;     /* raster arenası dolduğu için atlanan (kısmen ya da tamamen) üçgen */
+    u32 overflows;        /* taşma görülen flush sayısı (motor durmaz, sığanlar çizilir) */
 } RasterStats;
 
 typedef enum RasterMode {
@@ -91,7 +93,8 @@ typedef struct Raster {
     i32          serial_chunk;   /* raster_triangle'ın yazdığı parça (-1: yok) */
     i32          tiles_x, tiles_y;
     u32          pending;
-    u32          overflow;       /* paralel kurulumda arena doldu (programlama hatası: bütçe) */
+    u32          overflow;       /* paralel kurulumda arena doldu: üçgenler atlandı (flush sayar, sıfırlar) */
+    u32*         tile_list;      /* flush'ta boş olmayan karolar (parça tablosuyla birlikte önceden ayrılır) */
 } Raster;
 
 /* Bir üçgenin çizim durumu (paralel kurulumda Raster'ın "set" alanları yerine) */
