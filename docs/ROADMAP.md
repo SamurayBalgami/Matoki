@@ -35,4 +35,5 @@ eksik olanlar aşağıda öncelik sırasıyla listeleniyor.
 | 14d | M10 Faz 4: paralel raster (9), tek/çok thread bit-bit | ✅ |
 | 14e | M10 Faz 5: anizotropik süzme + kumaş ışığı (lit_hq.mtk), MSAA 4x | ✅ (D28) |
 | 14f | M10 Faz 6: Matoki vertex shader'ları + paralel geometri (4c), dalgalı göl | ✅ (D29) |
-| 14g | M10 Faz 7: Matoki tam matris / uniform dizisi / dallanma; ışık + gölge | ⏳ |
+| 14g | M10 Faz 7: uzak görüntü — sRGB mip, 8 örnekli trilinear, üstel sis, Matoki gökyüzü | ✅ (D30) |
+| 14h | M10 Faz 8: Matoki tam matris / uniform dizisi / dallanma; ışık + gölge | ⏳ |

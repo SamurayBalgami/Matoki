@@ -249,6 +249,20 @@ discard SPMD kalır: kod akmaya devam eder, yalnızca etkin yol maskesi (iç iç
 - **Ölçüm (16 thread, HQ + MSAA, 640×360):** geometri 1. görünüm 4.10 → 0.84 ms, 3. görünüm 3.75 → 0.76 ms;
   göl (33 bin üçgen, wave_vert) 1.08 ms.
 
+## D30. Uzak görüntü: sRGB-doğru mip, 8 örnekli trilinear anizotropi, üstel sis, Matoki gökyüzü (2026-10-29)
+Teşhis (büyütülmüş kesitler, görünüm 4): uzak zemin kirli gri (sRGB'de ortalama: siyah/beyaz → 128), ayrıntılı
+bölge ile düz bölge arasında testere dişli sınır (seviye atlaması, 4 örnek), sisin başlamadığı mesafede ufukta
+gri duvar, tek renk gök.
+- **Mip:** renk kanalları sRGB → doğrusal (16 bit tablo) ortalanır → sRGB (12 bit tablo); alfa doğrusal.
+  Siyah/beyaz → 188, düz renk gidiş-dönüşte birebir (test). D7'deki "lineer uzayda" notu artık doğru.
+- **lit_hq.mtk:** büyük eksen boyunca 8 örnek (oran ≤ 8), her örnek iki komşu seviyede, kesirli seviyeyle karışım.
+  Denendi: 4 örnek trilinear (uzak kareler erken düzleşir) ve 8 örnek en yakın seviye (seviye sınırında sert çizgi);
+  8 trilinear seçildi. Sis 1 - 2^(-4x²) (yumuşak başlar, ufukta tam).
+- **sky.mtk:** kameraya ortalanmış küre (0.85·zfar), ufuk = sis rengi → zemin göğe dikişsiz; güneş diski + hale
+  (üsler kareyle, pow yok). `Y` ile kapanır. Sonlu zeminlerin (80 m) sisi kenarda tamamlanacak şekilde kısaltıldı.
+- **Maliyet (node, 16 thread, HQ + MSAA, önceki commit ↔ bu, dönüşümlü):** kare 1.4–2.5× (ör. görünüm 1
+  2.60 → 5.47 ms); gök kubbesi bunun 0.4–1.0 ms'si. Ucuz yol: `L` ile Matoki (mip, tek örnek) shader'ı.
+
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

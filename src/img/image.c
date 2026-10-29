@@ -1,7 +1,8 @@
-/* img/image.c — mip zinciri yerleşimi ve kutu filtresiyle indirgeme.
+/* img/image.c — mip zinciri yerleşimi ve sRGB-doğru kutu filtresiyle indirgeme (renk doğrusal ışıkta ortalanır).
  * Kare olmayan dokularda bir kenar 1'e indiğinde o eksende indirgeme durur
  * (kaynak indeksi kenara kenetlenir), diğer eksen yarılanmaya devam eder. */
 #include "img/image.h"
+#include "core/math.h"
 #include "core/sys.h"
 
 u32 img_mip_level_count(u32 w, u32 h) {
@@ -22,7 +23,27 @@ usize img_mip_offset(u32 w, u32 h, u32 level) {
 
 usize img_mip_total(u32 w, u32 h, u32 levels) { return img_mip_offset(w, h, levels); }
 
+/* sRGB ↔ doğrusal tablolar: renk kanalları sRGB kodlu; doğru ortalama doğrusal ışıkta alınır
+ * (sRGB'de ortalama siyah/beyazı 128'e, doğrusal ortalama ~188'e götürür; uzak doku kararır). */
+static u16 g_s2l[256];      /* sRGB bayt → doğrusal, 0..65535 */
+static u8  g_l2s[4096];     /* doğrusal 12 bit → sRGB bayt (en yakın) */
+static b32 g_srgb_ready;
+
+static f32 srgb_to_linear(f32 c) { return c <= 0.04045f ? c / 12.92f : m_powf((c + 0.055f) / 1.055f, 2.4f); }
+static f32 linear_to_srgb(f32 c) { return c <= 0.0031308f ? c * 12.92f : 1.055f * m_powf(c, 1.0f / 2.4f) - 0.055f; }
+
+static void srgb_tables(void) {
+    if (g_srgb_ready) return;
+    for (u32 i = 0; i < 256; i++) g_s2l[i] = (u16)m_f2i_sat(srgb_to_linear((f32)i / 255.0f) * 65535.0f + 0.5f);
+    for (u32 i = 0; i < 4096; i++) {
+        f32 s = linear_to_srgb((f32)i / 4095.0f) * 255.0f + 0.5f;
+        g_l2s[i] = (u8)CLAMP(m_f2i_sat(s), 0, 255);
+    }
+    g_srgb_ready = TRUE;
+}
+
 void img_build_mips(u32* px, u32 w, u32 h, u32 levels) {
+    srgb_tables();
     for (u32 k = 1; k < levels; k++) {
         u32 sw = img_mip_dim(w, k - 1), sh = img_mip_dim(h, k - 1);
         u32 dw = img_mip_dim(w, k), dh = img_mip_dim(h, k);
@@ -34,11 +55,15 @@ void img_build_mips(u32* px, u32 w, u32 h, u32 levels) {
                 u32 x0 = MIN(x * 2, sw - 1), x1 = MIN(x * 2 + 1, sw - 1);
                 u32 c[4] = { src[y0 * sw + x0], src[y0 * sw + x1], src[y1 * sw + x0], src[y1 * sw + x1] };
                 u32 out = 0;
-                for (u32 ch = 0; ch < 4; ch++) {
-                    u32 s = 2;
-                    for (u32 i = 0; i < 4; i++) s += (c[i] >> (ch * 8)) & 0xFF;
-                    out |= (s >> 2) << (ch * 8);
+                for (u32 ch = 0; ch < 3; ch++) {
+                    /* renk: doğrusal ışıkta ortalama (16 bit), 12 bite yuvarla, sRGB'ye geri */
+                    u32 s = 0;
+                    for (u32 i = 0; i < 4; i++) s += g_s2l[(c[i] >> (ch * 8)) & 0xFF];
+                    out |= (u32)g_l2s[MIN((s + 32) >> 6, 4095u)] << (ch * 8);
                 }
+                u32 a = 2;   /* alfa doğrusal */
+                for (u32 i = 0; i < 4; i++) a += c[i] >> 24;
+                out |= (a >> 2) << 24;
                 dst[y * dw + x] = out;
             }
         }

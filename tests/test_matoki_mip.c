@@ -38,8 +38,22 @@ TEST(mip_box_filter) {
     t->px[2] = color_pack(255, 100, 8, 255);
     t->px[3] = color_pack(2, 0, 0, 255);
     tex_build_mips(t);
-    /* (0+255+255+2+2)/4 = 128, (0+100+100+0+2)/4 = 50, (0+8+8+0+2)/4 = 4 */
-    CHECK(t->px[4] == color_pack(128, 50, 4, 255));
+    /* sRGB-doğru: doğrusal ışıkta ortalama. 0,255,255,2 → doğrusal ≈ (0 + 1 + 1 + 0.0006) / 4 ≈ 0.50 → sRGB ≈ 188
+     * (sRGB'de saf ortalama 128 olurdu: uzak doku kararırdı); 0,100,100,0 → ≈ 0.0636 → ≈ 72; 0,8,8,0 → ≈ 4 */
+    u32 m = t->px[4];
+    CHECK((m & 0xFF) >= 187 && (m & 0xFF) <= 189);
+    CHECK(((m >> 8) & 0xFF) >= 71 && ((m >> 8) & 0xFF) <= 73);
+    CHECK(((m >> 16) & 0xFF) >= 3 && ((m >> 16) & 0xFF) <= 5);
+    CHECK((m >> 24) == 255);
+    /* düz renk değişmez (gidiş-dönüş) */
+    Texture* f = tex_create(test_arena(), 2, 2, TEX_FLAG_MIPMAP);
+    u32 bad = 0;
+    for (u32 v = 0; v < 256; v++) {
+        for (u32 i = 0; i < 4; i++) f->px[i] = color_pack(v, v, v, 255);
+        tex_build_mips(f);
+        bad += f->px[4] != color_pack(v, v, v, 255);
+    }
+    CHECK(bad == 0);
 
     /* kare olmayan: 4x1 → 2x1 → 1x1 */
     Texture* r = tex_create(test_arena(), 4, 1, TEX_FLAG_MIPMAP);
@@ -49,9 +63,10 @@ TEST(mip_box_filter) {
     r->px[2] = color_pack(50, 0, 0, 0);
     r->px[3] = color_pack(70, 0, 0, 0);
     tex_build_mips(r);
-    CHECK((r->px[4] & 0xFF) == 20);
-    CHECK((r->px[5] & 0xFF) == 60);
-    CHECK((r->px[6] & 0xFF) == 40);
+    /* doğrusal ortalama sRGB ortalamasından büyük (dışbükey dönüşüm) */
+    CHECK((r->px[4] & 0xFF) >= 21 && (r->px[4] & 0xFF) <= 23);
+    CHECK((r->px[5] & 0xFF) >= 61 && (r->px[5] & 0xFF) <= 63);
+    CHECK((r->px[6] & 0xFF) > 40);
 }
 
 static u32 level_for_scale(const Texture* t, f32 k) {

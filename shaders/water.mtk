@@ -40,6 +40,7 @@ fn frag() -> vec4 {
     let spec = pow(max(dot(r, to_light), 0.0), 96.0) * 2.5;
     let c = mix(body, sky, fresnel) + light_color * spec;
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
-    let f = clamp((d - fog_start) * fog_scale, 0.0, 1.0);
+    let x = max(d - fog_start, 0.0) * fog_scale;
+    let f = 1.0 - exp2(-4.0 * x * x);      // lit_hq.mtk ile aynı üstel sis
     return vec4(mix(c, fog_color, f), 1.0);
 }

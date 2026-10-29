@@ -1,6 +1,6 @@
 /* img/image.h — doku oluşturma ve mip zinciri (shade_abi.h §Texture yerleşimi).
  * Seviyeler px'ten itibaren bitişik; img_mip_offset seviye k'nın texel ofsetini verir.
- * Mip üretimi kutu filtresi, v0'da lineer uzayda (sRGB-doğru indirgeme sonraki adım). */
+ * Mip üretimi kutu filtresi; renk kanalları sRGB çözülüp doğrusal ışıkta ortalanır (alfa doğrusal). */
 #ifndef IMG_IMAGE_H
 #define IMG_IMAGE_H
 #include "core/types.h"

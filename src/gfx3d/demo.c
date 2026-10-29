@@ -24,6 +24,7 @@
 #define KEY_V 86
 #define KEY_N 78
 #define KEY_K 75
+#define KEY_Y 89
 
 /* sahne 4 oyun modu */
 enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
@@ -108,6 +109,9 @@ typedef struct Demo {
     b32 capture;        /* ölçüm: lit materyaller quad yakalayıcıdan geçer (engine_capture_view) */
     i32 vert_mode;      /* 0: C köşe aşaması (vert_std_c), 1: Matoki std_vert.mtk (K tuşu) */
     Mesh* water;        /* sahne 7: 128×128 bölmeli göl, wave_vert.mtk */
+    LitUniforms u_sky;  /* sky.mtk: tint = tepe, fog_color = ufuk */
+    b32 sky;            /* gökyüzü kubbesi (Y tuşu) */
+    Material m_sky;
     LitUniforms u_water;
     Material m_water;
     i32 shader_mode;     /* SHADER_* */
@@ -146,6 +150,8 @@ static PreludeFn g_hq_pre;
 /* vertex shader'lar (Matoki vert aşaması) */
 static VertexFn g_std_vert, g_wave_vert;
 static ShadeFn g_water;                 /* water.mtk (göl fragment) */
+static ShadeFn g_sky;                   /* sky.mtk (gökyüzü kubbesi) */
+static PreludeFn g_sky_pre;
 static PreludeFn g_water_pre;
 static PreludeFn g_std_vert_pre, g_wave_vert_pre;
 
@@ -246,6 +252,11 @@ static void matoki_lit_init(Arena* a) {
     if (wf) {
         g_water = wf->fn_fast;
         g_water_pre = wf->prelude;
+    }
+    MatokiProgram* sk = matoki_load(a, "sky.mtk", MATOKI_STAGE_FRAG);
+    if (sk) {
+        g_sky = sk->fn_fast;
+        g_sky_pre = sk->prelude;
     }
     MatokiProgram* sv = matoki_load(a, "std_vert.mtk", MATOKI_STAGE_VERT);
     if (sv) {
@@ -736,12 +747,14 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_grid[1], g.tex_grid, v3(0.45f, 0.85f, 0.55f));
     lit_defaults(&g.u_grid[2], g.tex_grid, v3(0.5f, 0.6f, 1.0f));
     lit_defaults(&g.u_ground, g.tex_checker, v3(0.75f, 0.8f, 0.7f));
+    g.u_ground.fog_start = 8.0f;      /* 80 m'lik zeminin kenarı ufukta sise erisin (sert çizgi olmasın) */
+    g.u_ground.fog_end = 48.0f;
     lit_defaults(&g.u_floor, g.tex_checker, v3(1, 1, 1));
-    g.u_floor.fog_start = 300.0f;
-    g.u_floor.fog_end = 1800.0f;
+    g.u_floor.fog_start = 10.0f;      /* üstel sis: uzak zemin ufukta gök rengine erir (pus) */
+    g.u_floor.fog_end = 450.0f;
     lit_defaults(&g.u_pillar, g.tex_bricks, v3(1, 1, 1));
-    g.u_pillar.fog_start = 300.0f;
-    g.u_pillar.fog_end = 1800.0f;
+    g.u_pillar.fog_start = 10.0f;
+    g.u_pillar.fog_end = 450.0f;
     material(&g.m_bricks, &g.u_bricks);
     for (u32 i = 0; i < 3; i++) material(&g.m_grid[i], &g.u_grid[i]);
     material(&g.m_ground, &g.u_ground);
@@ -790,6 +803,9 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.m_water.vert_params[2] = 1.0f;     /* hız çarpanı */
     g.m_water.vert_params[3] = 0.6f;     /* sivrilik */
     g.m_water.cull_margin = 1.5f;
+    lit_defaults(&g.u_sky, g.tex_grid, v3(0.32f, 0.52f, 0.86f));   /* tepe rengi (water.mtk gök yansımasıyla aynı) */
+    material(&g.m_sky, &g.u_sky);
+    g.m_sky.cull = CULL_NONE;
     g.u_jelly.translucency = 0.2f;
     material(&g.m_flag, &g.u_flag);
     material(&g.m_jelly, &g.u_jelly);
@@ -804,6 +820,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     if (g_matoki_lit) g.shader_mode = SHADER_MATOKI;
     if (g_hq_lit) g.shader_mode = SHADER_HQ;
     g.vert_mode = g_std_vert != NULL;
+    g.sky = TRUE;
     scene_set(1);
     g.ready = TRUE;
     return 1;
@@ -819,7 +836,7 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 
 static void set_frame_uniforms(void) {
     LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
-                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water };
+                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = g.cam.pos;
         all[i]->use_mip = g.mip;
@@ -845,6 +862,17 @@ static void set_frame_uniforms(void) {
         g.m_water.shade = g_water;
         g.m_water.prelude = g_water_pre;
     }
+    g.m_sky.shade = g_sky;
+    g.m_sky.prelude = g_sky_pre;
+    g.m_sky.vert = vf;
+    g.m_sky.vert_prelude = vpre;
+}
+
+/* gökyüzü kubbesi: kameraya ortalanmış, uzak düzlemin hemen içinde büyük küre (iç yüz, eleme yok) */
+static void draw_sky(void) {
+    if (!g_sky || !g.sky || g.flat || g.capture) return;
+    f32 r = g.cam.zfar * 0.85f;
+    draw(g.sphere, &g.m_sky, mat4_mul(mat4_translate(g.cam.pos), mat4_scale(v3(r, r, r))));
 }
 
 static void render_scene1(void) {
@@ -975,6 +1003,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (g.in.pressed[KEY_0 + 6]) scene_set(6);
     if (g.in.pressed[KEY_0 + 7]) scene_set(7);
     if (g.in.pressed[KEY_K] && g_std_vert) g.vert_mode = !g.vert_mode;
+    if (g.in.pressed[KEY_Y]) g.sky = !g.sky;
     if (g.scene == 5 && g.in.pressed[KEY_T]) joints_scene_build();
     if (g.scene == 6 && g.in.pressed[KEY_T]) soft_scene_build();
     const u8* key = g.in.down;
@@ -1081,6 +1110,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     set_frame_uniforms();
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
+    draw_sky();
     if (g.scene == 1) render_scene1();
     else if (g.scene == 2) render_scene2();
     else if (g.scene == 7) render_scene7();
@@ -1347,6 +1377,9 @@ EXPORT(engine_set_msaa) void engine_set_msaa(i32 on) { g.fb.samples = on ? RASTE
 
 /* ölçüm: köşe aşaması 0 = C kâhini, 1 = Matoki std_vert.mtk */
 EXPORT(engine_set_vert_mode) void engine_set_vert_mode(i32 m) { g.vert_mode = m && g_std_vert; }
+
+/* ölçüm: gökyüzü kubbesi aç / kapa */
+EXPORT(engine_set_sky) void engine_set_sky(i32 on) { g.sky = on != 0; }
 
 EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0 ? (u32)n : 0); }
 

@@ -1,0 +1,42 @@
+// shaders/sky.mtk — gökyüzü kubbesi: bakış yönüne göre ufuk → tepe geçişi, güneş diski + hale.
+// Kameraya ortalanmış büyük bir kürenin iç yüzüne çizilir (demo: draw_sky). Ufuk rengi = sis rengi →
+// sisle eriyen zemin gökle dikişsiz birleşir. Uniform'lar LitUniforms yerleşiminde:
+// fog_color = ufuk, tint = tepe, to_light = güneş yönü, light_color = güneş rengi.
+
+uniform tex: texture2d;
+uniform to_light: vec3;
+uniform ambient: f32;
+uniform light_color: vec3;
+uniform fog_start: f32;
+uniform fog_color: vec3;
+uniform fog_end: f32;
+uniform eye: vec3;
+uniform use_mip: i32;
+uniform tint: vec3;
+uniform wrap: f32;
+uniform translucency: f32;
+
+varying wpos: vec3;
+varying nrm: vec3;
+varying uv: vec2;
+
+fn frag() -> vec4 {
+    let dir = normalize(wpos - eye);
+    let up = clamp(dir.y, 0.0, 1.0);
+    // ufukta açık ve puslu, yükseldikçe doygun mavi (kök: geçiş ufka yakın daha hızlı)
+    let sky = mix(fog_color, tint, sqrt(up));
+    // ufkun altı: sis rengi (zemin zaten sisle bu renge erir)
+    let base = select(dir.y >= 0.0, sky, fog_color);
+    // güneş: keskin disk + geniş hale + ufuk parlaması
+    let sd = max(dot(dir, to_light), 0.0);
+    // üsler art arda kareyle (pow = exp2·log2 polinomu, gökyüzü ekranın büyük kısmı → pahalı)
+    let sd2 = sd * sd;
+    let sd4 = sd2 * sd2;
+    let sd8 = sd4 * sd4;
+    let sd16 = sd8 * sd8;
+    let sd48 = sd16 * sd16 * sd16;
+    let halo = sd8 * 0.22 + sd48 * 0.35;
+    let disk = smoothstep(0.9994, 0.9997, sd) * 4.0;
+    let glow = (1.0 - up) * (1.0 - up) * sd2 * 0.12;
+    return vec4(base + light_color * (halo + disk + glow), 1.0);
+}

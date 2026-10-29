@@ -151,6 +151,29 @@ Göl, thread sayısına göre (köşe / kurulum ms): 1: 0.90 / 5.25 · 4: 0.37 /
 Tüm kare hash'leri (görünüm × shader × MSAA) değişiklikten önceki referansla aynı (`tools/hashes.mjs`).
 Tarayıcı: göl 160 FPS (motor 5.75 ms: köşe 0.18, kurulum 0.41), diğer sahneler 200 FPS (ekran sınırı).
 
+## Faz 7 — Uzak görüntü kalitesi (2026-10-29) ✅
+
+Şikâyet: "uzak kareler / render zayıf". Teşhis ve kararlar D30'da. Değişiklikler: sRGB-doğru mip zinciri,
+lit_hq.mtk 8 örnekli trilinear anizotropi + üstel sis, `shaders/sky.mtk` gökyüzü kubbesi (varsayılan, `Y`),
+zemin sisleri (büyük zemin 10–450 m, 80 m zemin 8–48 m).
+
+Görsel karşılaştırma (`tools/shot.mjs` + 4× kesit, görünüm 4 ufuk): önce koyu gri duvar ve testere dişli sınır;
+sonra zemin pusun içinden gök rengine yumuşakça geçer, dama deseni çok daha uzağa kadar seçilir.
+
+Varyant ölçümü (`tools/bench_prev.mjs`, önceki commit cd7731e ↔ bu, kare ms, 16 thread, HQ + MSAA):
+
+| görünüm | önce | 4 örnek trilinear | 8 örnek en yakın | 8 örnek trilinear (seçilen) | seçilen, gök yok |
+|---|---|---|---|---|---|
+| 1 | 2.56–2.63 | 4.57 | 4.73 | 5.47 | 4.80 |
+| 2 | 2.86–2.98 | 4.92 | 5.22 | 6.13 | 5.23 |
+| 3 | 2.30–3.27 | 4.14 | 4.18 | 6.47 | 6.11 |
+| 4 | 2.33–2.63 | 3.64 | 3.70 | 4.17 | 3.53 |
+| 5 | 1.46–1.66 | 3.24 | 3.29 | 4.12 | 3.10 |
+| 6 göl | 6.28–6.43 | 8.10 | 8.11 | 8.91 | 8.11 |
+
+(Ölçüm makinesi yüklü; "önce" sütunu turlar arası aralık.) Tarayıcı `?prof`: 64–123 FPS tavanı (panel arka
+planda, yük altında; node ölçümü esas). 107/107 test.
+
 ## Sıradakiler
 
 1. **MSAA boyama:** kenar sınıflaması için artımlı kenar adımı, örnek tamponu sıkıştırma (tam kaplı pikselde tek renk).
