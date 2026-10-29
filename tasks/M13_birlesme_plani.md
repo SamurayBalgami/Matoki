@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0, 1, 2, 3, 4 TAMAM (2026-10-30) → sıradaki faz 5 (sim: geri sarma / tekrar oynatma).
+Durum: FAZ 0–5 TAMAM (2026-10-30) → sıradaki faz 6 (UI + canlı Matoki editörü).
 Kaynak sürümü: faz 0–3 0a7b782; faz 4'ten itibaren 2ac467a (onların 61 yeni commit'inde faz 0–3 dosyaları değişmedi). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
 CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
@@ -54,7 +54,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 2 ✓ | raster'a alfa karışımı (sprite / metin için; batch2d şimdilik opak + kesik), font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi; karışım SIMD = skaler |
 | 3 ✓ | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
 | 4 ✓ | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
-| 5 | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
+| 5 ✓ | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
 | 6 | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
 | 7 | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
 | 8a | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
@@ -146,6 +146,24 @@ Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.
 - Demo: J ses aç/kapa (L zaten shader), `?nosound`; panel son satırı: çalan ses, vuruş, sentez ms, kesinti.
 - Ölçüm: 213/213 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi; tek thread A/B (15 tur, faz 3 →
   faz 4) oranların medyanı 0,997, en iyi sürelerin oranı 0,990. engine.wasm 543 712 → 553 363 bayt.
+
+## Faz 5 notları (2026-10-30)
+- Taşınan: `sim/sim.c` çekirdeği (onların 2ac467a). Onların fiziğine bağlı `sim_hash_phys` ve 10k tick sahnesi
+  çıkarıldı; `sim/sim_det.c`'de bizim `PhysWorld` (soft çözücü, renkli SIMD, CCD, uyku) + ECS ile yeniden yazıldı:
+  2 oyuncu kutusu (girdi → kuvvet, zıplama, sandığa itki), 12 sandık, 4 küre, çevre duvarları; durum 513 KB.
+- Testler `test_sim` (7): onların özet / ofset / halka testleri aynen; gecikmeli eş (sabit 1–8 kare, rastgele 1–8
+  kare + sırasız paket, ofset modeli), 10 000 kare kayıt → ikili dosya → başka adreste oynatma, 8 kare geri sarma
+  ölçümü onların senaryolarıyla ama bizim sahneyle. Hepsi ilk koşuda geçti: bizim fizik geri sarmada bit-bit aynı.
+- **İyileştirme (ölçümlü):** anlık görüntü 1 MB bölgenin tamamı yerine arenanın kullanılan kısmını (513 KB) kopyalar.
+
+| (iki koşu) | önce | sonra |
+|---|---|---|
+| 10 000 kare: anlık görüntü + adım + özet | 2028 / 2029 ms | 833 / 935 ms |
+| 8 kare geri sarma + yeniden simülasyon | 0,87 / 0,83 ms | 0,37 / 0,70 ms |
+| anlık görüntü geri yükleme | 0,064 / 0,058 ms | 0,018 / 0,037 ms |
+
+- Ölçüm: 219/219 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi; sim demoda kullanılmadığı için
+  engine.wasm aynı (553 363 bayt). Sayfada geri sarma gösterimi faz 6'nın arayüzüyle birlikte düşünülecek.
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

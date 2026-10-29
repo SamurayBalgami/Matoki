@@ -390,6 +390,12 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
   yaklaşma hızı (rijit) ve çekim dışı hız sıçraması (DEM), cisim başına 0,12 s bekleme, adımda en güçlü 4 aday,
   eşitlikte indeks sırası → simülasyon ve fizik hash'leri ses açık/kapalı aynı (test). Onların testsiz deniz/hava
   efektleri uç girdi testiyle alındı. Sınır: sayfa gizliyken / ana thread durunca ses kesilir (üretici ana thread).
+- **Faz 5:** sim çekirdeği (anlık görüntü halkası, kare numaralı girdi, tahmin + geri sarma, kayıt / ikili dosya,
+  desync özeti) onlardan; fizik özeti ve belirlenimcilik sahnesi bizim fiziğe yeniden yazıldı (`sim/sim_det.c`).
+  Bizim `PhysWorld` işaretçi içerir ama tüm dizileri durum arenasından ayrılır ve anlık görüntü aynı adrese geri
+  yüklenir → düz kopya yeter; özet işaretçi baytlarını değil değerleri (gövde durumu + warm start önbelleği) karıştırır.
+  Anlık görüntü yalnız arenanın kullanılan kısmını kopyalar (arena hiç kullanılmadıysa tüm bölge): durum dışı
+  yazılan alan geri sarmada korunmaz — durum daima `sim_state_alloc` / durum arenasıyla kurulur.
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.
