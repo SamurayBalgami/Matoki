@@ -8,6 +8,6 @@
 void* sys_reserve(usize bytes);
 void  sys_log(const char* s, usize n);
 f64   sys_now_ms(void);
-void  sys_panic(const char* msg);
+_Noreturn void sys_panic(const char* msg);
 
 #endif

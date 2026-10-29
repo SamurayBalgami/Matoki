@@ -191,6 +191,65 @@ f32 mat4_max_scale(const Mat4* m) {
     return m_sqrtf(m_maxf(sx, m_maxf(sy, sz)));
 }
 
+/* 2x2 alt determinantlarla (Laplace); düzen bağımsız: tersin transpozu = transpozun tersi */
+Mat4 mat4_inverse(Mat4 m) {
+    const f32* a = m.m;
+    f32 s0 = a[0] * a[5] - a[4] * a[1], s1 = a[0] * a[6] - a[4] * a[2], s2 = a[0] * a[7] - a[4] * a[3];
+    f32 s3 = a[1] * a[6] - a[5] * a[2], s4 = a[1] * a[7] - a[5] * a[3], s5 = a[2] * a[7] - a[6] * a[3];
+    f32 c5 = a[10] * a[15] - a[14] * a[11], c4 = a[9] * a[15] - a[13] * a[11], c3 = a[9] * a[14] - a[13] * a[10];
+    f32 c2 = a[8] * a[15] - a[12] * a[11], c1 = a[8] * a[14] - a[12] * a[10], c0 = a[8] * a[13] - a[12] * a[9];
+    f32 det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
+    if (m_absf(det) < 1e-30f || det != det) return mat4_identity();
+    f32 k = 1.0f / det;
+    Mat4 r;
+    f32* b = r.m;
+    b[0] = (a[5] * c5 - a[6] * c4 + a[7] * c3) * k;
+    b[1] = (-a[1] * c5 + a[2] * c4 - a[3] * c3) * k;
+    b[2] = (a[13] * s5 - a[14] * s4 + a[15] * s3) * k;
+    b[3] = (-a[9] * s5 + a[10] * s4 - a[11] * s3) * k;
+    b[4] = (-a[4] * c5 + a[6] * c2 - a[7] * c1) * k;
+    b[5] = (a[0] * c5 - a[2] * c2 + a[3] * c1) * k;
+    b[6] = (-a[12] * s5 + a[14] * s2 - a[15] * s1) * k;
+    b[7] = (a[8] * s5 - a[10] * s2 + a[11] * s1) * k;
+    b[8] = (a[4] * c4 - a[5] * c2 + a[7] * c0) * k;
+    b[9] = (-a[0] * c4 + a[1] * c2 - a[3] * c0) * k;
+    b[10] = (a[12] * s4 - a[13] * s2 + a[15] * s0) * k;
+    b[11] = (-a[8] * s4 + a[9] * s2 - a[11] * s0) * k;
+    b[12] = (-a[4] * c3 + a[5] * c1 - a[6] * c0) * k;
+    b[13] = (a[0] * c3 - a[1] * c1 + a[2] * c0) * k;
+    b[14] = (-a[12] * s3 + a[13] * s1 - a[14] * s0) * k;
+    b[15] = (a[8] * s3 - a[9] * s1 + a[10] * s0) * k;
+    return r;
+}
+
+Mat3 mat3_identity(void) {
+    Mat3 r = { { 1, 0, 0, 0, 1, 0, 0, 0, 1 } };
+    return r;
+}
+
+/* toplama 0'dan başlar (fizik eklemleri bu sırayla bit-bit test edildi) */
+Mat3 mat3_mul(const Mat3* a, const Mat3* b) {
+    Mat3 r;
+    for (u32 c = 0; c < 3; c++) {
+        for (u32 row = 0; row < 3; row++) {
+            f32 s = 0.0f;
+            for (u32 k = 0; k < 3; k++) s += a->m[k * 3 + row] * b->m[c * 3 + k];
+            r.m[c * 3 + row] = s;
+        }
+    }
+    return r;
+}
+
+Mat3 mat3_2d(f32 tx, f32 ty, f32 rot, f32 sx, f32 sy) {
+    f32 c = m_cosf(rot), s = m_sinf(rot);
+    Mat3 r = { { c * sx, s * sx, 0.0f, -s * sy, c * sy, 0.0f, tx, ty, 1.0f } };
+    return r;
+}
+
+Vec2 mat3_mul_point(const Mat3* m, Vec2 p) {
+    return v2(m->m[0] * p.x + m->m[3] * p.y + m->m[6], m->m[1] * p.x + m->m[4] * p.y + m->m[7]);
+}
+
 /* Sütunları c0,c1,c2 olan M için kofaktör matrisinin sütunları
  * (c1×c2, c2×c0, c0×c1); ters-transpoz = kofaktör / det. */
 Mat3 mat3_normal_from_mat4(const Mat4* m) {

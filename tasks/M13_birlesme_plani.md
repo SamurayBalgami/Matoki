@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0 TAMAM (2026-10-29) → sıradaki faz 1. Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
+Durum: FAZ 0 + FAZ 1 TAMAM (2026-10-29) → sıradaki faz 2 (font + raster alfa karışımı). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
 CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 
@@ -49,8 +49,8 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | faz | içerik | ~satır | çıktı / kabul |
 |---|---|---|---|
 | 0 ✓ | D37, yeniden adlandırma betiği (`tools/port_names.py`) + eşleme tablosu, çekirdek ekleri | — | 6 dosya (synth, json, base64, noise, ttf, gfx2d/anim) `-Werror` temiz; 148 dosyanın 112'si eksiksiz çevriliyor |
-| 1 | çekirdek: `fmt_format` + `LOG/PANIC/ASSERT` (19+7+7 kullanım), `mat3_2d`, `mat3_mul_point`, `mat4_inverse`, sabit nokta, profiler; sonra img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | `port_names.py --check` 148/148; testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
-| 2 | font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi |
+| 1 ✓ | çekirdek: `fmt_format` + `LOG/PANIC/ASSERT` (19+7+7 kullanım), `mat3_2d`, `mat3_mul_point`, `mat4_inverse`, sabit nokta, profiler; sonra img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | `port_names.py --check` 148/148; testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
+| 2 | raster'a alfa karışımı (sprite / metin için; batch2d şimdilik opak + kesik), font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi; karışım SIMD = skaler |
 | 3 | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
 | 4 | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
 | 5 | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
@@ -61,6 +61,26 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 8c | GPU'da doku, MSAA, gölge, okyanus FFT görüntüsü; CPU/GPU boru hattı örtüşmesi; sayfada CPU ms / GPU ms / kare ms | — | 1080p önce/sonra ölçüm tablosu (bugün 30–52 ms) |
 
 Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.mjs`) mevcut görünümlerde değişmemeli.
+
+## Faz 1 notları (2026-10-29)
+- Çekirdek: `core/printf.c` (fmt_format, LOG/PANIC/ASSERT; `log_printf` satır sonu ekler, `sys_panic` artık
+  `_Noreturn`), `mat4_inverse`, `mat3_identity/mul/2d/mul_point`, `core/simd.h`, `core/fixed.h`, `core/profiler.*`
+  (yalnız ana thread; onlarınki thread başına tablo tutuyordu, bizim worker'lar ayrı modül örneği).
+- `mat3_mul` işaretçi alır (bizim Mat3 sözleşmesi); fizik eklemlerindeki yerel kopya kaldırıldı, toplama sırası aynı
+  (0'dan başlar) → fizik testleri ve kare hash'leri değişmedi.
+- Taşınan: `asset/json`, `asset/base64`, `img/filter` (onların image.c'sinden; mip ve doku kurulumu alınmadı, bizimki
+  sRGB-doğru), `gfx2d/anim`, `gfx2d/camera2d`, `gfx2d/tilemap`, `gfx2d/batch2d` (bizim ertelenmiş raster'a yeniden
+  yazıldı; durum üçgen başına saklandığı için doku değişiminde flush gerekmez), `mesh_compute_normals`.
+- **Onların kodunda bulunan hata:** tilemap'te sol/üst kenar toleranssız, sağ/alt kenar `-eps` ile karoya çevriliyordu;
+  genişliği karo katını eps'ten az aşan kutu sağ duvara yaslanınca soldaki katı karoya giriyordu. Bizim RNG'yle koşan
+  fuzz testi buldu (onların PCG dizisi bu durumu üretmemiş). Dört kenar aynı toleransa çekildi + gerileme testi.
+- **Bilinen sınır:** JSON sayıları doğru yuvarlanmıyor (mantis × 1e22 adımları). Python'la üretilmiş 412 sayıda 301 tam,
+  en çok 3 ULP (onların 2000 sayılık ölçümü ≤ 2 ULP). glTF verisi f32'ye indiği için görünmez; gerekirse Eisel–Lemire.
+- Onların testleri host libc kullanıyordu (stdio, popen, strlen): `test_printf`, `test_json`, `test_gfx2d` wasm'a
+  uyarlandı (Python karşılaştırması → gömülü kesin bit tablosu); `test_m13_port` yeni (filtre özellikleri, base64 RFC 4648,
+  sprite piksel çıktısı, profiler, mat4_inverse).
+- Ölçüm: 167/167 test (worker'lı ve worker'sız), 10 görünüm kare hash'i 1T ve 16T'de değişmedi, `port_names.py --check`
+  148/148, engine.wasm 394 061 → 393 353 bayt (yeni modüller henüz demoda kullanılmıyor; fark `_Noreturn sys_panic`).
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

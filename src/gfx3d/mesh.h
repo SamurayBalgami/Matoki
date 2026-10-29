@@ -21,6 +21,9 @@ typedef struct Mesh {
 
 Mesh* mesh_alloc(Arena* a, u32 vertex_count, u32 index_count);
 void  mesh_compute_bounds(Mesh* m);
+/* alan ağırlıklı köşe normalleri (üçgen kenar çarpımı); aralık dışı indeksli üçgen atlanır,
+ * hiçbir üçgene değmeyen köşenin normali 0 kalır (MatokiEngine'den, D37) */
+void  mesh_compute_normals(Mesh* m);
 
 /* Birim küp [-0.5, 0.5]^3, yüz başına 4 köşe (24), her yüzde uv 0..1. */
 Mesh* mesh_cube(Arena* a);

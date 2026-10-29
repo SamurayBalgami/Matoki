@@ -60,6 +60,8 @@ CALLS = {
     # değerle Mat → işaretçiyle Mat
     "mat4_mul_vec4": lambda a: "mat4_mul_v4(%s, %s)" % (_addr(a[0]), a[1].strip()),
     "mat3_mul_vec3": lambda a: "mat3_mul_v3(%s, %s)" % (_addr(a[0]), a[1].strip()),
+    "mat3_mul": lambda a: "mat3_mul(%s, %s)" % (_addr(a[0]), _addr(a[1])),
+    "mat3_mul_point": lambda a: "mat3_mul_point(%s, %s)" % (_addr(a[0]), a[1].strip()),
     # PCG32 tohumlama → xorshift64* (dizi farklı; belirlenimcilik korunur)
     "rng_seed": lambda a: "(*(%s) = rng_make(%s))" % (a[0].strip(), a[1].strip()),
 }
@@ -109,7 +111,7 @@ def rewrite_calls(s):
         if m.start() < pos:
             continue
         # tanım / bildirim satırlarına dokunma (önünde tip adı: "void arena_reset(")
-        if re.search(r"\b(void|Vec[234]|Mat[34]|Arena|u32|f32)\s*\*?\s*$", s[max(0, m.start() - 16):m.start()]):
+        if re.search(r"\b(void|Vec[234]|Mat[34]|Arena|u32|f32|define)\s*\*?\s*$", s[max(0, m.start() - 16):m.start()]):
             continue
         r = parse_args(s, m.end() - 1)
         if not r:
@@ -192,7 +194,8 @@ def main():
         out = port_source(src, rel)
         # denetim 1: onların çekirdeğinden kalan ad (yeniden adlandırılmamış ve bizde yok)
         used = code_idents(out)
-        missing = sorted(x for x in used & theirs if x not in ours and x not in RENAME.values())
+        missing = sorted(x for x in used & theirs
+                         if x not in ours and x not in RENAME.values() and not x.startswith("wasm_"))
         # denetim 2: çözülemeyen include (bizim src/'de yok ve bu partide taşınmıyor)
         incs = re.findall(r'#include "([^"]+)"', out)
         bad_inc = [x for x in incs

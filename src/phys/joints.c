@@ -23,17 +23,6 @@ static Mat3 skew(Vec3 r) {
     return s;
 }
 
-static Mat3 mat3_mul(const Mat3* a, const Mat3* b) {
-    Mat3 r;
-    for (u32 c = 0; c < 3; c++) {
-        for (u32 row = 0; row < 3; row++) {
-            f32 s = 0.0f;
-            for (u32 k = 0; k < 3; k++) s += a->m[k * 3 + row] * b->m[c * 3 + k];
-            r.m[c * 3 + row] = s;
-        }
-    }
-    return r;
-}
 
 static Mat3 mat3_inverse(const Mat3* a) {
     Vec3 c0 = v3(a->m[0], a->m[1], a->m[2]), c1 = v3(a->m[3], a->m[4], a->m[5]), c2 = v3(a->m[6], a->m[7], a->m[8]);

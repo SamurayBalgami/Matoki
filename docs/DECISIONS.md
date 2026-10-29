@@ -365,6 +365,11 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
   `-Werror` ile hatasız derlendi. Onların 148 taşınabilir dosyasından 112'si bugün eksiksiz çevriliyor; kalan 36'nın
   ihtiyacı: printf tarzı `fmt_format` + `LOG/PANIC/ASSERT`, profiler, sabit nokta (`fixed.h`), SIMD yardımcıları,
   `mat3_2d` / `mat3_mul_point`, `mat4_inverse` → faz 1.
+- **Faz 1 (aynı gün):** eksikler eklendi → 148/148. printf alt kümesi ve `LOG/PANIC/ASSERT` `core/fmt.h`'de;
+  profiler yalnız ana thread (worker'lar ayrı modül örneği, bölge `jobs_parallel_for`'u sarar). `mat3_mul` işaretçi
+  alır (Mat3 sözleşmemiz), fizikteki kopya kaldırıldı, işlem sırası aynı → hash değişmedi. 2D sprite yığınlayıcı
+  bizim ertelenmiş raster'a yeniden yazıldı; raster'da alfa karışımı olmadığı için şimdilik opak + kesik (faz 2).
+  Taşınan kodda bulunan hata (tilemap kenar toleransı) düzeltildi; JSON sayıları ≤ 3 ULP (doğru yuvarlama değil).
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

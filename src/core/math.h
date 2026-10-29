@@ -115,6 +115,14 @@ Mat4 mat4_rotate_z(f32 a);
 Mat4 mat4_perspective(f32 fov_y, f32 aspect, f32 znear, f32 zfar);
 Mat4 mat4_look_at(Vec3 eye, Vec3 center, Vec3 up);
 f32  mat4_max_scale(const Mat4* m);            /* üst 3x3 sütunlarının en büyük uzunluğu */
+/* genel ters (kofaktör); |det| < 1e-30 → birim matris */
+Mat4 mat4_inverse(Mat4 m);
+
+/* ---- Mat3: 2D afin (gfx2d / ui) ---- */
+Mat3 mat3_identity(void);
+Mat3 mat3_mul(const Mat3* a, const Mat3* b);   /* a * b */
+Mat3 mat3_2d(f32 tx, f32 ty, f32 rot, f32 sx, f32 sy);   /* öteleme · dönme · ölçek */
+Vec2 mat3_mul_point(const Mat3* m, Vec2 p);    /* (x, y, 1) */
 
 /* Normal matrisi: üst 3x3'ün ters-transpozu (kofaktör / determinant). */
 Mat3 mat3_normal_from_mat4(const Mat4* m);

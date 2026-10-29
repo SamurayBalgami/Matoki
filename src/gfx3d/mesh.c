@@ -19,6 +19,30 @@ Mesh* mesh_alloc(Arena* a, u32 vc, u32 ic) {
     return m;
 }
 
+void mesh_compute_normals(Mesh* m) {
+    u32 nv = m->vertex_count;
+    for (u32 i = 0; i < nv; i++) m->nx[i] = m->ny[i] = m->nz[i] = 0.0f;
+    for (u32 t = 0; t + 2 < m->index_count; t += 3) {
+        u32 id[3] = { m->indices[t], m->indices[t + 1], m->indices[t + 2] };
+        if (id[0] >= nv || id[1] >= nv || id[2] >= nv) continue;
+        Vec3 p0 = v3(m->px[id[0]], m->py[id[0]], m->pz[id[0]]);
+        Vec3 e1 = v3_sub(v3(m->px[id[1]], m->py[id[1]], m->pz[id[1]]), p0);
+        Vec3 e2 = v3_sub(v3(m->px[id[2]], m->py[id[2]], m->pz[id[2]]), p0);
+        Vec3 n = v3_cross(e1, e2);   /* uzunluk = 2 × alan → alan ağırlıklı */
+        for (u32 k = 0; k < 3; k++) {
+            m->nx[id[k]] += n.x;
+            m->ny[id[k]] += n.y;
+            m->nz[id[k]] += n.z;
+        }
+    }
+    for (u32 i = 0; i < nv; i++) {
+        Vec3 n = v3_norm(v3(m->nx[i], m->ny[i], m->nz[i]));
+        m->nx[i] = n.x;
+        m->ny[i] = n.y;
+        m->nz[i] = n.z;
+    }
+}
+
 void mesh_compute_bounds(Mesh* m) {
     if (!m->vertex_count) return;
     Vec3 mn = v3(m->px[0], m->py[0], m->pz[0]), mx = mn;

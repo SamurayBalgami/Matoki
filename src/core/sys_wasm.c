@@ -17,7 +17,7 @@ void sys_log(const char* s, usize n) { plat_log(s, (u32)n); }
 
 f64 sys_now_ms(void) { return plat_now_ms(); }
 
-void sys_panic(const char* msg) {
+_Noreturn void sys_panic(const char* msg) {
     usize n = 0;
     while (msg[n]) n++;
     sys_log("PANIC: ", 7);
