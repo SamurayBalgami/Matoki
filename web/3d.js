@@ -33,7 +33,7 @@ const ST = ['scene', 'mip', 'cam', 'objIn', 'objCulled', 'triIn', 'triRejected',
   'rasterMode', 'binItems', 'binFull', 'shaderMode', 'physBodies', 'physContacts', 'physUs', 'physSteps', 'physAwake',
   'playMode', 'carKmh', 'carWheels', 'charGrounded', 'softParticles', 'softUs', 'softContacts',
   'clearUs', 'geoUs', 'flushUs', 'totalUs', 'preludes', 'msaa', 'resolveUs', 'vertMode', 'verts', 'batches', 'vertUs', 'setupUs',
-  'drawsDropped', 'trisDropped', 'frameKb', 'memFails'];
+  'drawsDropped', 'trisDropped', 'frameKb', 'memFails', 'hudUs'];
 // ?prof: kareler rAF yerine art arda, sabit 1/60 sn adımla sürülür (vsync ve gizli sekmeden bağımsız);
 // her sahnede 60 kare ısınma + 180 kare ölçüm, aşama ortalamaları konsola ve window.__prof'a
 const PROF = qs.has('prof');
@@ -58,6 +58,7 @@ async function main() {
   }
   [W, H] = targetSize();
   if (!ex.engine_init(W, H)) throw new Error('engine_init başarısız');
+if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U kapatır; ?nohud ile başlangıçta kapalı)
   canvas.width = W; canvas.height = H;  // kare döngüsü worker'lar hazır olunca başlar (başaramazsa tek thread devam)
   try {
     threads = 1 + (await startWorkers(state, ex, module, WANT_WORKERS)).length;

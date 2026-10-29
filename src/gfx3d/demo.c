@@ -30,6 +30,7 @@
 #define KEY_Y 89
 #define KEY_O 79
 #define KEY_P 80
+#define KEY_U 85
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -40,6 +41,7 @@
 enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
 #include "gfx3d/camera.h"
 #include "gfx3d/pipeline.h"
+#include "gfx3d/hud.h"
 #include "img/image.h"
 #include "img/procgen.h"
 
@@ -65,6 +67,7 @@ enum {
     ST_VERT_US, ST_SETUP_US,                             /* köşe aşaması, üçgen kurulumu (µs) */
     ST_DRAWS_DROPPED, ST_TRIS_DROPPED,                   /* bellek dolduğu için atlanan çizim / üçgen (bu kare) */
     ST_FRAME_KB, ST_MEM_FAILS,                           /* kare arenası tepe (KB), toplam başarısız ayırma */
+    ST_HUD_US,                                           /* motor içi panel çizimi (µs; kapalıyken 0) */
     ST_COUNT
 };
 
@@ -147,6 +150,10 @@ typedef struct Demo {
     f32 drop_time;
     i32 shader_mode;     /* SHADER_* */
     Material m_flat;
+    Hud hud;             /* motor içi istatistik paneli (U tuşu; varsayılan kapalı: ölçüm/hash araçları etkilenmez) */
+    Arena hud_mem;       /* panel atlasları (g.perm yerleşimini değiştirmesin) */
+    b32 hud_on;
+    f32 fps_ms;          /* kareler arası süre, üstel ortalama */
     u32 stats[ST_COUNT];
 } Demo;
 
@@ -952,10 +959,39 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     if (g_hq_lit) g.shader_mode = SHADER_HQ;
     g.vert_mode = g_std_vert != NULL;
     g.sky = TRUE;
+    /* ayrı arena: atlas (~200 KB) g.perm'e girince sonraki sahne ayırmalarının yerleşimi kayıyor, ölçümde
+     * panel kapalıyken %2,5–4,5 yavaşlık görüldü (tools/bench_ab.mjs); başarısızsa panel çizilmez */
+    if (arena_init_sys(&g.hud_mem, (usize)1 << 20)) hud_init(&g.hud, &g.hud_mem, &g.frame);
     scene_set(1);
     g.ready = TRUE;
     return 1;
 }
+
+static const char* const SHADER_LABEL[SHADER_MODE_COUNT] = { "ref (skaler)", "tablo", "SIMD", "Matoki JIT", "Matoki HQ" };
+
+/* g.stats dolduktan sonra; çözümlenmiş renge yazar */
+static void draw_hud(void) {
+    static char buf[7][128];
+    const u32* s = g.stats;
+    f32 fps = g.fps_ms > 0.0f ? 1000.0f / g.fps_ms : 0.0f;
+    fmt_format(buf[0], 128, "MATOKI   %.0f fps   kare %.2f ms   %dx%d   %u thread", (f64)fps,
+               (f64)s[ST_TOTAL_US] * 0.001, g.fb.w, g.fb.h, jobs_threads());
+    fmt_format(buf[1], 128, "sahne %u   %s   MSAA %ux   karışım + font: MatokiEngine", s[ST_SCENE],
+               SHADER_LABEL[g.shader_mode], s[ST_MSAA]);
+    fmt_format(buf[2], 128, "üçgen %u / %u   piksel %u   nesne %u (elenen %u)", s[ST_TRI_DRAWN], s[ST_TRI_IN],
+               s[ST_PIXELS], s[ST_OBJ_IN], s[ST_OBJ_CULLED]);
+    fmt_format(buf[3], 128, "geometri %.2f ms   raster %.2f ms   çözümleme %.2f ms", (f64)s[ST_GEO_US] * 0.001,
+               (f64)s[ST_FLUSH_US] * 0.001, (f64)s[ST_RESOLVE_US] * 0.001);
+    fmt_format(buf[4], 128, "fizik %u gövde   %u temas   %u uyanık   %.2f ms", s[ST_PHYS_BODIES], s[ST_PHYS_CONTACTS],
+               s[ST_PHYS_AWAKE], (f64)s[ST_PHYS_US] * 0.001);
+    fmt_format(buf[5], 128, "bellek: kare %u KB   karo %u KB   başarısız ayırma %u", s[ST_FRAME_KB], s[ST_ARENA_KB],
+               s[ST_MEM_FAILS]);
+    fmt_format(buf[6], 128, "U: paneli kapat");
+    const char* lines[7] = { buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6] };
+    hud_draw_lines(&g.hud, &g.fb, 8, 8, lines, 7);
+}
+
+EXPORT(engine_set_hud) void engine_set_hud(i32 on) { g.hud_on = on != 0; }
 
 static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
     DrawItem d;
@@ -1179,6 +1215,8 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     f64 t_start = sys_now_ms();
     f32 dt = m_clampf(dt_ms * 0.001f, 0.0f, 0.1f);
     g.time += dt;
+    g.fps_ms = g.fps_ms > 0.0f ? g.fps_ms + (dt_ms - g.fps_ms) * 0.1f : dt_ms;
+    if (g.in.pressed[KEY_U]) g.hud_on = !g.hud_on;
 
     if (g.in.pressed[KEY_0 + 1]) scene_set(1);
     if (g.in.pressed[KEY_0 + 2]) scene_set(2);
@@ -1380,6 +1418,12 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_CAM_X] = (u32)(i32)(g.cam.pos.x * 100.0f);
     g.stats[ST_CAM_Y] = (u32)(i32)(g.cam.pos.y * 100.0f);
     g.stats[ST_CAM_Z] = (u32)(i32)(g.cam.pos.z * 100.0f);
+    g.stats[ST_HUD_US] = 0;
+    if (g.hud_on) {
+        f64 th = sys_now_ms();
+        draw_hud();
+        g.stats[ST_HUD_US] = (u32)((sys_now_ms() - th) * 1000.0);
+    }
 }
 
 EXPORT(engine_framebuffer) u32* engine_framebuffer(void) { return g.fb.color; }

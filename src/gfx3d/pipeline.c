@@ -220,6 +220,7 @@ void pipe_draw(Pipeline* p, const DrawItem* d) {
     r->rs.depth_test = rs->depth_test;
     r->rs.depth_write = rs->depth_write;
     r->rs.depth_func = rs->depth_func;
+    r->rs.blend = rs->blend;
 }
 
 /* ---- paralel aşamalar ---- */

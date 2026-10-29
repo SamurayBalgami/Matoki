@@ -64,6 +64,7 @@ void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
         vc[i] = wasm_f32x4_splat(t->v[i].c);
     }
 
+    const u32 blend = t->blend;   /* shader çağrısı opak: t->blend her quad'da yeniden okunmasın */
     ShadeQuad q;
     q.kill = 0;
     u32 out[4];
@@ -135,7 +136,7 @@ void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
                 continue;
             }
 
-            if (inner) {
+            if (inner && !blend) {
                 v128_t ov = wasm_v128_load(out);
                 u32* c0 = crow + qx;
                 u32* c1 = crow + fbw + qx;
@@ -155,7 +156,7 @@ void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
                 for (u32 l = 0; l < 4; l++) {
                     if (!(pass & (1u << l))) continue;
                     i32 off = (i32)(l >> 1) * fbw + qx + (i32)(l & 1);
-                    crow[off] = out[l];
+                    crow[off] = blend ? raster_blend_px(blend, out[l], crow[off]) : out[l];
                     if (t->depth_write) drow[off] = q.z[l];
                 }
             }
@@ -209,6 +210,7 @@ void raster_tile_msaa_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i3
     const v128_t zero = wasm_i32x4_splat(0);
     static const i32 LX[4] = { 0, 1, 0, 1 }, LY[4] = { 0, 0, 1, 1 };
 
+    const u32 blend = t->blend;
     ShadeQuad q;
     q.kill = 0;
     u32 out[4];
@@ -275,7 +277,13 @@ void raster_tile_msaa_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i3
                 usize base = ((usize)(qy + LY[l]) * (usize)fbw + (usize)(qx + LX[l])) * RASTER_MSAA;
                 const v128_t m = wasm_i32x4_ne(wasm_v128_and(wasm_i32x4_splat((i32)smask[l]), sbits), zero);
                 u32* cp = &fb->color_ms[base];
-                wasm_v128_store(cp, wasm_v128_bitselect(wasm_i32x4_splat((i32)out[l]), wasm_v128_load(cp), m));
+                if (blend) {
+                    for (u32 s = 0; s < RASTER_MSAA; s++) {
+                        if (smask[l] & (1u << s)) cp[s] = raster_blend_px(blend, out[l], cp[s]);
+                    }
+                } else {
+                    wasm_v128_store(cp, wasm_v128_bitselect(wasm_i32x4_splat((i32)out[l]), wasm_v128_load(cp), m));
+                }
                 if (t->depth_write) {
                     f32* dp = &fb->depth_ms[base];
                     wasm_v128_store(dp, wasm_v128_bitselect(zs[l], wasm_v128_load(dp), m));

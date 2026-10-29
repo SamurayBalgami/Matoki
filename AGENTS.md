@@ -26,6 +26,8 @@ GPU kullanmadan tarayıcıda çalışan yazılım render motoru. C11, freestandi
 
 ## Yerleşim
 - `src/core` tipler, arena, matematik, günlük · `src/raster` rasterizer + shader ABI + C referans shader'lar
-- `src/img` doku/mip/prosedürel · `src/gfx3d` 3D boru hattı, kamera, mesh, demo
+- `src/img` doku/mip/prosedürel/filtre · `src/gfx3d` 3D boru hattı, kamera, mesh, motor içi panel, demo
+- `src/gfx2d` sprite, 2D kamera, karo haritası · `src/font` TrueType, atlas, metin · `src/asset` JSON, base64
+  (bu üçü MatokiEngine'den, `tools/port_names.py` ile; plan `tasks/M13_birlesme_plani.md`, karar D37)
 - `src/matoki` shader dili derleyicisi · `src/jit` JIT yükleme · `src/phys` fizik motoru · `shaders/` .mtk dosyaları
 - `web/` tarayıcı sayfaları · `tests/` testler · `tasks/` görev dosyaları ve notları · `docs/` belgeler

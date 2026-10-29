@@ -48,6 +48,20 @@ typedef enum CullMode {
     CULL_FRONT
 } CullMode;
 
+/* Renk karışımı (s = shader çıktısı, d = hedef, a = s.alfa; kanallar 0..255 tamsayı, /255 yuvarlamalı):
+ *   NONE    c = s
+ *   ALPHA   c.rgb = (s·a + d·(255−a)) / 255,  c.a = a + d.a·(255−a) / 255   (düz alfa, "over")
+ *   PREMUL  c = s + d·(255−a) / 255 (255'e kenetli)                        (ön-çarpılmış alfa)
+ *   ADD     c = min(255, s + d)
+ * Tamsayı: skaler / SIMD / MSAA yolları bit-bit aynı. Karo içi çizim sırası gönderim sırasıdır (belirlenimci). */
+typedef enum BlendMode {
+    BLEND_NONE,
+    BLEND_ALPHA,
+    BLEND_PREMUL,
+    BLEND_ADD,
+    BLEND_COUNT
+} BlendMode;
+
 typedef struct RasterStats {
     u32 tris_in;
     u32 tris_culled;      /* arka/ön yüz */
@@ -83,6 +97,7 @@ typedef struct Raster {
     b32          depth_write;
     DepthFunc    depth_func;
     CullMode     cull;
+    BlendMode    blend;
     RasterMode   mode;
     RasterStats  stats;
     /* bin'leme: parça (chunk) başına karo kutuları; flush parçaları sırayla gezer */
@@ -106,6 +121,7 @@ typedef struct RasterState {
     CullMode    cull;
     b32         depth_test, depth_write;
     DepthFunc   depth_func;
+    BlendMode   blend;
 } RasterState;
 
 void fb_clear(Framebuffer* fb, u32 color, f32 depth);
@@ -119,6 +135,7 @@ void raster_set_shader(Raster* r, ShadeFn fn, const void* uniforms, u32 var_coun
 void raster_set_prelude(Raster* r, PreludeFn fn);
 void raster_set_depth(Raster* r, b32 test, b32 write, DepthFunc func);
 void raster_set_cull(Raster* r, CullMode mode);
+void raster_set_blend(Raster* r, BlendMode mode);   /* sonraki üçgenler; geçersiz değer → NONE */
 void raster_set_mode(Raster* r, RasterMode mode);
 void raster_reset_stats(Raster* r);
 /* arena yalnızca raster'a ait olmalı (başkası mark/reset yapmamalı); kare başına bir kez çağrılır. */

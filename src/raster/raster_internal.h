@@ -23,6 +23,7 @@ typedef struct TriSetup {
     const void* uniforms;
     u32         var_count;
     u8          depth_test, depth_write, depth_func, drawn;
+    u8          blend, _pad[3];           /* BlendMode */
     i32         minx, miny, maxx, maxy;   /* framebuffer'a kenetlenmiş piksel sınır kutusu (dahil) */
     f32         x0, y0;
     EdgeEq      e[3];
@@ -60,6 +61,22 @@ static inline b32 raster_depth_pass(u32 f, f32 z, f32 d) {
 }
 
 static inline f32 attr_eval(const AttrPlane* p, f32 fx, f32 fy) { return p->c + p->a * fx + p->b * fy; }
+
+/* round(x / 255), x ∈ [0, 65535] için kesin */
+static inline u32 div255(u32 x) { return (x + 128u + ((x + 128u) >> 8)) >> 8; }
+
+/* raster.h BlendMode tablosu; mode != NONE */
+static inline u32 raster_blend_px(u32 mode, u32 s, u32 d) {
+    u32 a = s >> 24, ia = 255u - a, r = 0;
+    for (u32 k = 0; k < 32; k += 8) {
+        u32 sc = (s >> k) & 0xFFu, dc = (d >> k) & 0xFFu, c;
+        if (mode == BLEND_ALPHA) c = k == 24 ? a + div255(dc * ia) : div255(sc * a + dc * ia);
+        else if (mode == BLEND_PREMUL) c = sc + div255(dc * ia);
+        else c = sc + dc;   /* ADD */
+        r |= (c > 255u ? 255u : c) << k;
+    }
+    return r;
+}
 
 /* Karo [tx0..tx1] × [ty0..ty1] (dahil, framebuffer'a kenetli, tx0/ty0 çift) içinde üçgeni çiz.
  * Farklı karolar farklı thread'lerde aynı anda çağrılabilir: istatistik thread'in st'sine yazılır,

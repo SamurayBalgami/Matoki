@@ -71,12 +71,14 @@ def clang(args):
         sys.exit(r.returncode)
 
 
-def gen_embed():
-    """shaders/*.mtk → build/gen/embed_files.c (NUL sonlu bayt dizileri)."""
+def gen_embed(test=False):
+    """shaders/*.mtk (+ testte tests/assets/* — .py hariç) → build/gen/embed_*.c (NUL sonlu bayt dizileri)."""
     gen = os.path.join(BUILD, "gen")
     os.makedirs(gen, exist_ok=True)
     files = sources("shaders/*.mtk")
-    path = os.path.join(gen, "embed_files.c")
+    if test:
+        files += [f for f in sources("tests/assets/*") if os.path.isfile(f) and not f.endswith(".py")]
+    path = os.path.join(gen, "embed_tests.c" if test else "embed_files.c")
     lines = ["/* build.py tarafından üretildi — elle düzenleme */", '#include "core/embed.h"']
     for i, f in enumerate(files):
         data = open(f, "rb").read() + b"\0"
@@ -128,7 +130,7 @@ def build_tests():
     tests = sources("tests/*.c")
     reg = gen_test_registry([t for t in tests if not t.endswith("test_main.c")])
     out = os.path.join(BUILD, "tests.wasm")
-    clang(CFLAGS + ["-I" + os.path.join(ROOT, "tests")] + LDFLAGS + sources("src/**/*.c") + tests + [reg, gen_embed(), "-o", out])
+    clang(CFLAGS + ["-I" + os.path.join(ROOT, "tests")] + LDFLAGS + sources("src/**/*.c") + tests + [reg, gen_embed(test=True), "-o", out])
     return out
 
 

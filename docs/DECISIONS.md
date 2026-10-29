@@ -370,6 +370,13 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
   alır (Mat3 sözleşmemiz), fizikteki kopya kaldırıldı, işlem sırası aynı → hash değişmedi. 2D sprite yığınlayıcı
   bizim ertelenmiş raster'a yeniden yazıldı; raster'da alfa karışımı olmadığı için şimdilik opak + kesik (faz 2).
   Taşınan kodda bulunan hata (tilemap kenar toleransı) düzeltildi; JSON sayıları ≤ 3 ULP (doğru yuvarlama değil).
+- **Faz 2:** raster'a `BlendMode` (NONE / ALPHA düz / PREMUL / ADD). Tamsayı formül (`div255` = round(x/255),
+  [0, 65535]'te kesin) → skaler, SIMD, MSAA skaler, MSAA SIMD bit-bit aynı; karışımlı üçgende SIMD tek örnekli yol
+  4 pikselli vektör yazma yerine şerit şerit yazar (karışımsız yol değişmedi). Karo içi sıra gönderim sırası olduğu
+  için yarı saydam üst üste çizim 1T ↔ çok thread aynı (test). Durum `RasterState.blend` / `TriSetup.blend` ile
+  üçgen başına; boru hattı raster'ın o anki ayarını alır. Font (TrueType, işaretli alan AA, raf atlas, metin
+  düzeni) MatokiEngine'den; motor içi panel (`gfx3d/hud`) çözümlenmiş renge CPU'da yazar, raster'dan geçmez.
+  Panel varsayılan kapalı (ölçüm araçları, kare hash'leri değişmez), sayfa açar (U, `?nohud`).
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

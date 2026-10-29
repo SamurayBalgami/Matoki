@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0 + FAZ 1 TAMAM (2026-10-29) → sıradaki faz 2 (font + raster alfa karışımı). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
+Durum: FAZ 0, 1, 2 TAMAM (2026-10-29) → sıradaki faz 3 (ECS + animasyon + glTF). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
 CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 
@@ -50,7 +50,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 |---|---|---|---|
 | 0 ✓ | D37, yeniden adlandırma betiği (`tools/port_names.py`) + eşleme tablosu, çekirdek ekleri | — | 6 dosya (synth, json, base64, noise, ttf, gfx2d/anim) `-Werror` temiz; 148 dosyanın 112'si eksiksiz çevriliyor |
 | 1 ✓ | çekirdek: `fmt_format` + `LOG/PANIC/ASSERT` (19+7+7 kullanım), `mat3_2d`, `mat3_mul_point`, `mat4_inverse`, sabit nokta, profiler; sonra img ekleri (bulanıklaştırma, yeniden boyutlandırma, normal haritası), `mesh_compute_normals`, asset/json + base64, gfx2d | ~3 000 | `port_names.py --check` 148/148; testler geçer; img ekleri bizim mip/sRGB ile aynı sonuç |
-| 2 | raster'a alfa karışımı (sprite / metin için; batch2d şimdilik opak + kesik), font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi; karışım SIMD = skaler |
+| 2 ✓ | raster'a alfa karışımı (sprite / metin için; batch2d şimdilik opak + kesik), font (TrueType atlas + bitmap) → sayfadaki HTML istatistik paneli motor içi metne | ~2 400 | metin kare hash testi; karışım SIMD = skaler |
 | 3 | scene (ECS) + anim (iskelet/LBS) + glTF/GLB yükleyici → sahne 9: kaplamalı glTF modeli | ~4 000 | glTF test modeli yüklenir, kaplama bilinen pozla karşılaştırılır |
 | 4 | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
 | 5 | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
@@ -81,6 +81,30 @@ Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.
   sprite piksel çıktısı, profiler, mat4_inverse).
 - Ölçüm: 167/167 test (worker'lı ve worker'sız), 10 görünüm kare hash'i 1T ve 16T'de değişmedi, `port_names.py --check`
   148/148, engine.wasm 394 061 → 393 353 bayt (yeni modüller henüz demoda kullanılmıyor; fark `_Noreturn sys_panic`).
+
+## Faz 2 notları (2026-10-29)
+- Raster: `BlendMode` NONE / ALPHA / PREMUL / ADD, `raster_set_blend`; tamsayı formül (`div255`), 4 yazma yolunda
+  aynı. Test `test_blend`: 3 mod × 256 alfa bağımsız f64 referansla 0 fark; 400 üst üste yarı saydam üçgen
+  skaler / SIMD × tek örnek / MSAA × 1T / tüm thread'ler → 0 uyuşmazlık. batch2d artık `B2D_ALPHA`, `B2D_ADD`.
+- Font: `font/ttf`, `font/raster` (glif), `font/atlas`, `font/text`, gömülü Matoki Sans. `build.py test` artık
+  `tests/assets/*`'ı gömer (test_font.ttf). `test_font` (5 test, DejaVu sistem testi dosya sistemi gerektirdiği için
+  çıkarıldı), `test_text` (5 test; PPM → kare hash'i 543713094 sabitlendi). 1000 karakter @ 16 px: 0,29 ms.
+- Motor içi panel `gfx3d/hud`: 7 satır (fps, kare / geometri / raster / çözümleme ms, üçgen, piksel, fizik, bellek),
+  U tuşu, sayfa varsayılan açar (`?nohud` kapalı başlatır). Maliyet (`tools/bench_hud.mjs`, 16 thread):
+  640×360 0,60 ms · 1280×720 0,72 ms · 1920×1080 1,16 ms. Atlas ayrı arenada (`hud_mem`).
+- **Ölçüm (tek thread, 640×360, 10 görünüm, `tools/bench_ab.mjs` dönüşümlü A/B, 11 tur):**
+
+| karşılaştırma | oranların medyanı | en iyi sürelerin oranı |
+|---|---|---|
+| A/A (aynı dosya, gürültü tabanı) | 1,005 / 0,981 / 1,007 | 1,022 |
+| önce → yalnız raster karışımı | 1,015 – 1,017 | 1,009 – 1,044 |
+| önce → faz 2 tamamı | 1,011 – 1,050 | 1,039 – 1,046 |
+| faz 2 → önce (ters sıra) | 0,971 – 0,973 | 0,971 – 0,975 |
+
+  Sonuç: karışımsız sahnelerde ≈ %2,5–3 yavaşlık, yarısı raster (gürültü tabanında), yarısı font / panel kodunun
+  eklenmesi (panel kapalıyken bile; atlas'ı ayrı arenaya almak farkı kapatmadı → kod yerleşimi). Kare hash'leri 10
+  görünümde 1T ve 16T'de değişmedi. Denenen ve etkisiz çıkanlar: `t->blend`'i döngü dışına almak, karışımı
+  `noinline` yapmak (çıktı bayt bayt aynıydı).
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

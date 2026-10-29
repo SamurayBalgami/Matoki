@@ -104,6 +104,8 @@ void raster_set_depth(Raster* r, b32 test, b32 write, DepthFunc func) {
 
 void raster_set_cull(Raster* r, CullMode mode) { r->cull = mode; }
 
+void raster_set_blend(Raster* r, BlendMode mode) { r->blend = (u32)mode < BLEND_COUNT ? mode : BLEND_NONE; }
+
 void raster_set_mode(Raster* r, RasterMode mode) { r->mode = mode < RASTER_MODE_COUNT ? mode : RASTER_MODE_SCALAR; }
 
 void raster_reset_stats(Raster* r) { mem_zero(&r->stats, sizeof(r->stats)); }
@@ -419,6 +421,7 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
     t->depth_test = (u8)(s->depth_test && has_depth);
     t->depth_write = (u8)(s->depth_write && has_depth);
     t->depth_func = (u8)s->depth_func;
+    t->blend = (u8)((u32)s->blend < BLEND_COUNT ? s->blend : BLEND_NONE);
     t->drawn = 0;
     t->minx = (i32)minx;
     t->miny = (i32)miny;
@@ -485,7 +488,8 @@ void raster_triangle(Raster* r, const RasterVert* va, const RasterVert* vb, cons
         r->stats.tris_dropped++;
         return;
     }
-    RasterState s = { r->shade, r->prelude, r->uniforms, r->var_count, r->cull, r->depth_test, r->depth_write, r->depth_func };
+    RasterState s = { r->shade, r->prelude, r->uniforms, r->var_count, r->cull, r->depth_test, r->depth_write, r->depth_func,
+                      r->blend };
     tri_setup(r, bins, &s, va, vb, vc, &r->stats, NULL);
 }
 
@@ -517,6 +521,7 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
     const EdgeEq* e1 = &t->e[1];
     const EdgeEq* e2 = &t->e[2];
 
+    const u32 blend = t->blend;   /* shader çağrısı opak: t->blend her quad'da yeniden okunmasın */
     ShadeQuad q;
     q.kill = 0;
     u32 out[4];
@@ -571,7 +576,7 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
             for (u32 l = 0; l < 4; l++) {
                 if (!(pass & (1u << l))) continue;
                 i32 idx = (qy + LANE_Y[l]) * fbw + qx + LANE_X[l];
-                fb->color[idx] = out[l];
+                fb->color[idx] = blend ? raster_blend_px(blend, out[l], fb->color[idx]) : out[l];
                 if (t->depth_write) fb->depth[idx] = q.z[l];
             }
             st->quads_shaded++;
@@ -605,6 +610,7 @@ void raster_tile_msaa(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
         for (u32 s = 0; s < RASTER_MSAA; s++) off[k][s] = (t->e[k].sx / 256) * MS_OX[s] + (t->e[k].sy / 256) * MS_OY[s];
     }
 
+    const u32 blend = t->blend;
     ShadeQuad q;
     q.kill = 0;
     u32 out[4];
@@ -651,7 +657,8 @@ void raster_tile_msaa(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
                 usize base = ((usize)(qy + LANE_Y[l]) * (usize)fbw + (usize)(qx + LANE_X[l])) * RASTER_MSAA;
                 for (u32 s = 0; s < RASTER_MSAA; s++) {
                     if (!(smask[l] & (1u << s))) continue;
-                    fb->color_ms[base + s] = out[l];
+                    u32* cp = &fb->color_ms[base + s];
+                    *cp = blend ? raster_blend_px(blend, out[l], *cp) : out[l];
                     if (t->depth_write) fb->depth_ms[base + s] = zs[l][s];
                 }
                 written++;

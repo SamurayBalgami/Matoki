@@ -37,6 +37,7 @@ void b2d_begin(Batch2D* b, Raster* r, Arena* frame, Mat3 camera) {
     b->cam_is_identity = mat3_is_identity(&camera);
     b->shade_fn = shade_sprite;
     b->blend = B2D_OPAQUE;
+    b->saved_blend = r->blend;
     b->cur_tex = NULL;
     b->cur_tint = v4(1.0f, 1.0f, 1.0f, 1.0f);
     b->state_dirty = TRUE;
@@ -77,6 +78,7 @@ void b2d_sprite(Batch2D* b, const Texture* tex, Rect src_rect, Vec2 dst_pos, Vec
         u->tint[3] = tint.w;
         u->cutout = b->blend == B2D_CUTOUT;
         raster_set_shader(b->raster, b->shade_fn, u, 2);
+        raster_set_blend(b->raster, b->blend == B2D_ALPHA ? BLEND_ALPHA : b->blend == B2D_ADD ? BLEND_ADD : BLEND_NONE);
         b->state_dirty = FALSE;
     }
 
@@ -129,6 +131,7 @@ void b2d_sprite(Batch2D* b, const Texture* tex, Rect src_rect, Vec2 dst_pos, Vec
 void b2d_end(Batch2D* b) {
     ASSERT(b);
     raster_flush(b->raster);
+    raster_set_blend(b->raster, b->saved_blend);
     b->cur_tex = NULL;
     b->state_dirty = TRUE;
 }
