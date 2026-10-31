@@ -438,4 +438,14 @@ sonrası `restore` şimdiki pozu bit bit geri koyar (test: 50 adımda ara değer
 (yeni eklenen, ışınlanan: `car_reset`, araçtan iniş, sahne kurulumu → `interp_reset`) gövde olduğu gibi çizilir —
 ölçüm görünümleri adım atmadığı için kare hash'leri değişmez. Yumuşak cisim parçacıkları ve karakter `PhysInterpPts`
 ile, sahne 8 DEM topları (f64) çizimde okunurken. Maliyet: 1024 gövdede save 3,5 µs + apply/restore 20,6 µs / kare.
-I tuşu aç / kapa. Sınır: kare başı 4 adım sınırı aşılınca (15 fps altı) fizik yine yavaşlar — ayrı konu.
+I tuşu aç / kapa. Yavaş karedeki ağır çekim: D40.
+
+## D40. Kare başı fizik adımı: sayı değil zaman bütçesi
+Önceden kare başına en çok 4 adım (+ dt 0,1 s'de kırpma): 15 fps altında fizik ağır çekime giriyordu (10 fps %67,
+8 fps %53, 4 fps %27 hız). Şimdi ilk adım her zaman, sonrakiler fizik bu karede max(4 ms, dt / 2) altında kaldıkça;
+üst sınır 15 adım = kare dt'si kırpması 0,25 s. Fizik karenin en çok yarısını alır → kare ≤ 2 × render, ölüm sarmalı
+olamaz; bütçe dolarsa artan süre atılır (sınırlı ağır çekim). Ölçüm (node, tek thread): sahne 3 / 5 / 6, 60 → 4 fps
+tümünde hız 1,000; 939 gövdeli sahne 3'te 4 fps'te adım 1,2 ms, 15 adım 17 ms (bütçe 125). Bütçe dalı: oran geçici
+%1'e indirilince sahne 6 fizik ~5 ms/kare'de kaldı, hız 0,14'e düştü (beklenen). `check_demo`: 8 / 4 fps'te hız
+> 0,99 ve fizik ≤ bütçe + bir adım (eski yapıda üç hız denetimi başarısız: 0,533 / 0,533 / 0,267).
+Bulgu: sahne 6 yumuşak cisim adımı 2,6 ms (tek thread, 10 alt adım) — 60 fps karenin belirgin payı; ayrı iş.

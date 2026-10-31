@@ -23,6 +23,13 @@
 #define ROCK_KINDS 4
 
 #define PHYS_DT (1.0f / 60.0f)
+/* yavaş kare: fizik gerçek zamanda kalsın diye kare başına birden çok adım. Sınır adım sayısı değil zaman:
+ * fizik karenin en çok yarısını (en az 4 ms) harcar → kare süresi ≤ 2 × render, "ölüm sarmalı" olamaz; adım ucuzsa
+ * 4 fps'e dek tam hız. Kare dt'si 0,25 s'de kırpılır (sekme arka plandan dönünce dev dt). */
+#define FRAME_DT_MAX     0.25f
+#define PHYS_MAX_STEPS   15u        /* = FRAME_DT_MAX / PHYS_DT */
+#define PHYS_BUDGET_FRAC 0.5
+#define PHYS_BUDGET_MIN  4.0        /* ms */
 #define KEY_G 71
 #define KEY_T 84
 #define KEY_V 86
@@ -1711,7 +1718,7 @@ EXPORT(engine_gpu_shader_len) u32 engine_gpu_shader_len(void) {
 EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (!g.ready) return;
     f64 t_start = sys_now_ms();
-    f32 dt = m_clampf(dt_ms * 0.001f, 0.0f, 0.1f);
+    f32 dt = m_clampf(dt_ms * 0.001f, 0.0f, FRAME_DT_MAX);
     g.time += dt;
     g.fps_ms = g.fps_ms > 0.0f ? g.fps_ms + (dt_ms - g.fps_ms) * 0.1f : dt_ms;
     /* shader editörü (F2): açıkken girdi oyuna değil editöre gider; basılı tuş durumu kare ortasında geri yüklenir */
@@ -1809,12 +1816,17 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
         if (g.in.pressed[KEY_F]) phys_shoot();
         if (g.in.pressed[KEY_G]) phys_shoot_bullet();
         if (g.scene == 3 && g.in.pressed[KEY_T]) phys_scene_build();
-        /* sabit adım; en fazla 4 adım/kare (yavaş karede "ölüm sarmalı"nı önler) */
+        /* sabit adım; kare başı adımlar zaman bütçesiyle sınırlı (PHYS_BUDGET_*): ilk adım her zaman atılır,
+         * sonrakiler fizik bu karede bütçenin altındaysa. Bütçe dolarsa artan süre atılır (ağır çekim, ama sınırlı). */
         g.phys_acc += dt;
         g.phys_steps = 0;
         g.phys_ms = 0.0;
         g.soft_ms = 0.0;
-        while (g.phys_acc >= PHYS_DT && g.phys_steps < 4) {
+        f64 budget = (f64)dt * 1000.0 * PHYS_BUDGET_FRAC;
+        if (budget < PHYS_BUDGET_MIN) budget = PHYS_BUDGET_MIN;
+        f64 t_phys = sys_now_ms();
+        while (g.phys_acc >= PHYS_DT && g.phys_steps < PHYS_MAX_STEPS &&
+               (g.phys_steps == 0 || sys_now_ms() - t_phys < budget)) {
             interp_save();
             if (g.scene == 4) {
                 vehicle_update(&g.phys, &g.car, PHYS_DT);

@@ -76,5 +76,22 @@ check(ipOn.state === ipOff.state, 'ara değerleme fizik durumunu değiştirmez (
 check(ipOn.shown !== ipOn.state, 'ara değer açıkken çizilen poz ara pozdur');
 ex.engine_set_interp(1);
 
+// 4. yavaş karede fizik gerçek zamanda kalır (adım sınırı zaman bütçesi; önceden 4 adım/kare → 8 fps'te %53 hız)
+// ve bütçeyi aşmaz: fizik ms ≤ max(4, dt/2) + bir adım. demo.c stats sırası: ST_PHYS_US = 26, ST_PHYS_STEPS = 27.
+for (const [scene, dtms] of [[5, 125], [6, 125], [3, 250]]) {
+  tap(48 + scene);
+  let steps = 0, worst = 0;
+  for (let f = 0; f < 30; f++) {
+    ex.engine_frame(dtms);
+    const s = stats();
+    steps += s[27];
+    const perStep = s[27] ? s[26] / 1000 / s[27] : 0;
+    worst = Math.max(worst, s[26] / 1000 - Math.max(4, dtms / 2) - perStep);
+  }
+  const speed = steps * (1000 / 60) / (30 * dtms);
+  check(speed > 0.99, `sahne ${scene}, ${Math.round(1000 / dtms)} fps: fizik hızı ${speed.toFixed(3)} (gerçek zaman)`);
+  check(worst <= 0, `sahne ${scene}: fizik süresi bütçe içinde`);
+}
+
 console.log(fails ? `${fails} denetim başarısız` : 'tüm demo denetimleri geçti');
 process.exit(fails ? 1 : 0);
