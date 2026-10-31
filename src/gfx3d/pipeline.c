@@ -462,6 +462,7 @@ static void run_batch(Pipeline* p, u32 d0, u32 d1) {
         R->tris_culled += rs->tris_culled;
         R->tris_degenerate += rs->tris_degenerate;
         R->tris_empty += rs->tris_empty;
+        R->tris_unsupported += rs->tris_unsupported;
         R->tris_overflow += rs->tris_overflow;
         R->tris_dropped += rs->tris_dropped;
         R->bin_items += rs->bin_items;

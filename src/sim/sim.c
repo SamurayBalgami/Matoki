@@ -235,6 +235,11 @@ b32 sim_restore_snapshot(Sim* sim, u32 frame) {
     if (slot->frame != frame) return FALSE;
 
     __builtin_memcpy(sim->state, slot->data, slot->arena_used ? slot->arena_used : sim->state_size);
+    /* Anlık görüntüden sonra ayrılan kısım sıfıra döner: tam kopyadaki gibi arena ucunun ötesi hep sıfır kalır
+     * (geri sarmayan eşle ham bölge özeti aynı; ileri karelerden kalan bayt yok). */
+    if (slot->arena_used && sim->state_arena.used > slot->arena_used) {
+        __builtin_memset(sim->state + slot->arena_used, 0, sim->state_arena.used - slot->arena_used);
+    }
     sim->state_arena.used = slot->arena_used;
     sim->current_frame    = frame;
     return TRUE;

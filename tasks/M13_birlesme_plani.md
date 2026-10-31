@@ -211,6 +211,25 @@ Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.
 
 - `tools/shot.mjs --shadow 1`; sayfa varsayılan açık, panel 4. satırı gölge ms.
 
+## İnceleme turu (2026-10-31, faz 0–7)
+Kod incelemesi (yüksek düzey, 8 açı) 8 bulgu verdi; hepsi düzeltildi:
+
+| bulgu | düzeltme | doğrulama |
+|---|---|---|
+| sim: geri sarmada arena ucunun ötesi eski veriyle kalıyordu → ham özette sahte desync (faz 5 iyileştirmemin hatası) | geri yüklemede o kısım sıfırlanır | yeni gerileme testi düzeltmesiz başarısız, düzeltmeyle geçer |
+| editörde yazılan 'u' / 'b' paneli / gölgeyi değiştiriyordu | oyun tuşları editör bloğundan sonra | `tools/check_demo.mjs` (eski motorda başarısız) |
+| sahne 9 gölgesi bir kare geride | kaplama gölge geçişinden önce | kod sırası |
+| başarısız sahne 9 / editör kurulumunda her denemede arena sızıyordu | arenalar yeniden kullanılır | kod |
+| uniform denetimi yalnız ofset: yanlış tip / yapı dışı uniform geçiyordu | ad + tip + ofset tablosu, hata uniform'un satırında | check_demo 3 denetim (eski motorda başarısız) |
+| sahne 6: gölge geçişi yumuşak mesh'leri iki kez güncelliyordu | karede bir kez | görsel (bayrak + direk gölgesi) |
+| gölgesiz HQ türevi ilk metin eşleşmesine bağlıydı | tam bir eşleşme şartı, yoksa gölgeli program | kod |
+| MSAA'da atılan yalnız derinlik üçgeni 'boş' sayılıyordu | ayrı sayaç `tris_unsupported` | kod |
+
+- `tools/check_demo.mjs`: motoru yükleyip dışa açık fonksiyonlarla süren demo denetimleri (11 denetim).
+- Sonuç: 228/228 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi, A/B 1,017 / 1,010 (gürültü).
+- Barındırma: GitHub Pages `https://samuraybalgami.github.io/Matoki/3d.html` (`tools/publish_pages.py`, COOP/COEP
+  `web/coi.js` service worker ile).
+
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.
 - `thread/` ↔ `core/jobs` çevirisi belirlenimciliği bozabilir → 1T ↔ 16T hash testi her fazda.

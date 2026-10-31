@@ -77,6 +77,7 @@ typedef struct RasterStats {
     u32 preludes;         /* çağrılan çizim önsözü sayısı */
     u32 tris_dropped;     /* raster arenası dolduğu için atlanan (kısmen ya da tamamen) üçgen */
     u32 overflows;        /* taşma görülen flush sayısı (motor durmaz, sığanlar çizilir) */
+    u32 tris_unsupported; /* MSAA hedefinde yalnız derinlik (shade NULL) üçgeni: çizilmez */
 } RasterStats;
 
 typedef enum RasterMode {

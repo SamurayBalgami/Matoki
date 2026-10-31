@@ -493,3 +493,65 @@ TEST(sim_benchmark_8_frame_rollback) {
     CHECK(sim->current_frame == base_frame);
     CHECK(sim_state_hash(sim) == expected_hash);
 }
+
+/* ============================================================================
+ * 6. Gerileme (faz 7 incelemesi): adımda ayırma yapan durum + ham bölge özeti (hash_fn = NULL).
+ * Anlık görüntü yalnız kullanılan kısmı kopyaladığında geri sarmadan sonra arena ucunun ötesinde ileri karelerden
+ * baytlar kalıyordu → geri sarmayan eşle özet farklı (sahte desync). Geri yüklemede o kısım sıfırlanır.
+ * ============================================================================ */
+
+typedef struct {
+    u32 tick;
+    u32 sum;
+} GrowState;
+
+static void grow_step(void* state, const SimInput* inputs, u32 player_count, f32 dt, void* user) {
+    (void)player_count;
+    (void)dt;
+    Sim* sim = (Sim*)user;
+    GrowState* gs = (GrowState*)state;
+    /* her karede yeni 32 bayt: girdiye bağlı içerik (yanlış tahminde farklı) */
+    SimOffset o = sim_state_alloc(sim, 32u, 4u);
+    u32* p = SIM_PTR(sim_state(sim), u32, o);
+    for (u32 i = 0; i < 8; i++) p[i] = inputs[0].buttons * 7u + inputs[0].aux + i + gs->tick;
+    gs->sum += p[0];
+    gs->tick++;
+}
+
+TEST(sim_rollback_raw_hash_with_step_allocations) {
+    Arena* a = test_arena();
+    SimConfig cfg;
+    mem_zero(&cfg, sizeof(cfg));
+    cfg.state_size = 4096u;
+    cfg.player_count = 1u;
+    cfg.snapshot_cap = 16u;
+    cfg.step_fn = grow_step;
+    cfg.hash_fn = NULL;
+    Sim* sa = ARENA_NEW(a, Sim);
+    Sim* sb = ARENA_NEW(a, Sim);
+    sim_init(sa, a, &cfg);
+    sim_init(sb, a, &cfg);
+    sa->user = sa;
+    sb->user = sb;
+    sim_state_alloc(sa, sizeof(GrowState), 4u);
+    sim_state_alloc(sb, sizeof(GrowState), 4u);
+    u32 mismatches = 0;
+    for (u32 f = 0; f < 60u; f++) {
+        SimInput in = sim_input_zero();
+        in.aux = f * 3u + 1u;
+        in.buttons = f & 5u;
+        sim_submit_input(sa, 0u, f, in);
+        sim_step(sa);
+        /* B: girdi 4 kare gecikmeli gelir (önce tahminle ilerler, sonra geri sarar) */
+        if (f >= 4u) {
+            SimInput late = sim_input_zero();
+            late.aux = (f - 4u) * 3u + 1u;
+            late.buttons = (f - 4u) & 5u;
+            sim_submit_input(sb, 0u, f - 4u, late);
+        }
+        sim_step(sb);
+        if (f >= 4u) mismatches += sim_frame_hash(sa, f - 4u) != sim_frame_hash(sb, f - 4u);
+    }
+    CHECK(sb->stats.rollback_count > 0u);
+    CHECK(mismatches == 0u);
+}

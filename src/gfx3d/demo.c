@@ -277,20 +277,43 @@ static ShadeFn lit_shader_for(i32 mode) {
 }
 
 /* .mtk'yi derle + JIT (aşama: frag / vert); uniform yerleşimi denetimi çağıranda. */
-/* lit ailesi shader'ın uniform'ları LitUniforms ile aynı yerde mi (açılış + canlı derleme aynı denetim) */
-static b32 lit_layout_ok(const MatokiProgram* p) {
-    const GlobalDecl* tex = matoki_find_uniform(p, "tex");
-    const GlobalDecl* tint = matoki_find_uniform(p, "tint");
-    const GlobalDecl* tr = matoki_find_uniform(p, "translucency");
-    const GlobalDecl* sh = matoki_find_uniform(p, "shadow");
-    const GlobalDecl* sm = matoki_find_uniform(p, "shadow_mat");
-    const GlobalDecl* sb = matoki_find_uniform(p, "shadow_bias");
-    return tex && tint && tex->offset == __builtin_offsetof(LitUniforms, tex) && tint->offset == __builtin_offsetof(LitUniforms, tint) &&
-           (!tr || tr->offset == __builtin_offsetof(LitUniforms, translucency)) &&
-           (!sh || sh->offset == __builtin_offsetof(LitUniforms, shadow)) &&
-           (!sm || sm->offset == __builtin_offsetof(LitUniforms, shadow_mat)) &&
-           (!sb || sb->offset == __builtin_offsetof(LitUniforms, shadow_bias));
+/* lit ailesi shader'ın her uniform'u LitUniforms'taki aynı adlı alanla ad + tip + ofset olarak eşleşmeli (açılış ve canlı
+ * derleme aynı denetim). Yalnız ofset bakmak yetmiyordu: aynı ofsette yanlış tip (işaretçiyi f32 okumak) ya da yapının
+ * sonundan taşan yeni uniform geçiyordu. Uyuşmayan ilk uniform *bad'e (hata konumu için). tex ve tint zorunlu. */
+typedef struct LitField {
+    const char* name;
+    u32 offset, base, n;
+} LitField;
+
+#define LIT_FIELD(f, b, k) { #f, (u32)__builtin_offsetof(LitUniforms, f), b, k }
+static const LitField LIT_FIELDS[] = {
+    LIT_FIELD(tex, TB_TEX, 1), LIT_FIELD(to_light, TB_FLOAT, 3), LIT_FIELD(ambient, TB_FLOAT, 1),
+    LIT_FIELD(light_color, TB_FLOAT, 3), LIT_FIELD(fog_start, TB_FLOAT, 1), LIT_FIELD(fog_color, TB_FLOAT, 3),
+    LIT_FIELD(fog_end, TB_FLOAT, 1), LIT_FIELD(eye, TB_FLOAT, 3), LIT_FIELD(use_mip, TB_INT, 1), LIT_FIELD(tint, TB_FLOAT, 3),
+    LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
+    LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1),
+};
+
+static b32 lit_layout_ok_at(const MatokiProgram* p, const GlobalDecl** bad) {
+    b32 has_tex = FALSE, has_tint = FALSE;
+    for (const GlobalDecl* g0 = p->module.globals; g0; g0 = g0->next) {
+        if (g0->kind != GD_UNIFORM) continue;
+        const LitField* f = NULL;
+        for (u32 i = 0; i < ARRAY_COUNT(LIT_FIELDS) && !f; i++) {
+            if (cstr_len(LIT_FIELDS[i].name) == g0->name_len && mem_equal(LIT_FIELDS[i].name, g0->name, g0->name_len)) f = &LIT_FIELDS[i];
+        }
+        if (!f || f->offset != g0->offset || f->base != (u32)g0->type.base || f->n != g0->type.n) {
+            if (bad) *bad = g0;
+            return FALSE;
+        }
+        has_tex |= f->offset == __builtin_offsetof(LitUniforms, tex);
+        has_tint |= f->offset == __builtin_offsetof(LitUniforms, tint);
+    }
+    if (bad) *bad = NULL;
+    return has_tex && has_tint;
 }
+
+static b32 lit_layout_ok(const MatokiProgram* p) { return lit_layout_ok_at(p, NULL); }
 
 /* src NULL → gömülü dosya; değilse src (aynı ad günlükte) */
 static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* src, u32 len, u32 stage) {
@@ -367,10 +390,18 @@ static MatokiProgram* matoki_load_hq_noshadow(Arena* a) {
     if (!ef) return NULL;
     const char* src = (const char*)ef->data;
     u32 n = ef->len, k = (u32)sizeof(KEY) - 1, at = n;
+    u32 hits = 0;
     for (u32 i = 0; i + k <= n; i++) {
-        if (mem_equal(src + i, KEY, k)) { at = i; break; }
+        if (mem_equal(src + i, KEY, k)) {
+            if (!hits) at = i;
+            hits++;
+        }
     }
-    if (at == n) return NULL;
+    /* tam bir çağrı (yorumda / ikinci kullanımda geçerse türev yanlış yeri değiştirirdi): değilse gölgeli program kullanılır */
+    if (hits != 1) {
+        LOG("matoki: lit_hq.mtk'de 'shadow_lit(wpos)' %u kez geçiyor (1 olmalı): gölgesiz türev derlenmedi", hits);
+        return NULL;
+    }
     char* out = ARENA_ARRAY(a, char, n + 1);
     mem_copy(out, src, at);
     mem_copy(out + at, "1.0", 3);
@@ -904,7 +935,9 @@ static void tentacle_build(Arena* a) {
 /* Sahne 9 kurulumu (bir kez): glTF kolu (gömülü assets/arm_skin.glb) + ECS: kök entity'nin çocukları dokunaçlar */
 static b32 anim_scene_build(void) {
     if (g.anim_ready) return TRUE;
-    if (!arena_init_sys(&g.anim_mem, (usize)4 << 20)) return FALSE;
+    /* önceki deneme başarısızsa aynı arena yeniden kullanılır (her denemede yeni 4 MB sızmasın) */
+    if (g.anim_mem.base) arena_reset(&g.anim_mem, 0);
+    else if (!arena_init_sys(&g.anim_mem, (usize)4 << 20)) return FALSE;
     Arena scratch = arena_sub(&g.anim_mem, (usize)1 << 20);
     const EmbedFile* f = embed_find("arm_skin.glb");
     if (!f || !gltf_load(f->data, f->len, &g.anim_mem, &scratch, NULL, NULL, &g.arm) || g.arm.draw_count == 0 ||
@@ -1405,12 +1438,14 @@ static void render_scene5(void) {
 static void render_scene6(void) {
     draw(g.ground, &g.m_ground, mat4_identity());
     for (u32 i = 0; i < g.phys.count; i++) draw_body(&g.phys.bodies[i], i);
-    soft_mesh_update(g.flag_mesh, g.flag, TRUE, 0.0f);
     draw(g.flag_mesh, &g.m_flag, mat4_identity());
-    for (u32 k = 0; k < g.jelly_count; k++) {
-        soft_mesh_update(g.jelly_mesh[k], g.jelly[k], FALSE, g.jelly[k]->radius);
-        draw(g.jelly_mesh[k], &g.m_jelly, mat4_identity());
-    }
+    for (u32 k = 0; k < g.jelly_count; k++) draw(g.jelly_mesh[k], &g.m_jelly, mat4_identity());
+}
+
+/* yumuşak cisim mesh'leri (bayrak + jöleler): karede bir kez, gölge ve ana geçişten önce */
+static void soft_meshes_update(void) {
+    soft_mesh_update(g.flag_mesh, g.flag, TRUE, 0.0f);
+    for (u32 k = 0; k < g.jelly_count; k++) soft_mesh_update(g.jelly_mesh[k], g.jelly[k], FALSE, g.jelly[k]->radius);
 }
 
 static void render_scene3(void) {
@@ -1573,8 +1608,6 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     f32 dt = m_clampf(dt_ms * 0.001f, 0.0f, 0.1f);
     g.time += dt;
     g.fps_ms = g.fps_ms > 0.0f ? g.fps_ms + (dt_ms - g.fps_ms) * 0.1f : dt_ms;
-    if (g.in.pressed[KEY_U]) g.hud_on = !g.hud_on;
-    if (g.in.pressed[KEY_B]) g.shadow_on = !g.shadow_on;
     /* shader editörü (F2): açıkken girdi oyuna değil editöre gider; basılı tuş durumu kare ortasında geri yüklenir */
     if (g.in.pressed[KEY_F2] && (g.edit_open || editor_setup())) g.edit_open = !g.edit_open;
     b32 ui_frame = g.edit_open;
@@ -1593,6 +1626,9 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
         mem_zero(g.in.pressed, sizeof(g.in.pressed));
         g.in.mouse_dx = g.in.mouse_dy = g.in.wheel = 0.0f;
     }
+    /* oyun tuşları editör bloğundan sonra: editörde yazılan 'u' / 'b' paneli / gölgeyi değiştirmesin */
+    if (g.in.pressed[KEY_U]) g.hud_on = !g.hud_on;
+    if (g.in.pressed[KEY_B]) g.shadow_on = !g.shadow_on;
     if (g.in.pressed[KEY_J]) {   /* ses aç/kapa: master 0 ↔ synth varsayılanı */
         static f32 master_on = -1.0f;
         Synth* sy = audio_synth();
@@ -1731,6 +1767,9 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.in.mouse_latch = 0;
     mem_zero(g.in.pressed, sizeof(g.in.pressed));
 
+    /* CPU'da üretilen geometri karede bir kez, iki geçişten (gölge + ana) önce: gölge aynı pozdan */
+    if (g.scene == 9) anim_scene_update();
+    if (g.scene == 6) soft_meshes_update();
     shadow_pass();
     f64 t0 = sys_now_ms();
     fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);
@@ -1741,7 +1780,6 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     raster_set_depth(&g.raster, TRUE, TRUE, DEPTH_LESS);
     raster_begin(&g.raster, &g.bins);
     set_frame_uniforms();
-    if (g.scene == 9) anim_scene_update();
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     draw_sky();
@@ -2048,8 +2086,13 @@ static b32 lit_recompile(Arena* a, const char* src, u32 len, MatokiError* err, u
     MatokiProgram* p = ARENA_NEW(a, MatokiProgram);
     mem_zero(err, sizeof(*err));
     if (!matoki_compile(a, src, len, NULL, p, err) || !matoki_jit(a, p, err)) return FALSE;
-    if (!lit_layout_ok(p)) {
-        matoki_error(err, 1, 1, "uniform yerleşimi LitUniforms ile uyuşmuyor (tex, tint, translucency ilk sırada kalmalı)", NULL, 0);
+    const GlobalDecl* bad = NULL;
+    if (!lit_layout_ok_at(p, &bad)) {
+        if (bad) {
+            matoki_error(err, bad->line, bad->col, "uniform LitUniforms'taki adı / tipi / sırasıyla uyuşmuyor:", bad->name, bad->name_len);
+        } else {
+            matoki_error(err, 1, 1, "uniform 'tex' ve 'tint' gerekli (LitUniforms sırası)", NULL, 0);
+        }
         return FALSE;
     }
     g_matoki_lit = p->fn_fast;
@@ -2082,8 +2125,13 @@ EXPORT(engine_matoki_recompile) i32 engine_matoki_recompile(u32 len) {
 static b32 editor_setup(void) {
     if (g.edit_ready) return TRUE;
     const EmbedFile* f = embed_find("lit.mtk");
-    if (!f || !arena_init_sys(&g.edit_mem, (usize)1 << 20)) return FALSE;
-    if (!arena_init_sys(&g.edit_code[0], EDIT_CODE_BYTES) || !arena_init_sys(&g.edit_code[1], EDIT_CODE_BYTES)) return FALSE;
+    if (!f) return FALSE;
+    /* başarısız denemeden kalan arenalar yeniden kullanılır (her F2'de yeniden ayırıp sızdırmasın) */
+    if (!g.edit_mem.base && !arena_init_sys(&g.edit_mem, (usize)1 << 20)) return FALSE;
+    for (u32 k = 0; k < 2; k++) {
+        if (!g.edit_code[k].base && !arena_init_sys(&g.edit_code[k], EDIT_CODE_BYTES)) return FALSE;
+    }
+    arena_reset(&g.edit_mem, 0);
     g.editor = ARENA_NEW(&g.edit_mem, CodeEditor);
     editor_init(g.editor, &g.edit_mem, (const char*)f->data, f->len);
     ui_init(&g.ui, &g.fb);

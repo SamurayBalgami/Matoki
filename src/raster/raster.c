@@ -393,7 +393,7 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
     i32 ty0 = (i32)miny >> RASTER_TILE_SHIFT, ty1 = (i32)maxy >> RASTER_TILE_SHIFT;
     /* shade == NULL: yalnız derinlik (gölge haritası; M13 faz 7) → varying düzlemi yok. MSAA'da desteklenmez. */
     if (!s->shade && msaa) {
-        st->tris_empty++;
+        st->tris_unsupported++;
         return;
     }
     u32 nv = !s->shade ? 0 : s->var_count > SHADE_MAX_VARS ? SHADE_MAX_VARS : s->var_count;
