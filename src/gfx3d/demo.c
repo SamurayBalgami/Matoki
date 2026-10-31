@@ -17,6 +17,7 @@
 #include "phys/soft.h"
 #include "phys/ocean.h"
 #include "phys/dem.h"
+#include "phys/interp.h"
 #include "core/rng.h"
 
 #define ROCK_KINDS 4
@@ -34,6 +35,7 @@
 #define KEY_J 74
 #define KEY_F2 113
 #define KEY_B 66
+#define KEY_I 73
 
 #define SHADOW_SIZE   1024
 #define SHADOW_RADIUS 22.0f   /* m: kameranın önünde gölge alan küre */
@@ -140,6 +142,15 @@ typedef struct Demo {
     f32 phys_acc;
     f64 phys_ms;
     u32 phys_steps;
+    /* fizik ↔ görüntü ara değerlemesi (D39, phys/interp.h; I tuşu): adım başı pozlar, çizim α ile */
+    PhysInterp ip;
+    PhysInterpPts ip_chr;     /* karakter ayağı (sahne 4) */
+    PhysInterpPts ip_soft;    /* yumuşak cisim parçacıkları (sahne 6; soft_arena'dan, sahne kurulurken) */
+    f64 dem_prev[DROP_COLS * DROP_BALLS][3];   /* sahne 8 topları (f64; çizimde okunurken ara değer) */
+    b32 dem_prev_ok;
+    b32 interp_on;
+    b32 ip_active;            /* bu karede apply yapıldı → pipe_end'den sonra restore */
+    f32 ip_alpha;
     /* sahne 6: yumuşak cisimler */
     Arena soft_arena;    /* sahne kurulurken sıfırlanır */
     SoftWorld soft;
@@ -456,6 +467,70 @@ static void material(Material* m, const LitUniforms* u) {
     m->cull = CULL_BACK;
 }
 
+/* ---- fizik ↔ görüntü ara değerlemesi (D39) ----
+ * save: her sabit adımdan önce; apply: adımlardan sonra (kamera takibi + gölge + ana geçiş ara pozu görür);
+ * restore: pipe_end'den sonra, fizik durumu bit bit geri. reset: sahne kurulumu / ışınlama (eski pozdan süpürme olmasın). */
+static void interp_reset(void) {
+    phys_interp_reset(&g.ip);
+    phys_interp_pts_reset(&g.ip_chr);
+    phys_interp_pts_reset(&g.ip_soft);
+    g.dem_prev_ok = FALSE;
+}
+
+static void interp_save(void) {
+    phys_interp_save(&g.ip, &g.phys);
+    if (g.scene == 4) phys_interp_pts_save(&g.ip_chr, 0, &g.chr.pos, 1);
+    if (g.scene == 6) {
+        u32 at = 0;
+        for (u32 k = 0; k < g.soft.count; k++) {
+            phys_interp_pts_save(&g.ip_soft, at, g.soft.bodies[k]->x, g.soft.bodies[k]->count);
+            at += g.soft.bodies[k]->count;
+        }
+    }
+    if (g.scene == 8) {
+        for (u32 k = 0; k < g.dem.n && k < DROP_COLS * DROP_BALLS; k++) {
+            for (u32 j = 0; j < 3; j++) g.dem_prev[k][j] = g.dem.b[k].x[j];
+        }
+        g.dem_prev_ok = TRUE;
+    }
+}
+
+static void interp_apply(void) {
+    f32 a = g.ip_alpha;
+    phys_interp_apply(&g.ip, &g.phys, a);
+    if (g.scene == 4) phys_interp_pts_apply(&g.ip_chr, 0, &g.chr.pos, 1, a);
+    if (g.scene == 6) {
+        u32 at = 0;
+        for (u32 k = 0; k < g.soft.count; k++) {
+            phys_interp_pts_apply(&g.ip_soft, at, g.soft.bodies[k]->x, g.soft.bodies[k]->count, a);
+            at += g.soft.bodies[k]->count;
+        }
+    }
+    g.ip_active = TRUE;
+}
+
+static void interp_restore(void) {
+    phys_interp_restore(&g.ip, &g.phys);
+    if (g.scene == 4) phys_interp_pts_restore(&g.ip_chr, 0, &g.chr.pos, 1);
+    if (g.scene == 6) {
+        u32 at = 0;
+        for (u32 k = 0; k < g.soft.count; k++) {
+            phys_interp_pts_restore(&g.ip_soft, at, g.soft.bodies[k]->x, g.soft.bodies[k]->count);
+            at += g.soft.bodies[k]->count;
+        }
+    }
+    g.ip_active = FALSE;
+}
+
+/* sahne 8 topunun çizim konumu: apply anında geçmiş varsa önceki ↔ şimdiki arası (f64'te, sonra f32) */
+static Vec3 dem_render_pos(u32 k) {
+    const f64* x = g.dem.b[k].x;
+    if (!g.ip_active || !g.dem_prev_ok) return v3((f32)x[0], (f32)x[1], (f32)x[2]);
+    const f64* p = g.dem_prev[k];
+    f64 a = (f64)g.ip_alpha;
+    return v3((f32)(p[0] + (x[0] - p[0]) * a), (f32)(p[1] + (x[1] - p[1]) * a), (f32)(p[2] + (x[2] - p[2]) * a));
+}
+
 /* Sahne 3: zemin, 6 katlı piramit, iki kule, birkaç küre */
 static void phys_scene_build(void) {
     PhysWorld* w = &g.phys;
@@ -482,6 +557,7 @@ static void phys_scene_build(void) {
         phys_add_body(w, &s);
     }
     g.phys_acc = 0.0f;
+    interp_reset();
 }
 
 static void phys_shoot(void) {
@@ -545,6 +621,7 @@ static void drive_scene_build(void) {
     CharacterDesc cd = character_desc_default(v3(3.5f, 0.0f, 1.0f));
     character_init(&g.chr, &cd);
     g.phys_acc = 0.0f;
+    interp_reset();
 }
 
 static void play_set(i32 mode) {
@@ -562,6 +639,7 @@ static void play_set(i32 mode) {
         Vec3 f = vehicle_forward(&g.phys, &g.car);
         Vec3 left = v3_norm(v3(f.z, 0.0f, -f.x));
         g.chr.pos = v3_add(v3(ch->pos.x, 0.5f, ch->pos.z), v3_scale(left, 2.8f));
+        phys_interp_pts_reset(&g.ip_chr);
         g.chr.vel = v3(0, 0, 0);
         g.cam.pitch = 0.0f;
         g.cam.yaw = m_atan2f(f.x, -f.z);   /* camera_forward = (sin yaw, ·, −cos yaw) */
@@ -575,6 +653,7 @@ static void car_reset(void) {
     b->vel = b->ang_vel = v3(0, 0, 0);
     phys_body_update_derived(b);
     g.chase_yaw = 0.0f;
+    interp_reset();   /* ışınlama: eski pozdan süpürerek çizilmesin */
 }
 
 /* ---- sahne 5: eklemler ve şekiller ---- */
@@ -729,6 +808,7 @@ static void joints_scene_build(void) {
         phys_add_body(w, &d);
     }
     g.phys_acc = 0.0f;
+    interp_reset();
 }
 
 /* ---- sahne 6: yumuşak cisimler (bayrak, jöleler) ---- */
@@ -818,7 +898,11 @@ static void soft_scene_build(void) {
             g.jelly_mesh[k]->v[i] = p.y * 1.5f;
         }
     }
+    u32 particles = 0;
+    for (u32 k = 0; k < g.soft.count; k++) particles += g.soft.bodies[k]->count;
+    phys_interp_pts_init(&g.ip_soft, &g.soft_arena, particles);
     g.phys_acc = 0.0f;
+    interp_reset();
     g.soft_time = 0.0f;
 }
 
@@ -851,6 +935,7 @@ static void drop_scene_build(void) {
     }
     g.drop_time = 0.0f;
     g.phys_acc = 0.0f;
+    interp_reset();
 }
 
 /* kare sonu: alttaki top zeminden sekince sütunun tepe ölçümü başlar */
@@ -1270,6 +1355,9 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     material(&g.m_flag, &g.u_flag);
     material(&g.m_jelly, &g.u_jelly);
     phys_world_init(&g.phys, &g.perm, 1024, 8192);
+    phys_interp_init(&g.ip, &g.perm, 1024);   /* = gövde kapasitesi */
+    phys_interp_pts_init(&g.ip_chr, &g.perm, 1);
+    g.interp_on = TRUE;
     dem_init(&g.dem, &g.perm, DROP_COLS * DROP_BALLS, 5.0e7, 0.45, 0.9);
     g.phys.allow_sleep = TRUE;
 
@@ -1315,8 +1403,8 @@ static void draw_hud(void) {
         fmt_format(buf[4], 128, "kaplama %u dokunaç + %u glTF kol   %.2f ms   (ECS + anim + glTF: MatokiEngine)", TENTACLES,
                    ANIM_ARMS, (f64)s[ST_ANIM_US] * 0.001);
     } else {
-        fmt_format(buf[4], 128, "fizik %u gövde   %u temas   %u uyanık   %.2f ms", s[ST_PHYS_BODIES], s[ST_PHYS_CONTACTS],
-                   s[ST_PHYS_AWAKE], (f64)s[ST_PHYS_US] * 0.001);
+        fmt_format(buf[4], 128, "fizik %u gövde   %u temas   %u uyanık   %.2f ms   ara değer %s", s[ST_PHYS_BODIES], s[ST_PHYS_CONTACTS],
+                   s[ST_PHYS_AWAKE], (f64)s[ST_PHYS_US] * 0.001, g.interp_on ? "açık" : "kapalı");
     }
     fmt_format(buf[5], 128, "bellek: kare %u KB   karo %u KB   başarısız ayırma %u", s[ST_FRAME_KB], s[ST_ARENA_KB],
                s[ST_MEM_FAILS]);
@@ -1541,7 +1629,7 @@ static void render_scene8(void) {
         for (u32 i = 0; i < DROP_BALLS; i++) {
             u32 k = c * DROP_BALLS + i;
             const DemBall* b = &g.dem.b[k];
-            Vec3 pos = v3((f32)b->x[0], (f32)b->x[1], (f32)b->x[2]);
+            Vec3 pos = dem_render_pos(k);
             f32 rad = (f32)b->r;
             f32 m = DROP_MASS[c][i];
             const Material* mat = m >= 4.0f ? &g.m_grid[0] : m >= 2.0f ? &g.m_grid[1] : &g.m_grid[2];
@@ -1647,6 +1735,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     /* oyun tuşları editör bloğundan sonra: editörde yazılan 'u' / 'b' paneli / gölgeyi değiştirmesin */
     if (g.in.pressed[KEY_U]) g.hud_on = !g.hud_on;
     if (g.in.pressed[KEY_B]) g.shadow_on = !g.shadow_on;
+    if (g.in.pressed[KEY_I]) g.interp_on = !g.interp_on;
     if (g.in.pressed[KEY_J]) {   /* ses aç/kapa: master 0 ↔ synth varsayılanı */
         static f32 master_on = -1.0f;
         Synth* sy = audio_synth();
@@ -1726,6 +1815,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
         g.phys_ms = 0.0;
         g.soft_ms = 0.0;
         while (g.phys_acc >= PHYS_DT && g.phys_steps < 4) {
+            interp_save();
             if (g.scene == 4) {
                 vehicle_update(&g.phys, &g.car, PHYS_DT);
                 if (walking) character_update(&g.phys, &g.chr, wish, jump && g.phys_steps == 0, PHYS_DT);
@@ -1758,6 +1848,9 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
             g.phys_steps++;
         }
         if (g.phys_acc > PHYS_DT) g.phys_acc = 0.0f;
+        /* α = son adımdan beri geçen süre / adım: çizim önceki ↔ şimdiki poz arasında (bir adım geriden, düzgün) */
+        g.ip_alpha = m_clampf(g.phys_acc / PHYS_DT, 0.0f, 1.0f);
+        if (g.interp_on) interp_apply();
         if (g.scene == 8 && g.drop_time > DROP_RESET) drop_scene_build();   /* kendiliğinden yeniden bırak */
     }
     if (g.in.pressed[KEY_M]) g.mip = !g.mip;
@@ -1810,6 +1903,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
     if (gpu) gcmd_end(&g.gcmd);
+    if (g.ip_active) interp_restore();
     f64 t1 = sys_now_ms();
     if (!gpu) fb_resolve(&g.fb);   /* MSAA: örnekler → renk */
     f64 t_res = sys_now_ms();
@@ -1948,6 +2042,7 @@ EXPORT(engine_bench_view) void engine_bench_view(i32 view) {
 }
 
 EXPORT(engine_set_flat) void engine_set_flat(i32 on) { g.flat = on != 0; }
+EXPORT(engine_set_interp) void engine_set_interp(i32 on) { g.interp_on = on != 0; }
 EXPORT(engine_set_mip) void engine_set_mip(i32 on) { g.mip = on != 0; }
 EXPORT(engine_matoki_ready) i32 engine_matoki_ready(void) { return g_matoki_lit != NULL; }
 

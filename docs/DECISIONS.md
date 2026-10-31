@@ -426,3 +426,16 @@ köşe dönüşümü `vert_std_c` sırasıyla; `fs_flat` = `shade_flat`'in bireb
 karşılaştırılabilir (`web/gpu_check.html`). 8a sınırları: Material.vert (dalga) ve shader'lar GPU'da yok (8b: Matoki →
 WGSL), panel / editör / gölge yazılım kipinde (8c).
 
+
+## D39. Fizik ↔ görüntü ara değerlemesi (`phys/interp`)
+Fizik sabit 60 Hz adımda kalır (belirlenimcilik, geri sarma); görüntü önceki ↔ şimdiki adım pozu arasında
+α = birikmiş süre / adım ile çizilir (bir adım geriden, düzgün). Ölçüm (`test_phys_interp`, serbest düşme, kare başı
+hız değişiminin −g·Δt'den RMS sapması): 144 Hz kare 38,3 → 0,054 m/s, 75 Hz kare 14,3 → 0,016 m/s. Uygulama: her
+adımdan önce `phys_interp_save`; adımlardan sonra `apply` ara pozu gövdelere yazar (konum doğrusal, dönüş nlerp,
+`rot_m` türetilir) — kamera takibi, gölge geçişi ve ana geçiş tek pozu görür, ayrı çizim yolu gerekmez; `pipe_end`
+sonrası `restore` şimdiki pozu bit bit geri koyar (test: 50 adımda ara değerli ↔ ara değersiz dünya birebir; demo:
+`check_demo` 144 Hz'de fizik durumu aynı). Önceki = şimdiki (uyuyan, statik) gövdeye dokunulmaz; geçmişi olmayan
+(yeni eklenen, ışınlanan: `car_reset`, araçtan iniş, sahne kurulumu → `interp_reset`) gövde olduğu gibi çizilir —
+ölçüm görünümleri adım atmadığı için kare hash'leri değişmez. Yumuşak cisim parçacıkları ve karakter `PhysInterpPts`
+ile, sahne 8 DEM topları (f64) çizimde okunurken. Maliyet: 1024 gövdede save 3,5 µs + apply/restore 20,6 µs / kare.
+I tuşu aç / kapa. Sınır: kare başı 4 adım sınırı aşılınca (15 fps altı) fizik yine yavaşlar — ayrı konu.

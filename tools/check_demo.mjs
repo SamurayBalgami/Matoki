@@ -51,5 +51,30 @@ check(recompile(afterTint('uniform wrap: vec4;')) === 0, 'aynı ofsette yanlış
 check(recompile(afterTint('uniform extra: vec4;')) === 0, 'LitUniforms dışı uniform reddedilir');
 check(recompile(lit.replace('uniform use_mip: i32;', 'uniform use_mip: f32;')) === 0, 'i32 ↔ f32 tip değişimi reddedilir');
 
+// 3. fizik ↔ görüntü ara değerlemesi (D39): 144 Hz karelerle aynı girdi, ara değer açık ve kapalı → fizik durumu
+// aynı kalır (son kare dt = 0 ve ara değer kapalı çizilir: çizilen = fiziğin kendi pozu). Açıkken çizilen kare farklı
+// (ara poz gerçekten yazılıyor). Sahne 3 tuşla yeniden kurulur, yani iki koşu aynı başlangıçtan.
+const fbHash = () => {
+  const px = new Uint32Array(mem(), ex.engine_framebuffer(), W * H);
+  let h = 2166136261;
+  for (let i = 0; i < px.length; i++) h = Math.imul(h ^ px[i], 16777619) >>> 0;
+  return h;
+};
+const physRun = (interp) => {
+  tap(52); tap(51);   // sahne 4 → 3: yeniden kurulum
+  ex.engine_set_interp(interp);
+  for (let f = 0; f < 200; f++) ex.engine_frame(1000 / 144);
+  ex.engine_frame(0);
+  const shown = fbHash();
+  ex.engine_set_interp(0);
+  ex.engine_frame(0);
+  return { shown, state: fbHash() };
+};
+ex.engine_set_hud(0);   // panel ölçüm sürelerini yazar: kare hash'ini oynatır
+const ipOn = physRun(1), ipOff = physRun(0);
+check(ipOn.state === ipOff.state, 'ara değerleme fizik durumunu değiştirmez (144 Hz, 200 kare)');
+check(ipOn.shown !== ipOn.state, 'ara değer açıkken çizilen poz ara pozdur');
+ex.engine_set_interp(1);
+
 console.log(fails ? `${fails} denetim başarısız` : 'tüm demo denetimleri geçti');
 process.exit(fails ? 1 : 0);
