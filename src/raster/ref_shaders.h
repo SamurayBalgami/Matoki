@@ -36,6 +36,11 @@ typedef struct LitUniforms {
     /* yalnızca shaders/lit_hq.mtk (lit.mtk ve C shader'ları okumaz) */
     f32  wrap;          /* diffuse: 0 = Lambert, 1 = half-Lambert² (yumuşak, kıvrımlar belli) */
     f32  translucency;  /* arkadan gelen ışığın geçen payı (kumaş) */
+    /* gölge (yalnız lit_hq.mtk; M13 faz 7, gfx3d/shadow.h): px f32 derinlik bitleri, texel_fetch + bitcast_f32 ile.
+     * Kapalıyken shadow_none(): 1×1, derinlik 2 → hiçbir nokta gölgede değil, çarpan tam 1 (çıktı bit-bit aynı) */
+    const Texture* shadow;
+    Mat4 shadow_mat;    /* dünya → (u, v, derinlik), u, v ∈ [0, 1] */
+    f32  shadow_bias;   /* derinlik sapması (ışık uzayı, 0..1 ölçeğinde) */
     u32  lv_count;                  /* lit_uniforms_prepare doldurur */
     TexLevel lv[TEX_MAX_LEVELS];
 } LitUniforms;

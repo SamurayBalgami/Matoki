@@ -1,5 +1,5 @@
 // tools/shot.mjs — bench görünümünün karesini PNG'ye yazar (görsel karşılaştırma için).
-// Kullanım: node tools/shot.mjs <görünüm> <shader modu> <çıktı.png> [--frames N] [--res WxH] [--threads N] [--msaa 0|1]
+// Kullanım: node tools/shot.mjs <görünüm> <shader modu> <çıktı.png> [--frames N] [--res WxH] [--threads N] [--msaa 0|1] [--shadow 0|1]
 // frames > 0: her biri 1/60 sn ilerletilir (fizik/rüzgâr canlanır); 0: sabit kare.
 import fs from 'node:fs';
 import zlib from 'node:zlib';
@@ -7,18 +7,20 @@ import { loadEngine, startWorkers } from '../web/mt.mjs';
 
 const args = process.argv.slice(2);
 const [view, mode, out] = [+args[0], +args[1], args[2]];
-let frames = 0, W = 640, H = 360, threads = 0, msaa = 1;
+let frames = 0, W = 640, H = 360, threads = 0, msaa = 1, shadow = 0;
 for (let i = 3; i < args.length; i++) {
   if (args[i] === '--frames') frames = +args[++i];
   else if (args[i] === '--res') [W, H] = args[++i].split('x').map(Number);
   else if (args[i] === '--threads') threads = +args[++i];
   else if (args[i] === '--msaa') msaa = +args[++i];
+  else if (args[i] === '--shadow') shadow = +args[++i];
 }
 const { state, ex, module } = await loadEngine(fs.readFileSync(new URL('../build/engine.wasm', import.meta.url)), () => {});
 ex.engine_init(W, H);
 const workers = await startWorkers(state, ex, module, threads);
 ex.engine_set_shader_mode(mode);
 ex.engine_set_msaa(msaa);
+ex.engine_set_shadow(shadow);
 ex.engine_bench_view(view);
 ex.engine_frame(0);
 for (let i = 0; i < frames; i++) ex.engine_frame(1000 / 60);

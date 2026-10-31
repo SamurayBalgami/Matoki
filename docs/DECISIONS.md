@@ -403,6 +403,14 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
   8 MB arenaya: yürürlükteki program bir arenada kalır, yeni deneme diğerine; başarısızlık / sık düzenleme ana
   arenayı tüketip motoru düşüremez. Yeniden derleme açılıştaki uniform yerleşimi denetimini de yapar (önceden
   `engine_matoki_recompile` yapmıyordu: değiştirilmiş uniform sırası yanlış ofsetten okurdu).
+- **Faz 7 (ölçümle seçerek):** yalnız gölge haritası alındı. Raster'da `shade == NULL` = yalnız derinlik (varying ve renk
+  yok; MSAA'da çizilmez; önceden bu üçgenler sayaçsız atılıyordu). `gfx3d/shadow`: ışık uzayında ortografik, texel
+  ızgarasına hizalı, ön yüz ayıklamalı derinlik geçişi; doku derinlik tamponunu gösterir, `lit_hq.mtk` mevcut
+  `texel_fetch` + `bitcast_f32` ile 2×2 süzmeli karşılaştırma yapar (derleyici değişmedi). `lit_hq.mtk` iki kez
+  derlenir: gölgesiz türevde `shadow_lit(wpos)` → `1.0`, gölge kodu atılır → kapalıyken maliyet yok, çıktı bit-bit
+  aynı. Motor varsayılanı kapalı (ölçüm araçları / hash'ler değişmez), sayfa açar (B, `?noshadow`). Onların
+  "ertelenmiş çizim"i bizde zaten var (`pipe_draw` → `pipe_end`); WAT çekirdekleri motor kodu değil, Matoki ↔ elle
+  WAT ölçüm deneyi — oradaki 5 derleyici önerisi bizim derleyicide ayrıca ölçülecek.
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.

@@ -33,6 +33,11 @@
 #define KEY_U 85
 #define KEY_J 74
 #define KEY_F2 113
+#define KEY_B 66
+
+#define SHADOW_SIZE   1024
+#define SHADOW_RADIUS 22.0f   /* m: kameranın önünde gölge alan küre */
+#define SHADOW_BIAS_M 0.08f   /* m: ≈ 2 texel */
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -44,6 +49,7 @@ enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
 #include "gfx3d/camera.h"
 #include "gfx3d/pipeline.h"
 #include "gfx3d/hud.h"
+#include "gfx3d/shadow.h"
 #include "img/image.h"
 #include "img/procgen.h"
 #include "scene/transform.h"
@@ -88,6 +94,7 @@ enum {
     ST_ANIM_US,                                          /* sahne 9: iskelet + köşe kaplama (µs) */
     ST_AUDIO_US, ST_AUDIO_VOICES, ST_IMPACTS,            /* ses: sentez (µs), çalan ses, toplam vuruş sesi */
     ST_AUDIO_UNDERRUNS,                                  /* worklet'in boş bulduğu toplam kare (kesinti) */
+    ST_SHADOW_US,                                        /* gölge haritası geçişi (µs; kapalıyken 0) */
     ST_COUNT
 };
 
@@ -201,6 +208,10 @@ typedef struct Demo {
     UiContext ui;
     UiInput ui_in;
     u32 edit_ok, edit_fail;
+    /* gölge haritası (M13 faz 7, B tuşu; sayfa açar, motor varsayılanı kapalı → ölçüm / hash araçları değişmez) */
+    b32 shadow_on, shadow_active, shadow_pass;
+    ShadowMap* shadow;
+    Arena shadow_mem;
 } Demo;
 
 static Demo g;
@@ -220,6 +231,9 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->use_mip = FALSE;
     u->wrap = 0.25f;
     u->translucency = 0.0f;
+    u->shadow = shadow_none();
+    mem_zero(&u->shadow_mat, sizeof(u->shadow_mat));   /* 0 → harita koordinatı (0, 0, 0): her yer aydınlık */
+    u->shadow_bias = 0.0f;
     lit_uniforms_prepare(u);
 }
 
@@ -234,6 +248,8 @@ static ShadeFn g_matoki_lit;      /* hızlı yol (önsöz önbelleğini okur) */
 static PreludeFn g_matoki_pre;
 static ShadeFn g_hq_lit;
 static PreludeFn g_hq_pre;
+static ShadeFn g_hq_sh_lit;    /* lit_hq.mtk gölgeli; g_hq_lit gölgesiz türev (gölge kodu derlenmez, M13 faz 7) */
+static PreludeFn g_hq_sh_pre;
 /* vertex shader'lar (Matoki vert aşaması) */
 static VertexFn g_std_vert, g_wave_vert;
 static ShadeFn g_water;                 /* water.mtk (göl fragment) */
@@ -244,11 +260,13 @@ static PreludeFn g_std_vert_pre, g_wave_vert_pre;
 
 /* Matoki'de shader önsözle birlikte gelir; diğerlerinde önsöz yok */
 static PreludeFn lit_prelude_for(i32 mode) {
+    if (mode == SHADER_HQ && g.shadow_active && g_hq_sh_lit) return g_hq_sh_pre;
     if (mode == SHADER_HQ && g_hq_lit) return g_hq_pre;
     return mode == SHADER_MATOKI && g_matoki_lit ? g_matoki_pre : NULL;
 }
 
 static ShadeFn lit_shader_for(i32 mode) {
+    if (mode == SHADER_HQ && g.shadow_active && g_hq_sh_lit) return g_hq_sh_lit;
     if (mode == SHADER_HQ && g_hq_lit) return g_hq_lit;
     if (mode == SHADER_MATOKI && g_matoki_lit) return g_matoki_lit;
 #if defined(__wasm_simd128__)
@@ -264,20 +282,31 @@ static b32 lit_layout_ok(const MatokiProgram* p) {
     const GlobalDecl* tex = matoki_find_uniform(p, "tex");
     const GlobalDecl* tint = matoki_find_uniform(p, "tint");
     const GlobalDecl* tr = matoki_find_uniform(p, "translucency");
+    const GlobalDecl* sh = matoki_find_uniform(p, "shadow");
+    const GlobalDecl* sm = matoki_find_uniform(p, "shadow_mat");
+    const GlobalDecl* sb = matoki_find_uniform(p, "shadow_bias");
     return tex && tint && tex->offset == __builtin_offsetof(LitUniforms, tex) && tint->offset == __builtin_offsetof(LitUniforms, tint) &&
-           (!tr || tr->offset == __builtin_offsetof(LitUniforms, translucency));
+           (!tr || tr->offset == __builtin_offsetof(LitUniforms, translucency)) &&
+           (!sh || sh->offset == __builtin_offsetof(LitUniforms, shadow)) &&
+           (!sm || sm->offset == __builtin_offsetof(LitUniforms, shadow_mat)) &&
+           (!sb || sb->offset == __builtin_offsetof(LitUniforms, shadow_bias));
 }
 
-static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) {
-    const EmbedFile* ef = embed_find(file);
+/* src NULL → gömülü dosya; değilse src (aynı ad günlükte) */
+static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* src, u32 len, u32 stage) {
+    const EmbedFile* ef = src ? NULL : embed_find(file);
     char buf[320];
     StrBuf sb;
     sb_init(&sb, buf, sizeof(buf));
-    if (!ef) {
+    if (!src && !ef) {
         sb_cstr(&sb, "matoki: gömülü değil: ");
         sb_cstr(&sb, file);
         log_sb(&sb);
         return NULL;
+    }
+    if (!src) {
+        src = (const char*)ef->data;
+        len = ef->len;
     }
     MatokiProgram* p = ARENA_NEW(a, MatokiProgram);
     MatokiError e;
@@ -285,7 +314,7 @@ static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) {
     mem_zero(&opt, sizeof(opt));
     opt.stage = stage;
     f64 t0 = sys_now_ms();
-    b32 ok = matoki_compile(a, (const char*)ef->data, ef->len, &opt, p, &e) && matoki_jit(a, p, &e);
+    b32 ok = matoki_compile(a, src, len, &opt, p, &e) && matoki_jit(a, p, &e);
     f64 t1 = sys_now_ms();
     if (!ok) {
         sb_cstr(&sb, "matoki: ");
@@ -328,6 +357,27 @@ static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) {
     return p;
 }
 
+static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) { return matoki_load_src(a, file, NULL, 0, stage); }
+
+/* lit_hq.mtk'nin gölgesiz türevi: shadow_lit(wpos) → 1.0 (fonksiyon kullanılmaz, DCE atar). Çarpan zaten tam 1 olduğu
+ * için çıktı gölgeli programın gölge kapalı haliyle ve faz 6 öncesiyle bit-bit aynı; gölge hesabı hiç çalışmaz. */
+static MatokiProgram* matoki_load_hq_noshadow(Arena* a) {
+    const EmbedFile* ef = embed_find("lit_hq.mtk");
+    static const char KEY[] = "shadow_lit(wpos)";
+    if (!ef) return NULL;
+    const char* src = (const char*)ef->data;
+    u32 n = ef->len, k = (u32)sizeof(KEY) - 1, at = n;
+    for (u32 i = 0; i + k <= n; i++) {
+        if (mem_equal(src + i, KEY, k)) { at = i; break; }
+    }
+    if (at == n) return NULL;
+    char* out = ARENA_ARRAY(a, char, n + 1);
+    mem_copy(out, src, at);
+    mem_copy(out + at, "1.0", 3);
+    mem_copy(out + at + 3, src + at + k, n - at - k);
+    return matoki_load_src(a, "lit_hq.mtk (gölgesiz)", out, n - k + 3, MATOKI_STAGE_FRAG);
+}
+
 static void matoki_lit_init(Arena* a) {
     MatokiProgram* p = matoki_load(a, "lit.mtk", MATOKI_STAGE_FRAG);
     if (p) {
@@ -336,9 +386,12 @@ static void matoki_lit_init(Arena* a) {
         g_matoki_full = p->fn;
     }
     MatokiProgram* hq = matoki_load(a, "lit_hq.mtk", MATOKI_STAGE_FRAG);
+    MatokiProgram* hq0 = hq ? matoki_load_hq_noshadow(a) : NULL;
     if (hq) {
-        g_hq_lit = hq->fn_fast;
-        g_hq_pre = hq->prelude;
+        g_hq_sh_lit = hq->fn_fast;
+        g_hq_sh_pre = hq->prelude;
+        g_hq_lit = hq0 ? hq0->fn_fast : hq->fn_fast;   /* türev derlenemezse gölgeli (kapalıyken çarpan 1) */
+        g_hq_pre = hq0 ? hq0->prelude : hq->prelude;
     }
     MatokiProgram* wf = matoki_load(a, "water.mtk", MATOKI_STAGE_FRAG);
     if (wf) {
@@ -1218,8 +1271,9 @@ static void draw_hud(void) {
                SHADER_LABEL[g.shader_mode], s[ST_MSAA]);
     fmt_format(buf[2], 128, "üçgen %u / %u   piksel %u   nesne %u (elenen %u)", s[ST_TRI_DRAWN], s[ST_TRI_IN],
                s[ST_PIXELS], s[ST_OBJ_IN], s[ST_OBJ_CULLED]);
-    fmt_format(buf[3], 128, "geometri %.2f ms   raster %.2f ms   çözümleme %.2f ms", (f64)s[ST_GEO_US] * 0.001,
-               (f64)s[ST_FLUSH_US] * 0.001, (f64)s[ST_RESOLVE_US] * 0.001);
+    fmt_format(buf[3], 128, "geometri %.2f ms   raster %.2f ms   çözümleme %.2f ms   gölge %s %.2f ms (B)",
+               (f64)s[ST_GEO_US] * 0.001, (f64)s[ST_FLUSH_US] * 0.001, (f64)s[ST_RESOLVE_US] * 0.001,
+               g.shadow_active ? "açık" : "kapalı", (f64)s[ST_SHADOW_US] * 0.001);
     if (g.scene == 9) {
         fmt_format(buf[4], 128, "kaplama %u dokunaç + %u glTF kol   %.2f ms   (ECS + anim + glTF: MatokiEngine)", TENTACLES,
                    ANIM_ARMS, (f64)s[ST_ANIM_US] * 0.001);
@@ -1244,7 +1298,7 @@ EXPORT(engine_set_hud) void engine_set_hud(i32 on) { g.hud_on = on != 0; }
 static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
     DrawItem d;
     d.mesh = mesh;
-    d.mat = g.flat ? &g.m_flat : mat;
+    d.mat = g.shadow_pass ? shadow_caster() : g.flat ? &g.m_flat : mat;
     d.model = model;
     pipe_draw(&g.pipe, &d);
 }
@@ -1256,6 +1310,15 @@ static void set_frame_uniforms(void) {
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = g.cam.pos;
         all[i]->use_mip = g.mip;
+        if (g.shadow_active) {
+            all[i]->shadow = &g.shadow->tex;
+            all[i]->shadow_mat = g.shadow->world_to_tex;
+            all[i]->shadow_bias = shadow_bias_for(g.shadow, SHADOW_BIAS_M);
+        } else {
+            all[i]->shadow = shadow_none();
+            mem_zero(&all[i]->shadow_mat, sizeof(all[i]->shadow_mat));
+            all[i]->shadow_bias = 0.0f;
+        }
     }
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
@@ -1460,6 +1523,50 @@ static void render_scene2(void) {
     }
 }
 
+static void render_scene(void) {
+    if (g.scene == 1) render_scene1();
+    else if (g.scene == 2) render_scene2();
+    else if (g.scene == 7) render_scene7();
+    else if (g.scene == 3) render_scene3();
+    else if (g.scene == 4) render_scene4();
+    else if (g.scene == 6) render_scene6();
+    else if (g.scene == 8) render_scene8();
+    else if (g.scene == 9) render_scene9();
+    else render_scene5();
+}
+
+/* Gölge geçişi (M13 faz 7): kameranın önündeki küreye oturan ışık izdüşümünde sahneyi yalnız derinlik çizer
+ * (draw → shadow_caster). Okyanus (sahne 7: köşeleri dalga shader'ı oynatır) ve ölçüm kipleri gölgesiz. */
+static void shadow_pass(void) {
+    g.shadow_active = FALSE;
+    g.stats[ST_SHADOW_US] = 0;
+    if (!g.shadow_on || g.scene == 7 || g.flat || g.capture) return;
+    if (!g.shadow) {
+        if (!arena_init_sys(&g.shadow_mem, (usize)SHADOW_SIZE * SHADOW_SIZE * 4u + (64u << 10))) {
+            g.shadow_on = FALSE;
+            return;
+        }
+        g.shadow = ARENA_NEW(&g.shadow_mem, ShadowMap);
+        shadow_init(g.shadow, &g.shadow_mem, SHADOW_SIZE);
+    }
+    f64 t0 = sys_now_ms();
+    Mat4 view = camera_view(&g.cam);
+    Vec3 fwd = v3(-view.m[2], -view.m[6], -view.m[10]);
+    Vec3 center = v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS * 0.6f));
+    shadow_fit(g.shadow, g.u_ground.to_light, center, SHADOW_RADIUS, 40.0f);
+    arena_reset(&g.frame, 0);
+    arena_reset(&g.bins, 0);
+    shadow_begin(g.shadow, &g.pipe, &g.frame, &g.bins);
+    g.shadow_pass = TRUE;
+    render_scene();
+    g.shadow_pass = FALSE;
+    shadow_end(g.shadow, &g.pipe);
+    g.shadow_active = TRUE;
+    g.stats[ST_SHADOW_US] = (u32)((sys_now_ms() - t0) * 1000.0);
+}
+
+EXPORT(engine_set_shadow) void engine_set_shadow(i32 on) { g.shadow_on = on != 0; }
+
 EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (!g.ready) return;
     f64 t_start = sys_now_ms();
@@ -1467,6 +1574,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.time += dt;
     g.fps_ms = g.fps_ms > 0.0f ? g.fps_ms + (dt_ms - g.fps_ms) * 0.1f : dt_ms;
     if (g.in.pressed[KEY_U]) g.hud_on = !g.hud_on;
+    if (g.in.pressed[KEY_B]) g.shadow_on = !g.shadow_on;
     /* shader editörü (F2): açıkken girdi oyuna değil editöre gider; basılı tuş durumu kare ortasında geri yüklenir */
     if (g.in.pressed[KEY_F2] && (g.edit_open || editor_setup())) g.edit_open = !g.edit_open;
     b32 ui_frame = g.edit_open;
@@ -1623,6 +1731,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.in.mouse_latch = 0;
     mem_zero(g.in.pressed, sizeof(g.in.pressed));
 
+    shadow_pass();
     f64 t0 = sys_now_ms();
     fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);
     f64 t_clear = sys_now_ms();
@@ -1636,15 +1745,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     draw_sky();
-    if (g.scene == 1) render_scene1();
-    else if (g.scene == 2) render_scene2();
-    else if (g.scene == 7) render_scene7();
-    else if (g.scene == 3) render_scene3();
-    else if (g.scene == 4) render_scene4();
-    else if (g.scene == 6) render_scene6();
-    else if (g.scene == 8) render_scene8();
-    else if (g.scene == 9) render_scene9();
-    else render_scene5();
+    render_scene();
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
     f64 t1 = sys_now_ms();

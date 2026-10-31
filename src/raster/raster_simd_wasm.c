@@ -120,6 +120,26 @@ void raster_tile_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 ty1
                 if (!pass) continue;
             }
 
+            if (!t->shade) {   /* yalnız derinlik (gölge haritası): varying ve renk yok */
+                if (t->depth_write) {
+                    if (inner) {
+                        v128_t m = wasm_i32x4_ne(wasm_v128_and(wasm_i32x4_splat((i32)pass), lane_bits), zero);
+                        f32* d0 = drow + qx;
+                        f32* d1 = drow + fbw + qx;
+                        store_quad(d0, d1, wasm_v128_bitselect(zv, load_quad(d0, d1), m));
+                    } else {
+                        f32 zl[4];
+                        wasm_v128_store(zl, zv);
+                        for (u32 l = 0; l < 4; l++) {
+                            if (pass & (1u << l)) drow[(i32)(l >> 1) * fbw + qx + (i32)(l & 1)] = zl[l];
+                        }
+                    }
+                }
+                quads++;
+                pixels += (u32)__builtin_popcount(pass);
+                continue;
+            }
+
             q.x = qx;
             q.y = qy;
             q.mask = pass;

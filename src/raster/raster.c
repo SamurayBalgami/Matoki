@@ -330,7 +330,6 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
     const b32 atomic = ra != NULL;
     Framebuffer* fb = r->fb;
     st->tris_in++;
-    if (!s->shade) return;
 
     const RasterVert* v[3] = { va, vb, vc };
     for (u32 i = 0; i < 3; i++) {
@@ -392,7 +391,12 @@ static void tri_setup(Raster* r, Bin* bins, const RasterState* s, const RasterVe
 
     i32 tx0 = (i32)minx >> RASTER_TILE_SHIFT, tx1 = (i32)maxx >> RASTER_TILE_SHIFT;
     i32 ty0 = (i32)miny >> RASTER_TILE_SHIFT, ty1 = (i32)maxy >> RASTER_TILE_SHIFT;
-    u32 nv = s->var_count > SHADE_MAX_VARS ? SHADE_MAX_VARS : s->var_count;
+    /* shade == NULL: yalnız derinlik (gölge haritası; M13 faz 7) → varying düzlemi yok. MSAA'da desteklenmez. */
+    if (!s->shade && msaa) {
+        st->tris_empty++;
+        return;
+    }
+    u32 nv = !s->shade ? 0 : s->var_count > SHADE_MAX_VARS ? SHADE_MAX_VARS : s->var_count;
     usize tri_bytes = sizeof(TriSetup) + sizeof(AttrPlane) * nv;
     if (!atomic) {
         usize need = tri_bytes + sizeof(BinChunk) * (usize)((tx1 - tx0 + 1) * (ty1 - ty0 + 1)) + RASTER_ARENA_SLACK;
@@ -560,6 +564,15 @@ void raster_tile_scalar(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i32 t
                 }
             }
             if (!pass) continue;
+            if (!t->shade) {   /* yalnız derinlik (MSAA yolu bu üçgenleri hiç almaz) */
+                for (u32 l = 0; l < 4; l++) {
+                    if ((pass & (1u << l)) && t->depth_write) fb->depth[(qy + LANE_Y[l]) * fbw + qx + LANE_X[l]] = q.z[l];
+                }
+                st->quads_shaded++;
+                st->pixels_written += (u32)__builtin_popcount(pass);
+                if (!__atomic_exchange_n(&t->drawn, 1, __ATOMIC_RELAXED)) st->tris_drawn++;
+                continue;
+            }
 
             q.x = qx;
             q.y = qy;

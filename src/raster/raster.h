@@ -130,6 +130,7 @@ void fb_resolve(Framebuffer* fb);
 static inline b32 fb_msaa(const Framebuffer* fb) { return fb->samples == RASTER_MSAA && fb->color_ms; }
 
 void raster_init(Raster* r, Framebuffer* fb);
+/* önsözü sıfırlar. fn NULL → yalnız derinlik (varying ve renk yazılmaz; gölge haritası, M13 faz 7); MSAA'da çizilmez */
 void raster_set_shader(Raster* r, ShadeFn fn, const void* uniforms, u32 var_count);   /* önsözü sıfırlar */
 /* Sonraki üçgenlerin önsözü: flush sırasında (önsöz, uniforms) çifti değiştikçe gölgelemeden önce çağrılır. */
 void raster_set_prelude(Raster* r, PreludeFn fn);

@@ -1,6 +1,7 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0–6 TAMAM (2026-10-30) → sıradaki faz 7 (gölge / ertelenmiş çizim / WAT çekirdekleri, ölçümle).
+Durum: FAZ 0–7 TAMAM (2026-10-31) → sıradaki faz 8a (WebGPU komut akışı, isteğe bağlı arka uç).
+Depo kuralı: yalnız bizim depoya (SamurayBalgami/Matoki) gönderilir; Xassemblianist deposuna hiçbir şey yazılmaz.
 Kaynak sürümü: faz 0–3 0a7b782; faz 4'ten itibaren 2ac467a (onların 61 yeni commit'inde faz 0–3 dosyaları değişmedi). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
 CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
@@ -56,7 +57,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 4 ✓ | audio (sentez + AudioWorklet), fizik olaylarına ses (çarpışma şiddeti → ses) | ~700 + JS | halka tampon testleri; sahne 8 topları ses çıkarır |
 | 5 ✓ | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
 | 6 ✓ | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
-| 7 | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
+| 7 ✓ | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
 | 8a | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
 | 8b | Matoki → WGSL hedefi; lit / lit_hq / water / sky iki arka uçta | — | 10 görünüm × shader görüntü farkı testi |
 | 8c | GPU'da doku, MSAA, gölge, okyanus FFT görüntüsü; CPU/GPU boru hattı örtüşmesi; sayfada CPU ms / GPU ms / kare ms | — | 1080p önce/sonra ölçüm tablosu (bugün 30–52 ms) |
@@ -183,6 +184,32 @@ Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.
   (480×300, renklendirme + çizim) testte ≈ 0,16 ms.
 - Ölçüm: 225/225 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi; tek thread A/B (15 tur, faz 4 →
   faz 6) oranların medyanı 0,993, en iyi sürelerin oranı 1,004. engine.wasm 553 363 → 570 290 bayt.
+
+## Faz 7 notları (2026-10-31)
+- Adaylar: (1) gölge haritası → alındı; (2) onların "ertelenmiş çizim"i = çizim komutlarını kaydedip sonra işleme, bizim
+  boru hattı zaten böyle (`pipe_draw` → `pipe_end`) → alınacak bir şey yok; (3) WAT çekirdekleri = `asm/*.wat` + masm
+  ile elle yazılmış çekirdeklerin onların Matoki JIT'iyle karşılaştırması (elle WAT 1,11–1,32× hızlı); motor kodu değil.
+  Oradaki 5 derleyici önerisi (quad-tekdüze türev, tek polinomlu sin/cos, i32→f32 dönüşümü, 4× açma, tamsayı alfa
+  eşiği) bizim derleyicide ayrı bir işte ölçülmeli.
+- Gölge: `gfx3d/shadow` (onların 65 satırı bizim boru hattına), raster yalnız derinlik yolu (skaler + SIMD; MSAA'da
+  çizilmez), `lit_hq.mtk` 2×2 süzmeli karşılaştırma. Derleyiciye dokunulmadı: `texel_fetch` + `bitcast_f32` yeterli.
+- **Bulunan hata:** `tri_setup` shader'ı NULL olan üçgeni hiçbir sayaca yazmadan atıyordu (gölge haritası boş kaldı;
+  raster girdi 12, çizilen 0, ayıklanan 0, boş 0). Koruma kaldırıldı, yerine yalnız derinlik yolu.
+- Testler `test_shadow` (2): merkezde küp → iz 833 texel, altındaki zemin gölgede, üst yüz kendini gölgelemiyor;
+  yalnız derinlik skaler = SIMD bit-bit. Merkez dışı küp + eğik güneş: gölgenin x ve z sınırları analitik
+  izdüşümle 0,1 m (≈ 2 texel) içinde (ayna / eksen hatası yakalar). İlk yazdığım tek noktalı "ayna" denetimi yanlıştı
+  (nokta gerçekten gölge içindeydi) → aralık taramasına çevrildi.
+- Maliyet, gölge kapalı (tek thread A/B 15 tur, faz 6 → faz 7): ilk sürüm 1,018 / 1,028 (gölge kodu shader'da hep
+  çalışıyordu) → gölgesiz türevle 1,007 / 0,978 (gürültü). Kare hash'leri 10 görünümde değişmedi (HQ dahil).
+- Maliyet, gölge açık (aynı motor, görünüm başına dönüşümlü, 7 tur medyan):
+
+| | 16 thread 1280×720 | tek thread 640×360 |
+|---|---|---|
+| fark (görünüm aralığı) | +0,5 – +3,2 ms | +0,6 – +9,1 ms |
+| medyan oran | 1,074 | 1,101 |
+| okyanus (gölge çizilmez, gürültü tabanı) | 1,000 | 0,960 |
+
+- `tools/shot.mjs --shadow 1`; sayfa varsayılan açık, panel 4. satırı gölge ms.
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

@@ -3,7 +3,9 @@
 // doğrusal örnek, iki komşu seviye arasında kesirli seviyeyle karışım (seviye sınırında görünür bant yok).
 // Işık: Lambert ↔ half-Lambert² diffuse + yarım küre ortam + arkadan ışık. Sis: 1 - 2^(-4x²), x = (d - başla) / aralık
 // (yumuşak başlar, ufukta gök rengine erir; sky.mtk ile aynı ufuk rengi).
-// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra).
+// Gölge (M13 faz 7): gfx3d/shadow.h haritası, f32 derinlik bitleri texel_fetch + bitcast_f32 ile, 2×2 süzmeli karşılaştırma
+// (PCF); yalnız doğrudan ışığı keser. Kapalıyken 1×1 / derinlik 2 / shadow_mat = 0 → çarpan tam 1 (çıktı bit-bit aynı).
+// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias).
 
 uniform tex: texture2d @mipmap @bilinear;
 uniform to_light: vec3;
@@ -17,6 +19,9 @@ uniform use_mip: i32;
 uniform tint: vec3;
 uniform wrap: f32;
 uniform translucency: f32;
+uniform shadow: texture2d @clamp;
+uniform shadow_mat: mat4;
+uniform shadow_bias: f32;
 
 varying wpos: vec3;
 varying nrm: vec3;
@@ -57,6 +62,29 @@ fn sample_aniso(p: vec2) -> vec4 {
     return mix(a0, a1, frac) * 0.125;
 }
 
+// ışık görüşünden görünür mü: 1 = aydınlık, 0 = gölgede; dört komşu texel'in sonucu çift doğrusal karışır
+fn shadow_lit(p: vec3) -> f32 {
+    let s = shadow_mat * vec4(p, 1.0);
+    let ts = tex_size(shadow);
+    let x = s.x * ts.x - 0.5;
+    let y = s.y * ts.y - 0.5;
+    let fx = floor(x);
+    let fy = floor(y);
+    let ax = x - fx;
+    let ay = y - fy;
+    let ix = i32(fx);
+    let iy = i32(fy);
+    let z = s.z - shadow_bias;
+    let l00 = select(z > bitcast_f32(texel_fetch(shadow, ix, iy)), 0.0, 1.0);
+    let l10 = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy)), 0.0, 1.0);
+    let l01 = select(z > bitcast_f32(texel_fetch(shadow, ix, iy + 1)), 0.0, 1.0);
+    let l11 = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy + 1)), 0.0, 1.0);
+    let lit = mix(mix(l00, l10, ax), mix(l01, l11, ax), ay);
+    // haritanın dışı (kapsanmayan bölge) aydınlık
+    let inside = s.x >= 0.0 && s.x <= 1.0 && s.y >= 0.0 && s.y <= 1.0 && s.z <= 1.0;
+    return select(inside, lit, 1.0);
+}
+
 fn frag() -> vec4 {
     let texel = sample_aniso(uv);
     let n = norm_safe(nrm);
@@ -68,7 +96,7 @@ fn frag() -> vec4 {
     // arkadan ışık (ters yüz aydınlanır), yumuşak
     let back = max(-nl, 0.0) * translucency;
     let hemi = ambient * (0.75 + 0.25 * n.y);
-    let light = vec3(hemi) + light_color * (diffuse + back);
+    let light = vec3(hemi) + light_color * (diffuse * shadow_lit(wpos) + back);
     let c = texel.rgb * tint * light;
     let d = length(wpos - eye);
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
