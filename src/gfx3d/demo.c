@@ -59,6 +59,7 @@ enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
 #include "audio/audio.h"
 #include "audio/impact.h"
 #include "ui/editor.h"
+#include "gpu/gcmd.h"
 
 /* sahne 9: glTF kolu (bend_linear / STEP / CUBICSPLINE klipleri) + ECS hiyerarşisine bağlı dokunaçlar */
 #define ANIM_ARMS   3
@@ -212,6 +213,9 @@ typedef struct Demo {
     b32 shadow_on, shadow_active, shadow_pass;
     ShadowMap* shadow;
     Arena shadow_mem;
+    /* GPU arka ucu (M13 faz 8a): JS WebGPU'yu kurunca engine_gpu_set(1); kare komut akışı g.gcmd'de */
+    b32 gpu_on;
+    GpuCmd gcmd;
 } Demo;
 
 static Demo g;
@@ -1602,6 +1606,20 @@ static void shadow_pass(void) {
 
 EXPORT(engine_set_shadow) void engine_set_shadow(i32 on) { g.shadow_on = on != 0; }
 
+/* ---- GPU arka ucu (M13 faz 8a, D38): JS (web/gpu.mjs) WebGPU kurulursa açar; yoksa yazılım render kalır ---- */
+EXPORT(engine_gpu_set) void engine_gpu_set(i32 on) { g.gpu_on = on != 0; }
+/* son karenin komut akışı (gpu/gcmd.h başlığıyla); GPU kipi kapalıysa ya da akış kurulamadıysa 0 */
+EXPORT(engine_gpu_cmds) u32* engine_gpu_cmds(void) { return g.gpu_on && g.gcmd.cap ? g.gcmd.words : NULL; }
+/* gömülü WGSL (assets/gpu_8a.wgsl) */
+EXPORT(engine_gpu_shader) const u8* engine_gpu_shader(void) {
+    const EmbedFile* f = embed_find("gpu_8a.wgsl");
+    return f ? f->data : NULL;
+}
+EXPORT(engine_gpu_shader_len) u32 engine_gpu_shader_len(void) {
+    const EmbedFile* f = embed_find("gpu_8a.wgsl");
+    return f ? f->len : 0;
+}
+
 EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (!g.ready) return;
     f64 t_start = sys_now_ms();
@@ -1770,9 +1788,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     /* CPU'da üretilen geometri karede bir kez, iki geçişten (gölge + ana) önce: gölge aynı pozdan */
     if (g.scene == 9) anim_scene_update();
     if (g.scene == 6) soft_meshes_update();
-    shadow_pass();
+    if (!g.gpu_on) shadow_pass();
+    else g.shadow_active = FALSE;   /* GPU gölgesi faz 8c */
     f64 t0 = sys_now_ms();
-    fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);
+    if (!g.gpu_on) fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);
     f64 t_clear = sys_now_ms();
     arena_reset(&g.frame, 0);
     arena_reset(&g.bins, 0);
@@ -1780,14 +1799,19 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     raster_set_depth(&g.raster, TRUE, TRUE, DEPTH_LESS);
     raster_begin(&g.raster, &g.bins);
     set_frame_uniforms();
+    /* GPU kipi: komut akışı pipe_begin'den önce (pipe_end kare arenasını pipe_begin noktasına geri sarar) */
+    b32 gpu = g.gpu_on && gcmd_begin(&g.gcmd, &g.frame, PIPE_MAX_DRAWS, (u32)g.fb.w, (u32)g.fb.h,
+                                      color_pack(158, 184, 217, 255), 1.0f, g.flat ? GPU_MODE_FLAT : GPU_MODE_NORMAL);
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
+    if (gpu) pipe_set_gpu(&g.pipe, &g.gcmd);
     draw_sky();
     render_scene();
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
+    if (gpu) gcmd_end(&g.gcmd);
     f64 t1 = sys_now_ms();
-    fb_resolve(&g.fb);   /* MSAA: örnekler → renk */
+    if (!gpu) fb_resolve(&g.fb);   /* MSAA: örnekler → renk */
     f64 t_res = sys_now_ms();
 
     const PipeStats* ps = &g.pipe.stats;
@@ -1852,12 +1876,12 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_IMPACTS] = g.impact.played;
     g.stats[ST_AUDIO_UNDERRUNS] = audio_is_running() ? __atomic_load_n(&audio_ring()->underruns, __ATOMIC_RELAXED) : 0u;
     g.stats[ST_HUD_US] = 0;
-    if (g.hud_on) {
+    if (g.hud_on && !g.gpu_on) {   /* GPU kipinde panel / editör bindirmesi faz 8c (yazılım tamponu gösterilmiyor) */
         f64 th = sys_now_ms();
         draw_hud();
         g.stats[ST_HUD_US] = (u32)((sys_now_ms() - th) * 1000.0);
     }
-    if (g.edit_open && g.edit_ready) editor_draw();
+    if (g.edit_open && g.edit_ready && !g.gpu_on) editor_draw();
     /* ses: halka tamponu 60 ms gecikmeye kadar doldur (AudioWorklet okur; ses başlamadıysa iş yok) */
     g.stats[ST_AUDIO_US] = 0;
     if (audio_is_running()) {
@@ -1868,6 +1892,8 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
 }
 
 EXPORT(engine_framebuffer) u32* engine_framebuffer(void) { return g.fb.color; }
+/* ölçüm / GPU denetimi: tek örnekli derinlik tamponu (MSAA kapalıyken son karenin derinliği) */
+EXPORT(engine_depthbuffer) f32* engine_depthbuffer(void) { return g.fb.depth; }
 EXPORT(engine_stats) u32* engine_stats(void) { return g.stats; }
 EXPORT(engine_stats_count) u32 engine_stats_count(void) { return ST_COUNT; }
 

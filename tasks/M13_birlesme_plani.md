@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0–7 TAMAM (2026-10-31) → sıradaki faz 8a (WebGPU komut akışı, isteğe bağlı arka uç).
+Durum: FAZ 0–7 + 8a TAMAM (2026-10-31) → sıradaki faz 8b (Matoki → WGSL).
 Depo kuralı: yalnız bizim depoya (SamurayBalgami/Matoki) gönderilir; Xassemblianist deposuna hiçbir şey yazılmaz.
 Kaynak sürümü: faz 0–3 0a7b782; faz 4'ten itibaren 2ac467a (onların 61 yeni commit'inde faz 0–3 dosyaları değişmedi). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
@@ -58,7 +58,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 5 ✓ | sim (rollback/replay) bizim phys + DEM üzerine | ~700 | aynı girdi → aynı durum hash'i, geri sarma testi |
 | 6 ✓ | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
 | 7 ✓ | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
-| 8a | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
+| 8a ✓ | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
 | 8b | Matoki → WGSL hedefi; lit / lit_hq / water / sky iki arka uçta | — | 10 görünüm × shader görüntü farkı testi |
 | 8c | GPU'da doku, MSAA, gölge, okyanus FFT görüntüsü; CPU/GPU boru hattı örtüşmesi; sayfada CPU ms / GPU ms / kare ms | — | 1080p önce/sonra ölçüm tablosu (bugün 30–52 ms) |
 
@@ -229,6 +229,31 @@ Kod incelemesi (yüksek düzey, 8 açı) 8 bulgu verdi; hepsi düzeltildi:
 - Sonuç: 228/228 test (worker'lı / worker'sız), 10 görünüm kare hash'i değişmedi, A/B 1,017 / 1,010 (gürültü).
 - Barındırma: GitHub Pages `https://samuraybalgami.github.io/Matoki/3d.html` (`tools/publish_pages.py`, COOP/COEP
   `web/coi.js` service worker ile).
+
+## Faz 8a notları (2026-10-31)
+- Kendi tasarımımız (D38; onların WebGPU kodu kullanılmadı): `gpu/gcmd` (C akış yazıcısı), boru hattı kancası,
+  `Mesh.gen` + `mesh_touch`, `assets/gpu_8a.wgsl`, `web/gpu.mjs`, `3d.html?gpu`, `web/gpu_check.html`.
+- Testler: `test_gcmd` (2): akış düzeni (başlık, kayıt sırası, mesh karede bir kez, yuva hizası ve içerik), taşma,
+  gen tekilliği (aynı adrese yeniden ayrılan mesh farklı gen).
+- **Kabul (tarayıcı, Intel Gen12LP, düz kip, MSAA kapalı):** 10 görünüm × yazılım ↔ WebGPU:
+
+| çözünürlük | renk farklı piksel | derinlik > tolerans | sonuç |
+|---|---|---|---|
+| 640×360 | 0 / 2 304 000 | 2 piksel | 10/10 geçti |
+| 1280×720 | 1 / 9 216 000 | 5 piksel (kenar) | 10/10 geçti |
+
+  Testin kendisi denetlendi: iki görüntüde de aynı geometri (görünüm 1: 151 729 piksel), yanlış eşleştirilmiş görünüm
+  26 561 piksel farkla yakalanıyor. Renk konumdan geldiği için derinlik ayrıca karşılaştırıldı.
+- **Derinlik farkının kaynağı ölçüldü:** görünüm 6'da kameraya yakın zeminde 1,28e-5'e varan sistematik fark. f64
+  analitik derinlikle: CPU −1,4e-5 … −1,9e-5, GPU −4e-6 … −7e-6 → 4 km'lik tek dörtgen zeminin f32 sınırı, iki yolda
+  da; CPU büyük üçgeni kendisi kırptığı için ≈ 2× fazla. Tolerans tabanı 2e-5 + yerel eğim / 128. Zemini bölmek
+  (yazılım hash'lerini değiştirir) ayrı iş.
+- Motor CPU payı (16 thread, 1280×720, 5 tur medyan): yazılım 14,6–28,0 ms → GPU kipi 0,27–1,41 ms (GPU yürütme süresi
+  bu ölçüme girmiyor; 8c'de zaman damgasıyla).
+- Ölçüm: 230/230 test (worker'lı / worker'sız), demo denetimleri 11/11, yazılım kare hash'leri değişmedi, tek thread A/B
+  (11 tur) 1,004 / 0,997. engine.wasm 581 633 → 585 137 bayt.
+- Not: GPU kipinde kare arenasından 16 384 yuvalık (4 MB) uniform alanı ayrılıyor; gerçek çizim sayısına göre
+  küçültülebilir (8c).
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

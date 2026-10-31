@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FILES = ["3d.html", "3d.js", "mt.mjs", "worker.mjs", "audio.js", "audio_worklet.js", "coi.js", "engine.wasm"]
+FILES = ["3d.html", "3d.js", "mt.mjs", "worker.mjs", "audio.js", "audio_worklet.js", "coi.js", "gpu.mjs", "gpu_check.html", "engine.wasm"]
 
 
 def git(*args, cwd=ROOT):

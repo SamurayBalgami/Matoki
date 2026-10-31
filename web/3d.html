@@ -11,7 +11,7 @@
   body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
   main { max-width: 1320px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  #screen { width: 100%; aspect-ratio: 16 / 9; image-rendering: auto; background: #000; display: block; cursor: crosshair; border-radius: 4px; }
+  #screen, #screen-gpu { width: 100%; aspect-ratio: 16 / 9; image-rendering: auto; background: #000; display: block; cursor: crosshair; border-radius: 4px; }
   aside { background: var(--panel); border-radius: 4px; padding: 12px 14px; }
   h1 { font-size: 14px; margin: 0 0 8px; color: var(--accent); letter-spacing: .04em; }
   pre { margin: 0; white-space: pre-wrap; }
@@ -23,6 +23,7 @@
 <body>
 <main>
   <canvas id="screen" width="640" height="360"></canvas>
+  <canvas id="screen-gpu" width="640" height="360" style="display:none"></canvas>
   <aside>
     <h1>MATOKI 3D — yazılım render</h1>
     <pre id="info">yükleniyor…</pre>
@@ -35,7 +36,7 @@
       Sahne 4: <b>V</b> sür → yürü → uç · <b>W/S</b> gaz / fren-geri · <b>A/D</b> direksiyon · <b>Space</b> el freni / zıpla<br>
       <b>H</b> çözünürlük %100 / 75 / 50 · <b>M</b> mipmap aç/kapa · <b>N</b> MSAA 4x aç/kapa · <b>K</b> köşe aşaması Matoki / C · <b>Y</b> gökyüzü · <b>U</b> motor içi panel · <b>B</b> gölge (Matoki HQ; <code>?noshadow</code>) · <b>F2</b> canlı shader editörü (lit.mtk; Ctrl+Enter derle, Ctrl+Z geri al) · <b>J</b> ses aç/kapa (çarpışma sesleri; <code>?nosound</code>) · <b>C</b> uçuş / orbit kamera<br>
       <b>R</b> raster: SIMD / skaler · <b>L</b> lit shader: Matoki HQ (varsayılan: anizotropik, yumuşak ışık) → ref / tablo / SIMD (C) → Matoki<br>
-      <b>3d.html?prof</b> her sahneyi aşama aşama ölçer (konsol / window.__prof)
+      <b>3d.html?prof</b> her sahneyi aşama aşama ölçer (konsol / window.__prof) · <b>?gpu</b> WebGPU arka ucu (deneysel, faz 8a: geometri + basit ışık; doku, panel, gölge 8b/8c) · <b>gpu_check.html</b> yazılım ↔ GPU piksel karşılaştırması
     </div>
     <pre id="err"></pre>
   </aside>

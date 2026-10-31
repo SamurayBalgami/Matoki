@@ -2,6 +2,7 @@
  * Matoki vert, 4 köşe/çağrı) ve paralel üçgen kurulumu (kırpma → izdüşüm → raster parçası). Sıra: parça
  * indeksi = gönderim sırası → çıktı thread sayısından bağımsız. Çatlak önleme: kırpma kesişimi kenar uçları
  * kanonik sıraya dizilerek hesaplanır. Varying'ler klip uzayında doğrusal (raster var*inv_w'yi interpole eder). */
+#include "gpu/gcmd.h"
 #include "gfx3d/pipeline.h"
 #include "core/jobs.h"
 #include "core/mem.h"
@@ -135,7 +136,10 @@ void pipe_begin(Pipeline* p, Raster* r, Arena* frame, Mat4 view, Mat4 proj, Vec3
     p->batches = 0;
     p->vert_ms = p->setup_ms = p->raster_ms = 0.0;
     mem_zero(&p->stats, sizeof(p->stats));
+    p->gpu = NULL;
 }
+
+void pipe_set_gpu(Pipeline* p, struct GpuCmd* c) { p->gpu = c; }
 
 void pipe_set_time(Pipeline* p, f32 t) { p->time = t; }
 
@@ -193,6 +197,14 @@ void pipe_draw(Pipeline* p, const DrawItem* d) {
     bmx = v3_add(bmx, v3(margin, margin, margin));
     if (!pipe_sphere_visible(p->frustum, sc, sr) || !pipe_aabb_visible(p->frustum, bmn, bmx)) {
         p->stats.objects_culled++;
+        return;
+    }
+    if (p->gpu) {
+        Mat3 nm = mat3_normal_from_mat4(&d->model);
+        u32 before = p->gpu->draws;
+        gcmd_draw(p->gpu, m, &d->model, &p->view_proj, &nm, mat->cull, p->r->depth_test, p->r->depth_write);
+        if (p->gpu->draws == before) p->stats.draws_dropped++;
+        else p->stats.tris_in += m->index_count / 3;
         return;
     }
     VertUniforms* vu = p->draws && p->ndraws < PIPE_MAX_DRAWS ? ARENA_TRY_ARRAY(p->frame, VertUniforms, 1) : NULL;

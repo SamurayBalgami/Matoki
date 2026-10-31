@@ -414,3 +414,15 @@ okyanus, belirlenimci iş sistemi, sağlam Matoki derleyicisi) tek motorda birle
 ## D7. Mip zinciri ve seviye seçimi
 M8 §2.1 / §2.3'e birebir uyulur. Kutu filtresi lineer uzayda (sRGB-doğru indirgeme sonraki adım). Seviye seçimi
 tamsayı: `e = exponent(rho2) - 127`, `level = e >> 1`, `rho2 < 1` / NaN / denormal → 0. `lod_bias = 0`.
+
+## D38. GPU arka ucu: C'de komut akışı, JS'te yalnız çeviri (M13 faz 8a)
+Yazılım render ana yol kalır; WebGPU isteğe bağlı ikinci arka uç (`3d.html?gpu`, kurulamazsa yazılım). Boru hattı GPU
+kipinde (`pipe_set_gpu`) elemeden sonra DrawRec yerine `gpu/gcmd` akışına yazar: u32 sözcükler (FRAME, MESH, DRAW,
+END), işaretçiler wasm bellek ofseti, çizim başına 256 baytlık uniform yuvası tek blokta. Mesh kimliği adres, sürümü
+`Mesh.gen` — tüm mesh'ler arası tekil sayaç (`mesh_touch`; `mesh_alloc` / `mesh_compute_bounds` / `_normals` çağırır):
+arena geri sarılıp aynı adrese yeni mesh gelse de GPU eski kopyayı kullanamaz. `web/gpu.mjs` akışı yürütür (mesh ve
+boru hattı önbelleği, 120 kare görülmeyen mesh bırakılır); karar vermez. WGSL motorda gömülü (`assets/gpu_8a.wgsl`):
+köşe dönüşümü `vert_std_c` sırasıyla; `fs_flat` = `shade_flat`'in birebir eşi → iki yol kaplama + derinlikte
+karşılaştırılabilir (`web/gpu_check.html`). 8a sınırları: Material.vert (dalga) ve shader'lar GPU'da yok (8b: Matoki →
+WGSL), panel / editör / gölge yazılım kipinde (8c).
+

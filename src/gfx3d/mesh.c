@@ -16,10 +16,16 @@ Mesh* mesh_alloc(Arena* a, u32 vc, u32 ic) {
     m->indices = ARENA_ARRAY(a, u32, ic);
     m->vertex_count = vc;
     m->index_count = ic;
+    mesh_touch(m);
     return m;
 }
 
+/* tüm mesh'ler arası tekil sürüm: arena geri sarılıp aynı adrese yeni mesh gelse de GPU eski kopyayı kullanamaz */
+static u32 g_mesh_gen;
+void mesh_touch(Mesh* m) { m->gen = __atomic_add_fetch(&g_mesh_gen, 1u, __ATOMIC_RELAXED); }
+
 void mesh_compute_normals(Mesh* m) {
+    mesh_touch(m);
     u32 nv = m->vertex_count;
     for (u32 i = 0; i < nv; i++) m->nx[i] = m->ny[i] = m->nz[i] = 0.0f;
     for (u32 t = 0; t + 2 < m->index_count; t += 3) {
@@ -44,6 +50,7 @@ void mesh_compute_normals(Mesh* m) {
 }
 
 void mesh_compute_bounds(Mesh* m) {
+    mesh_touch(m);
     if (!m->vertex_count) return;
     Vec3 mn = v3(m->px[0], m->py[0], m->pz[0]), mx = mn;
     for (u32 i = 1; i < m->vertex_count; i++) {

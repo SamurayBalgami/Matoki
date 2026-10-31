@@ -17,9 +17,13 @@ typedef struct Mesh {
     Vec3 aabb_min, aabb_max;
     Vec3 sphere_center;
     f32  sphere_radius;
+    u32  gen;    /* içerik sürümü (tüm mesh'ler arası tekil): mesh_touch; GPU arka ucu aynı (adres, gen)'i yeniden yüklemez */
 } Mesh;
 
 Mesh* mesh_alloc(Arena* a, u32 vertex_count, u32 index_count);
+/* yeni sürüm (gen); köşe / indeks değiştiren kod sonunda mesh_compute_bounds ya da bunu çağırır */
+void  mesh_touch(Mesh* m);
+/* sınırlar + mesh_touch */
 void  mesh_compute_bounds(Mesh* m);
 /* alan ağırlıklı köşe normalleri (üçgen kenar çarpımı); aralık dışı indeksli üçgen atlanır,
  * hiçbir üçgene değmeyen köşenin normali 0 kalır (MatokiEngine'den, D37) */

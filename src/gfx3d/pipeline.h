@@ -97,6 +97,7 @@ typedef struct Pipeline {
     PipeStats stats;
     u32       batches;        /* pipe_end'deki parti sayısı (arena bütçesi) */
     f64       vert_ms, setup_ms, raster_ms;   /* pipe_end aşama süreleri (partilerin toplamı) */
+    struct GpuCmd* gpu;       /* != NULL: GPU kipi (faz 8a) — pipe_draw elemeden sonra komut akışına yazar */
 } Pipeline;
 
 /* r üzerinde raster_begin çağrılmış olmalı; frame, raster'ın arenasından AYRI olmalı.
@@ -105,6 +106,9 @@ typedef struct Pipeline {
  * Materyal / mesh / uniform işaretçileri pipe_end'e dek geçerli kalmalı. pipe_end, pipe_begin'den sonra frame\n * arenasından ayrılan her şeyi geri alır. */
 void pipe_begin(Pipeline* p, Raster* r, Arena* frame, Mat4 view, Mat4 proj, Vec3 eye);
 void pipe_set_time(Pipeline* p, f32 t);
+/* pipe_begin'den sonra: çizimler raster yerine GPU komut akışına (gpu/gcmd.h). Akış pipe_begin'den ÖNCE ayrılmış
+ * olmalı (pipe_end kare arenasını pipe_begin noktasına geri sarar). Köşe shader'ı (Material.vert) GPU'da std. */
+void pipe_set_gpu(Pipeline* p, struct GpuCmd* c);
 void pipe_draw(Pipeline* p, const DrawItem* d);
 void pipe_end(Pipeline* p);
 

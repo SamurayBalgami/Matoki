@@ -10,12 +10,15 @@ let scaleIdx = 0;
 let autoScale = true;   // FPS < 25 sürerse ölçek kendiliğinden iner; H'ye basınca kapanır
 let slowWindows = 0;
 const canvas = document.getElementById('screen');
+const gpuCanvas = document.getElementById('screen-gpu');   // ?gpu: WebGPU arka ucu (faz 8a, web/gpu.mjs)
+let view = canvas;   // giriş olaylarını alan, görünen canvas
 const info = document.getElementById('info');
 const errBox = document.getElementById('err');
 const ctx = canvas.getContext('2d');
 
 import { loadEngine, startWorkers } from './mt.mjs';
 import { installAudio } from './audio.js';
+import { createGpu } from './gpu.mjs';
 
 let mem = null;
 let logBuf = '';
@@ -50,7 +53,7 @@ async function main() {
   function targetSize() {
     if (fixed) return fixed;
     const dpr = window.devicePixelRatio || 1;
-    let w = Math.round(canvas.clientWidth * dpr * SCALES[scaleIdx]);
+    let w = Math.round(view.clientWidth * dpr * SCALES[scaleIdx]);
     let h = Math.round(w * 9 / 16);
     const k = Math.sqrt(Math.min(1, MAX_PIXELS / (w * h)));
     w = Math.max(160, Math.floor(w * k / 2) * 2);
@@ -61,8 +64,22 @@ async function main() {
   if (!ex.engine_init(W, H)) throw new Error('engine_init başarısız');
 if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U kapatır; ?nohud ile başlangıçta kapalı)
   if (!PROF && !qs.has('nosound')) installAudio(ex, mem);
-  if (!PROF && !qs.has('noshadow')) ex.engine_set_shadow(1);   // gölge haritası (B kapatır; motor varsayılanı kapalı)   // ilk tuş / tıklamada AudioWorklet (J susturur)
-  canvas.width = W; canvas.height = H;  // kare döngüsü worker'lar hazır olunca başlar (başaramazsa tek thread devam)
+  if (!PROF && !qs.has('noshadow')) ex.engine_set_shadow(1);   // gölge haritası (B kapatır; motor varsayılanı kapalı)
+  // ?gpu: WebGPU arka ucu; kurulamazsa (tarayıcıda yok / hata) yazılım render kalır
+  let gpu = null, gpuCtx = null, gpuFmt = null;
+  if (qs.has('gpu')) {
+    try { gpu = await createGpu(ex, mem); } catch (e) { console.warn('[gpu] kurulamadı, yazılım render', e); }
+    if (gpu) {
+      gpuFmt = navigator.gpu.getPreferredCanvasFormat();
+      gpuCtx = gpuCanvas.getContext('webgpu');
+      gpuCtx.configure({ device: gpu.device, format: gpuFmt, alphaMode: 'opaque' });
+      canvas.style.display = 'none';
+      gpuCanvas.style.display = 'block';
+      view = gpuCanvas;
+      ex.engine_gpu_set(1);
+    }
+  }
+  canvas.width = gpuCanvas.width = W; canvas.height = gpuCanvas.height = H;  // kare döngüsü worker'lar hazır olunca başlar (başaramazsa tek thread devam)
   try {
     threads = 1 + (await startWorkers(state, ex, module, WANT_WORKERS)).length;
   } catch (e) {
@@ -74,7 +91,7 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
     if (w === W && h === H) return;
     if (!ex.engine_resize(w, h)) return;
     W = w; H = h;
-    canvas.width = W; canvas.height = H;
+    canvas.width = gpuCanvas.width = W; canvas.height = gpuCanvas.height = H;
     img = ctx.createImageData(W, H);
   }
   addEventListener('resize', applySize);
@@ -91,24 +108,26 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
     // tek karakter (AltGr ile gelenler dahil: Windows'ta AltGr = Ctrl + Alt, '{' '@' Türkçe klavyede böyle)
     const altgr = e.getModifierState && e.getModifierState('AltGraph');
     if (ui && [...e.key].length === 1 && (altgr || (!e.ctrlKey && !e.metaKey && !e.altKey))) ex.engine_char(e.key.codePointAt(0));
-    if (e.code === 'F2' && document.pointerLockElement === canvas) document.exitPointerLock();
+    if (e.code === 'F2' && document.pointerLockElement === view) document.exitPointerLock();
     if (!ui && e.code === 'KeyH' && !e.repeat) { autoScale = false; scaleIdx = (scaleIdx + 1) % SCALES.length; applySize(); }
   });
   addEventListener('keyup', (e) => { ex.engine_key(e.keyCode, 0); if (uiOn()) syncMods(e); });
   addEventListener('blur', () => ex.engine_release_keys());
   function sendPointer(e) {
     if (!uiOn()) return;
-    const r = canvas.getBoundingClientRect();
+    const r = view.getBoundingClientRect();
     ex.engine_pointer(Math.floor((e.clientX - r.left) * W / r.width), Math.floor((e.clientY - r.top) * H / r.height), e.buttons & 7);
   }
-  canvas.addEventListener('click', () => { if (!uiOn()) canvas.requestPointerLock(); });
-  canvas.addEventListener('mousedown', sendPointer);
+  for (const c of [canvas, gpuCanvas]) {
+    c.addEventListener('click', () => { if (!uiOn()) c.requestPointerLock(); });
+    c.addEventListener('mousedown', sendPointer);
+    c.addEventListener('wheel', (e) => { e.preventDefault(); ex.engine_wheel(Math.sign(e.deltaY)); }, { passive: false });
+  }
   addEventListener('mouseup', sendPointer);
   addEventListener('mousemove', (e) => {
-    if (document.pointerLockElement === canvas) ex.engine_mouse(e.movementX, e.movementY);
+    if (document.pointerLockElement === view) ex.engine_mouse(e.movementX, e.movementY);
     else sendPointer(e);
   });
-  canvas.addEventListener('wheel', (e) => { e.preventDefault(); ex.engine_wheel(Math.sign(e.deltaY)); }, { passive: false });
 
   let last = performance.now();
   let acc = 0, frames = 0, fps = 0, lastInfo = 0;
@@ -135,8 +154,12 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
     const w0 = performance.now();
     ex.engine_frame(dt);
     const c0 = performance.now();
-    img.data.set(new Uint8Array(mem.buffer, ex.engine_framebuffer(), W * H * 4));
-    ctx.putImageData(img, 0, 0);
+    if (gpu) {
+      gpu.render(gpuCtx.getCurrentTexture().createView(), gpuFmt);
+    } else {
+      img.data.set(new Uint8Array(mem.buffer, ex.engine_framebuffer(), W * H * 4));
+      ctx.putImageData(img, 0, 0);
+    }
     const copyMs = performance.now() - c0;
     const wallMs = performance.now() - w0;
 
@@ -179,7 +202,7 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
       info.textContent =
         (PROF ? (prof.i < PROF_SCENES.length ? `PROFİL: sahne ${PROF_SCENES[prof.i]} ölçülüyor…\n` : 'PROFİL bitti (konsol / window.__prof)\n') : '') +
         `sahne ${st.scene}   mipmap ${st.mip ? 'AÇIK' : 'kapalı'}   kamera ${['uçuş', 'orbit', 'oyun'][st.cam] || '?'}\n` +
-        `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H} (%${Math.round(SCALES[scaleIdx] * 100)})   ${threads} thread\n` +
+        `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H} (%${Math.round(SCALES[scaleIdx] * 100)})   ${threads} thread   ${gpu ? 'WebGPU' : 'yazılım'}\n` +
         `  temizle ${f('clear')}  geometri ${f('geo')}  boyama ${f('flush')}  fizik ${f('phys')}  yumuşak ${f('soft')}  kopya ${f('copy')}\n` +
         `raster ${st.rasterMode ? 'SIMD' : 'skaler'}   shader ${SHADER_NAMES[st.shaderMode]}   MSAA ${st.msaa}x (çözümleme ${f('resolve')} ms)\n` +
         `köşe aşaması ${st.vertMode ? 'Matoki' : 'C'} ${f('vert')} ms   üçgen kurulumu ${f('setup')} ms   ${st.verts} köşe, ${st.batches} parti\n` +
