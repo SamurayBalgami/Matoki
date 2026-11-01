@@ -19,6 +19,8 @@ b32  hud_init(Hud* h, Arena* perm, Arena* scratch);
 const FontAtlas* hud_atlas(const Hud* h, const Framebuffer* fb);
 /* [x, x+w) × [y, y+h) dikdörtgenini düz alfa ile karıştırır (raster BLEND_ALPHA ile aynı tamsayı formülü) */
 void hud_panel(Framebuffer* fb, i32 x, i32 y, i32 w, i32 h, u32 rgba);
+/* hud_draw_lines panelinin boyutu (yazmaz) */
+void hud_lines_size(const Hud* h, const Framebuffer* fb, const char* const* lines, u32 n, i32* w, i32* ht);
 /* lines[n] satırları, sol üstten (x, y); panel otomatik boyutlanır. Dönüş: panelin yüksekliği */
 i32  hud_draw_lines(const Hud* h, Framebuffer* fb, i32 x, i32 y, const char* const* lines, u32 n);
 

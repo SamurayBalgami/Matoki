@@ -211,7 +211,8 @@ void pipe_draw(Pipeline* p, const DrawItem* d) {
         VertUniforms gu;
         vert_uniforms_fill(&gu, p, d);
         u32 before = p->gpu->draws;
-        gcmd_draw(p->gpu, m, &gu, mat->gpu_vert, mat->gpu_frag, mat->uniforms, mat->cull, p->r->depth_test, p->r->depth_write);
+        gcmd_draw(p->gpu, m, &gu, mat->gpu_vert, mat->gpu_frag, mat->uniforms, mat->cull, p->r->depth_test, p->r->depth_write,
+                  mat->shade == NULL);
         if (p->gpu->draws == before) p->stats.draws_dropped++;
         else p->stats.tris_in += m->index_count / 3;
         return;

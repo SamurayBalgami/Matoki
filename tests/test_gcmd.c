@@ -1,7 +1,8 @@
-/* tests/test_gcmd.c — M13 faz 8a-8b: GPU komut akışı (gpu/gcmd). Başlık + kayıt düzeni (web/gpu.mjs bunu okur), mesh ve
+/* tests/test_gcmd.c — M13 faz 8a-8c: GPU komut akışı (gpu/gcmd). Başlık + kayıt düzeni (web/gpu.mjs bunu okur), mesh ve
  * doku kaydı karede bir kez, köşe uniform'u yuvada C yapısının ham baytları, parça uniform'u programın boyu kadar ve
  * ardışık aynı materyalde paylaşılır, doku kimliği uniform'daki işaretçiden; taşmada akış kapanır ve sayar; mesh sürümü
- * tüm mesh'ler arası tekil (aynı adrese yeni mesh gelse de farklı gen). */
+ * tüm mesh'ler arası tekil (aynı adrese yeni mesh gelse de farklı gen). Gölge geçişi: dokunun GC_TEX'i yazılmaz, yalnız derinlik
+ * çizimi parça programsız. Bindirme: siyah + beyaz zeminden çıkarılan önceden çarpılmış renk, yazılım karışımıyla aynı sonucu verir. */
 #include "test.h"
 #include "core/mem.h"
 #include "gpu/gcmd.h"
@@ -43,20 +44,21 @@ TEST(gcmd_stream_layout_and_dedup) {
     frag.wgsl.tex_count = 1;
     frag.wgsl.tex_ofs[0] = (u32)__builtin_offsetof(LitUniforms, tex);
     GpuCmd c;
-    CHECK(gcmd_begin(&c, a, 8, 320, 200, 0xFF112233u, 1.0f, &vert));
+    CHECK(gcmd_begin(&c, a, 8, &vert));
+    gcmd_frame(&c, 320, 200, 0xFF112233u, 1.0f, 4);
     VertUniforms v1 = vu_make(v3(1, 2, 3), 1.5f), v2 = vu_make(v3(-1, 0, 0), 2.5f);
-    gcmd_draw(&c, cube, &v1, NULL, &frag, &lit, CULL_BACK, TRUE, TRUE);
-    gcmd_draw(&c, cube, &v2, &vert, &frag, &lit, CULL_NONE, TRUE, FALSE);   /* aynı mesh, doku, materyal */
-    gcmd_draw(&c, plane, &v1, NULL, NULL, NULL, CULL_FRONT, FALSE, FALSE);  /* düz shader: doku yok */
+    gcmd_draw(&c, cube, &v1, NULL, &frag, &lit, CULL_BACK, TRUE, TRUE, FALSE);
+    gcmd_draw(&c, cube, &v2, &vert, &frag, &lit, CULL_NONE, TRUE, FALSE, FALSE);   /* aynı mesh, doku, materyal */
+    gcmd_draw(&c, plane, &v1, NULL, NULL, NULL, CULL_FRONT, FALSE, FALSE, FALSE);  /* düz shader: doku yok */
     gcmd_end(&c);
     const u32* w = c.words;
     /* yuvalar: v0, f0, v1 (f0 paylaşılır), v2, f(düz) */
     CHECK(w[0] == GCMD_MAGIC && w[1] == GCMD_VERSION && w[2] == c.count && w[3] == 3u);
     CHECK(w[4] == (u32)(uptr)c.uniforms && w[5] == 5u * GCMD_SLOT && (w[4] % GCMD_SLOT) == 0u);
     /* FRAME */
-    CHECK(w[6] == GC_FRAME && w[7] == 320u && w[8] == 200u && w[9] == 0xFF112233u && bits_f32(w[10]) == 1.0f);
+    CHECK(w[6] == GC_FRAME && w[7] == 320u && w[8] == 200u && w[9] == 0xFF112233u && bits_f32(w[10]) == 1.0f && w[11] == 4u);
     /* kayıtları yürü: MESH, TEX, DRAW, DRAW, MESH, DRAW, END */
-    u32 i = 11, ops[8], n = 0;
+    u32 i = 12, ops[8], n = 0;
     const u32* draws[3];
     u32 nd = 0;
     while (i < c.count && n < 8) {
@@ -111,14 +113,15 @@ TEST(gcmd_texture_words_cover_mips) {
     frag.wgsl.tex_count = 1;
     const Texture* ptr = t;
     GpuCmd c;
-    CHECK(gcmd_begin(&c, a, 2, 64, 64, 0, 1.0f, &vert));
+    CHECK(gcmd_begin(&c, a, 2, &vert));
+    gcmd_frame(&c, 64, 64, 0, 1.0f, 1);
     VertUniforms v = vu_make(v3(0, 0, 0), 0.0f);
-    gcmd_draw(&c, cube, &v, NULL, &frag, &ptr, CULL_BACK, TRUE, TRUE);
+    gcmd_draw(&c, cube, &v, NULL, &frag, &ptr, CULL_BACK, TRUE, TRUE, FALSE);
     gcmd_end(&c);
-    /* FRAME 5 + MESH 14 → TEX; 8×4 + 4×2 + 2×1 + 1×1 = 43 */
-    const u32* r = c.words + 6 + 5 + 14;
+    /* FRAME 6 + MESH 14 → TEX; 8×4 + 4×2 + 2×1 + 1×1 = 43 */
+    const u32* r = c.words + 6 + 6 + 14;
     CHECK(r[0] == GC_TEX && r[3] == 43u);
-    CHECK(c.words[6 + 5] == GC_MESH);
+    CHECK(c.words[6 + 6] == GC_MESH);
 }
 
 TEST(gcmd_overflow_and_unique_gen) {
@@ -127,15 +130,16 @@ TEST(gcmd_overflow_and_unique_gen) {
     GpuProgram vert;
     mem_zero(&vert, sizeof(vert));
     GpuCmd c;
-    CHECK(gcmd_begin(&c, a, 2, 64, 64, 0, 1.0f, &vert));
+    CHECK(gcmd_begin(&c, a, 2, &vert));
+    gcmd_frame(&c, 64, 64, 0, 1.0f, 1);
     VertUniforms v = vu_make(v3(0, 0, 0), 0.0f);
-    for (u32 k = 0; k < 5; k++) gcmd_draw(&c, cube, &v, NULL, NULL, NULL, CULL_BACK, TRUE, TRUE);
+    for (u32 k = 0; k < 5; k++) gcmd_draw(&c, cube, &v, NULL, NULL, NULL, CULL_BACK, TRUE, TRUE, FALSE);
     gcmd_end(&c);
     CHECK(c.draws == 2u && c.overflow == 3u && c.words[c.count - 1] == GC_END && c.words[3] == 2u);
     /* köşe programı yoksa (derlenemedi) çizim atlanır */
     GpuCmd c0;
-    CHECK(gcmd_begin(&c0, a, 2, 64, 64, 0, 1.0f, NULL));
-    gcmd_draw(&c0, cube, &v, NULL, NULL, NULL, CULL_BACK, TRUE, TRUE);
+    CHECK(gcmd_begin(&c0, a, 2, NULL));
+    gcmd_draw(&c0, cube, &v, NULL, NULL, NULL, CULL_BACK, TRUE, TRUE, FALSE);
     gcmd_end(&c0);
     CHECK(c0.draws == 0u && c0.overflow == 1u);
     /* gen tekil: değişiklik sürüm verir; aynı adrese yeniden ayrılan mesh öncekinden farklı gen alır */
@@ -149,4 +153,81 @@ TEST(gcmd_overflow_and_unique_gen) {
     arena_reset(&sub, mark);
     Mesh* m2 = mesh_alloc(&sub, 4, 6);
     CHECK(m1 == m2 && m2->gen != g1);
+}
+
+/* gölge + ana geçiş + bindirme sırası: gölge dokusu bir kez GC_SHADOW ile bildirilir, malzemede geçse de GC_TEX yazılmaz */
+TEST(gcmd_shadow_and_overlay_stream) {
+    Arena* a = test_arena();
+    Mesh* cube = mesh_cube(a);
+    Texture* shadow = tex_create(a, 4, 4, TEX_FLAG_CLAMP);
+    Texture* tex = tex_create(a, 2, 2, 0);
+    LitUniforms lit;
+    mem_zero(&lit, sizeof(lit));
+    lit.tex = tex;
+    lit.shadow = shadow;
+    GpuProgram vert, frag;
+    mem_zero(&vert, sizeof(vert));
+    mem_zero(&frag, sizeof(frag));
+    vert.id = 2;
+    frag.id = 5;
+    frag.wgsl.uniform_size = 160;
+    frag.wgsl.tex_count = 2;
+    frag.wgsl.tex_ofs[0] = (u32)__builtin_offsetof(LitUniforms, tex);
+    frag.wgsl.tex_ofs[1] = (u32)__builtin_offsetof(LitUniforms, shadow);
+    GpuCmd c;
+    CHECK(gcmd_begin(&c, a, 4, &vert));
+    VertUniforms v = vu_make(v3(0, 0, 0), 0.0f);
+    gcmd_shadow_begin(&c, shadow, 1024);
+    gcmd_draw(&c, cube, &v, NULL, NULL, NULL, CULL_FRONT, TRUE, TRUE, TRUE);
+    gcmd_shadow_end(&c);
+    gcmd_frame(&c, 64, 64, 0, 1.0f, 1);
+    gcmd_draw(&c, cube, &v, NULL, &frag, &lit, CULL_BACK, TRUE, TRUE, FALSE);
+    u32 ovpx[6] = { 0 };
+    gcmd_overlay(&c, 8, 9, 3, 2, ovpx);
+    gcmd_end(&c);
+    const u32* w = c.words;
+    u32 i = 6;
+    CHECK(w[i] == GC_SHADOW && w[i + 1] == (u32)(uptr)shadow && w[i + 2] == 1024u);
+    i += 3;
+    CHECK(w[i] == GC_MESH);
+    i += 14;
+    CHECK(w[i] == GC_DRAW && w[i + 5] == GPROG_NONE && w[i + 6] == 0u && w[i + 8] == CULL_FRONT);
+    i += 11;
+    CHECK(w[i] == GC_SHADOW_END);
+    i += 1;
+    CHECK(w[i] == GC_FRAME);
+    i += 6;
+    CHECK(w[i] == GC_TEX && w[i + 1] == (u32)(uptr)tex);   /* yalnız renk dokusu */
+    i += 4;
+    CHECK(w[i] == GC_DRAW && w[i + 5] == 5u && w[i + 6] == (u32)(uptr)tex && w[i + 7] == (u32)(uptr)shadow);
+    i += 11;
+    CHECK(w[i] == GC_OVERLAY && w[i + 1] == 8u && w[i + 2] == 9u && w[i + 3] == 3u && w[i + 4] == 2u && w[i + 5] == (u32)(uptr)ovpx);
+    i += 6;
+    CHECK(w[i] == GC_END && i + 1 == c.count);
+}
+
+/* raster / hud karışımı (a·s + (255 − a)·d) / 255 ile bindirme: panel + metnin önceden çarpılmış sonucu her zeminde ±2 içinde */
+TEST(gcmd_overlay_extract_matches_blend) {
+    static const u32 ALPHA[] = { 0, 1, 64, 128, 170, 220, 254, 255 };
+    u32 worst = 0, bad_a = 0;
+    for (u32 k = 0; k < ARRAY_COUNT(ALPHA); k++) {
+        u32 al = ALPHA[k];
+        for (u32 s0 = 0; s0 <= 255; s0 += 51) {
+            u32 src = s0 * 257u & 0xFF;
+            u32 b = (al * src + (255u - al) * 0u + 127u) / 255u, w = (al * src + (255u - al) * 255u + 127u) / 255u;
+            u32 on_b = b | (b << 8) | (b << 16) | 0xFF000000u, on_w = w | (w << 8) | (w << 16) | 0xFF000000u, out;
+            gcmd_overlay_extract(&on_b, &on_w, &out, 1);
+            u32 a2 = out >> 24, c2 = out & 0xFFu;
+            if (a2 != al) bad_a++;
+            for (u32 d = 0; d <= 255; d += 17) {
+                u32 want = (al * src + (255u - al) * d + 127u) / 255u;
+                u32 got = c2 + ((255u - a2) * d + 127u) / 255u;
+                u32 e = want > got ? want - got : got - want;
+                if (e > worst) worst = e;
+            }
+        }
+    }
+    test_note("bindirme: en büyük kanal hatası", (f64)worst, 0);
+    CHECK(bad_a == 0u);
+    CHECK(worst <= 2u);
 }

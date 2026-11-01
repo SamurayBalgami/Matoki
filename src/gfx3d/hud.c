@@ -34,14 +34,25 @@ void hud_panel(Framebuffer* fb, i32 x, i32 y, i32 w, i32 h, u32 rgba) {
     }
 }
 
-i32 hud_draw_lines(const Hud* h, Framebuffer* fb, i32 x, i32 y, const char* const* lines, u32 n) {
-    if (!h->ready || !fb->color || n == 0) return 0;
+void hud_lines_size(const Hud* h, const Framebuffer* fb, const char* const* lines, u32 n, i32* w, i32* ht) {
+    *w = *ht = 0;
+    if (!h->ready || n == 0) return;
     const FontAtlas* at = hud_atlas(h, fb);
     f32 wmax = 0.0f;
     for (u32 i = 0; i < n; i++) wmax = m_maxf(wmax, font_measure(at, lines[i], NULL, NULL));
     i32 pad = (i32)(at->line_height * 0.45f);
     i32 lh = (i32)m_ceilf(at->line_height);
-    i32 pw = (i32)m_ceilf(wmax) + 2 * pad, ph = lh * (i32)n + 2 * pad;
+    *w = (i32)m_ceilf(wmax) + 2 * pad;
+    *ht = lh * (i32)n + 2 * pad;
+}
+
+i32 hud_draw_lines(const Hud* h, Framebuffer* fb, i32 x, i32 y, const char* const* lines, u32 n) {
+    if (!h->ready || !fb->color || n == 0) return 0;
+    const FontAtlas* at = hud_atlas(h, fb);
+    i32 pad = (i32)(at->line_height * 0.45f);
+    i32 lh = (i32)m_ceilf(at->line_height);
+    i32 pw, ph;
+    hud_lines_size(h, fb, lines, n, &pw, &ph);
     hud_panel(fb, x, y, pw, ph, color_pack(8, 10, 16, 170));
     TextStyle st = text_style_default(color_pack(236, 240, 246, 255));
     st.shadow_color = color_pack(0, 0, 0, 220);

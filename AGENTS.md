@@ -35,5 +35,5 @@ GPU kullanmadan tarayıcıda çalışan yazılım render motoru. C11, freestandi
   (bunlar MatokiEngine'den, `tools/port_names.py` ile; plan `tasks/M13_birlesme_plani.md`, karar D37)
 - `assets/` motora gömülen varlıklar (`build.py`; ör. sahne 9'un `arm_skin.glb`'si)
 - `src/matoki` shader dili derleyicisi (quad-sabit dallanma `ir_guard`, D43) · `src/jit` JIT yükleme · `src/phys` fizik motoru · `shaders/` .mtk dosyaları
-- `src/gpu` GPU arka ucu komut akışı (D38; JS: `web/gpu.mjs`, Matoki → WGSL `src/matoki/wgsl.c`, D42; `3d.html?gpu`, `gpu_check.html`)
+- `src/gpu` GPU arka ucu komut akışı (D38; JS: `web/gpu.mjs`, Matoki → WGSL `src/matoki/wgsl.c`, D42, gölge / MSAA / panel D44; `3d.html?gpu`, `gpu_check.html`)
 - `web/` tarayıcı sayfaları · `tests/` testler · `tasks/` görev dosyaları ve notları · `docs/` belgeler

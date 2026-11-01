@@ -235,12 +235,14 @@ typedef struct Demo {
     /* GPU arka ucu (M13 faz 8a): JS WebGPU'yu kurunca engine_gpu_set(1); kare komut akışı g.gcmd'de */
     b32 gpu_on;
     GpuCmd gcmd;
+    f64 gpu_ms;     /* sayfanın ölçtüğü GPU süresi (engine_gpu_report); < 0: ölçülemiyor */
 } Demo;
 
 static Demo g;
 
 static b32 editor_setup(void);
 static void editor_draw(void);
+static void editor_draw_gpu(void);
 
 static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->tex = tex;
@@ -281,7 +283,7 @@ static PreludeFn g_sky_pre;
 static PreludeFn g_water_pre;
 static PreludeFn g_std_vert_pre, g_wave_vert_pre;
 /* GPU programları (D42): aynı IR'dan WGSL; canlı derleme GPROG_LIT'i yeniler */
-enum { GPROG_STD_VERT = 1, GPROG_WAVE_VERT, GPROG_LIT, GPROG_HQ, GPROG_WATER, GPROG_SKY, GPROG_COUNT };
+enum { GPROG_STD_VERT = GPROG_OVERLAY + 1, GPROG_WAVE_VERT, GPROG_LIT, GPROG_HQ, GPROG_HQ_SHADOW, GPROG_WATER, GPROG_SKY, GPROG_COUNT };
 static GpuProgram g_gpu[GPROG_COUNT];
 
 /* Matoki'de shader önsözle birlikte gelir; diğerlerinde önsöz yok */
@@ -461,7 +463,8 @@ static void matoki_lit_init(Arena* a) {
     }
     MatokiProgram* hq = matoki_load(a, "lit_hq.mtk", MATOKI_STAGE_FRAG);
     MatokiProgram* hq0 = hq ? matoki_load_hq_noshadow(a) : NULL;
-    gpu_prog_set(a, GPROG_HQ, hq0 ? hq0 : hq);   /* GPU gölgesi faz 8c: şimdilik gölgesiz türev */
+    gpu_prog_set(a, GPROG_HQ, hq0 ? hq0 : hq);
+    gpu_prog_set(a, GPROG_HQ_SHADOW, hq);
     if (hq) {
         g_hq_sh_lit = hq->fn_fast;
         g_hq_sh_pre = hq->prelude;
@@ -1419,7 +1422,18 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
 static const char* const SHADER_LABEL[SHADER_MODE_COUNT] = { "ref (skaler)", "tablo", "SIMD", "Matoki JIT", "Matoki HQ" };
 
 /* g.stats dolduktan sonra; çözümlenmiş renge yazar */
-static void draw_hud(void) {
+static void fb_rect_fill(Framebuffer* fb, i32 x, i32 y, i32 w, i32 h, u32 c) {
+    for (i32 j = 0; j < h; j++) {
+        u32* row = fb->color + (usize)(y + j) * (usize)fb->w + x;
+        for (i32 i = 0; i < w; i++) row[i] = c;
+    }
+}
+
+static void fb_rect_copy(const Framebuffer* fb, i32 x, i32 y, i32 w, i32 h, u32* out) {
+    for (i32 j = 0; j < h; j++) mem_copy(out + (usize)j * (usize)w, fb->color + (usize)(y + j) * (usize)fb->w + x, (usize)w * 4u);
+}
+
+static void draw_hud(b32 gpu) {
     static char buf[7][128];
     const u32* s = g.stats;
     f32 fps = g.fps_ms > 0.0f ? 1000.0f / g.fps_ms : 0.0f;
@@ -1447,8 +1461,36 @@ static void draw_hud(void) {
         fmt_format(buf[6], 128, "U: paneli kapat   J: ses %s   çalan %u   vuruş %u   sentez %.2f ms   kesinti %u", g.mute ? "KAPALI" : "açık",
                    s[ST_AUDIO_VOICES], s[ST_IMPACTS], (f64)s[ST_AUDIO_US] * 0.001, s[ST_AUDIO_UNDERRUNS]);
     }
+    if (gpu) {
+        fmt_format(buf[0], 128, g.gpu_ms >= 0.0 ? "MATOKI   %.0f fps   motor %.2f ms   GPU %.2f ms   %dx%d   WebGPU" : "MATOKI   %.0f fps   motor %.2f ms   GPU ölçülemiyor (%.0f)   %dx%d   WebGPU",
+                   (f64)fps, (f64)s[ST_TOTAL_US] * 0.001, g.gpu_ms >= 0.0 ? g.gpu_ms : 0.0, g.fb.w, g.fb.h);
+        fmt_format(buf[2], 128, "üçgen %u   nesne %u (elenen %u)", s[ST_TRI_IN], s[ST_OBJ_IN], s[ST_OBJ_CULLED]);
+        fmt_format(buf[3], 128, "geometri %.2f ms   gölge %s %.2f ms (B)", (f64)s[ST_GEO_US] * 0.001, g.shadow_active ? "açık" : "kapalı",
+                   (f64)s[ST_SHADOW_US] * 0.001);
+    }
     const char* lines[7] = { buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6] };
+    if (!gpu) {
+        hud_draw_lines(&g.hud, &g.fb, 8, 8, lines, 7);
+        return;
+    }
+    /* GPU: panel kodu değişmez; siyah ve beyaz zeminde iki kez çizilir, alfa aradaki farktan (D44). Metin gölgesi +1 piksel */
+    i32 w, h;
+    hud_lines_size(&g.hud, &g.fb, lines, 7, &w, &h);
+    w = MIN(w + 1, g.fb.w - 8);
+    h = MIN(h + 1, g.fb.h - 8);
+    if (w <= 0 || h <= 0) return;
+    usize n = (usize)w * (usize)h;
+    u32* black = ARENA_TRY_ARRAY(&g.frame, u32, n);
+    u32* out = ARENA_TRY_ARRAY(&g.frame, u32, n);
+    if (!black || !out) return;
+    fb_rect_fill(&g.fb, 8, 8, w, h, 0xFF000000u);
     hud_draw_lines(&g.hud, &g.fb, 8, 8, lines, 7);
+    fb_rect_copy(&g.fb, 8, 8, w, h, black);
+    fb_rect_fill(&g.fb, 8, 8, w, h, 0xFFFFFFFFu);
+    hud_draw_lines(&g.hud, &g.fb, 8, 8, lines, 7);
+    fb_rect_copy(&g.fb, 8, 8, w, h, out);
+    gcmd_overlay_extract(black, out, out, (u32)n);
+    gcmd_overlay(&g.gcmd, 8, 8, (u32)w, (u32)h, out);
 }
 
 EXPORT(engine_set_hud) void engine_set_hud(i32 on) { g.hud_on = on != 0; }
@@ -1492,7 +1534,7 @@ static void set_frame_uniforms(void) {
         mats[i]->vert = vf;
         mats[i]->vert_prelude = vpre;
         /* GPU: C / SIMD / Matoki lit bit-bit aynı shader → tek program */
-        mats[i]->gpu_frag = gpu_prog(g.shader_mode == SHADER_HQ ? GPROG_HQ : GPROG_LIT);
+        mats[i]->gpu_frag = gpu_prog(g.shader_mode != SHADER_HQ ? GPROG_LIT : g.shadow_active ? GPROG_HQ_SHADOW : GPROG_HQ);
     }
     if (g_wave_vert) {
         g.m_water.vert = g_wave_vert;
@@ -1701,25 +1743,31 @@ static void render_scene(void) {
     else render_scene5();
 }
 
+/* harita (ilk kullanımda) + ışık izdüşümü; FALSE: bu karede gölge yok */
+static b32 shadow_prepare(void) {
+    if (!g.shadow_on || g.scene == 7 || g.flat || g.capture) return FALSE;
+    if (!g.shadow) {
+        if (!arena_init_sys(&g.shadow_mem, (usize)SHADOW_SIZE * SHADOW_SIZE * 4u + (64u << 10))) {
+            g.shadow_on = FALSE;
+            return FALSE;
+        }
+        g.shadow = ARENA_NEW(&g.shadow_mem, ShadowMap);
+        shadow_init(g.shadow, &g.shadow_mem, SHADOW_SIZE);
+    }
+    Mat4 view = camera_view(&g.cam);
+    Vec3 fwd = v3(-view.m[2], -view.m[6], -view.m[10]);
+    Vec3 center = v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS * 0.6f));
+    shadow_fit(g.shadow, g.u_ground.to_light, center, SHADOW_RADIUS, 40.0f);
+    return TRUE;
+}
+
 /* Gölge geçişi (M13 faz 7): kameranın önündeki küreye oturan ışık izdüşümünde sahneyi yalnız derinlik çizer
  * (draw → shadow_caster). Okyanus (sahne 7: köşeleri dalga shader'ı oynatır) ve ölçüm kipleri gölgesiz. */
 static void shadow_pass(void) {
     g.shadow_active = FALSE;
     g.stats[ST_SHADOW_US] = 0;
-    if (!g.shadow_on || g.scene == 7 || g.flat || g.capture) return;
-    if (!g.shadow) {
-        if (!arena_init_sys(&g.shadow_mem, (usize)SHADOW_SIZE * SHADOW_SIZE * 4u + (64u << 10))) {
-            g.shadow_on = FALSE;
-            return;
-        }
-        g.shadow = ARENA_NEW(&g.shadow_mem, ShadowMap);
-        shadow_init(g.shadow, &g.shadow_mem, SHADOW_SIZE);
-    }
+    if (!shadow_prepare()) return;
     f64 t0 = sys_now_ms();
-    Mat4 view = camera_view(&g.cam);
-    Vec3 fwd = v3(-view.m[2], -view.m[6], -view.m[10]);
-    Vec3 center = v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS * 0.6f));
-    shadow_fit(g.shadow, g.u_ground.to_light, center, SHADOW_RADIUS, 40.0f);
     arena_reset(&g.frame, 0);
     arena_reset(&g.bins, 0);
     shadow_begin(g.shadow, &g.pipe, &g.frame, &g.bins);
@@ -1731,28 +1779,47 @@ static void shadow_pass(void) {
     g.stats[ST_SHADOW_US] = (u32)((sys_now_ms() - t0) * 1000.0);
 }
 
+/* GPU kipi (D44): aynı çizimler akışa yalnız derinlik olarak; harita GPU'da dolar, aynı lit_hq okur */
+static void shadow_pass_gpu(void) {
+    g.shadow_active = FALSE;
+    g.stats[ST_SHADOW_US] = 0;
+    if (!shadow_prepare()) return;
+    f64 t0 = sys_now_ms();
+    gcmd_shadow_begin(&g.gcmd, &g.shadow->tex, SHADOW_SIZE);
+    pipe_begin(&g.pipe, &g.raster, &g.frame, g.shadow->view, g.shadow->proj, v3(0.0f, 0.0f, 0.0f));
+    pipe_set_gpu(&g.pipe, &g.gcmd);
+    g.shadow_pass = TRUE;
+    render_scene();
+    g.shadow_pass = FALSE;
+    pipe_end(&g.pipe);
+    gcmd_shadow_end(&g.gcmd);
+    g.shadow_active = TRUE;
+    g.stats[ST_SHADOW_US] = (u32)((sys_now_ms() - t0) * 1000.0);
+}
+
 EXPORT(engine_set_shadow) void engine_set_shadow(i32 on) { g.shadow_on = on != 0; }
 
 /* ---- GPU arka ucu (M13 faz 8a, D38): JS (web/gpu.mjs) WebGPU kurulursa açar; yoksa yazılım render kalır ---- */
 EXPORT(engine_gpu_set) void engine_gpu_set(i32 on) { g.gpu_on = on != 0; }
 /* son karenin komut akışı (gpu/gcmd.h başlığıyla); GPU kipi kapalıysa ya da akış kurulamadıysa 0 */
 EXPORT(engine_gpu_cmds) u32* engine_gpu_cmds(void) { return g.gpu_on && g.gcmd.cap ? g.gcmd.words : NULL; }
-/* WGSL programları: id 0 gömülü düz shader, diğerleri Matoki'den (D42); len 0 = program yok */
+/* WGSL programları: 0 ve 1 gömülü (düz, bindirme), diğerleri Matoki'den (D42); len 0 = program yok */
+static const EmbedFile* gpu_prog_embed(u32 id) {
+    return id == GPROG_FLAT ? embed_find("gpu_flat.wgsl") : id == GPROG_OVERLAY ? embed_find("gpu_overlay.wgsl") : NULL;
+}
 EXPORT(engine_gpu_prog_count) u32 engine_gpu_prog_count(void) { return GPROG_COUNT; }
 EXPORT(engine_gpu_prog_text) const char* engine_gpu_prog_text(u32 id) {
-    if (id == GPROG_FLAT) {
-        const EmbedFile* f = embed_find("gpu_flat.wgsl");
-        return f ? (const char*)f->data : NULL;
-    }
+    const EmbedFile* f = gpu_prog_embed(id);
+    if (f) return (const char*)f->data;
     return id < GPROG_COUNT ? g_gpu[id].wgsl.text : NULL;
 }
 EXPORT(engine_gpu_prog_len) u32 engine_gpu_prog_len(u32 id) {
-    if (id == GPROG_FLAT) {
-        const EmbedFile* f = embed_find("gpu_flat.wgsl");
-        return f ? f->len : 0;
-    }
+    const EmbedFile* f = gpu_prog_embed(id);
+    if (f) return f->len;
     return id < GPROG_COUNT ? g_gpu[id].wgsl.len : 0;
 }
+/* sayfa ölçtüğü GPU süresini bildirir (panel gösterir; ölçüm yoksa negatif) */
+EXPORT(engine_gpu_report) void engine_gpu_report(f64 ms) { g.gpu_ms = ms; }
 EXPORT(engine_gpu_prog_gen) u32 engine_gpu_prog_gen(u32 id) { return id < GPROG_COUNT ? g_gpu[id].gen : 0; }
 
 EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
@@ -1934,7 +2001,6 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (g.scene == 9) anim_scene_update();
     if (g.scene == 6) soft_meshes_update();
     if (!g.gpu_on) shadow_pass();
-    else g.shadow_active = FALSE;   /* GPU gölgesi faz 8c */
     f64 t0 = sys_now_ms();
     if (!g.gpu_on) fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);
     f64 t_clear = sys_now_ms();
@@ -1943,10 +2009,15 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     raster_reset_stats(&g.raster);
     raster_set_depth(&g.raster, TRUE, TRUE, DEPTH_LESS);
     raster_begin(&g.raster, &g.bins);
-    set_frame_uniforms();
     /* GPU kipi: komut akışı pipe_begin'den önce (pipe_end kare arenasını pipe_begin noktasına geri sarar) */
-    b32 gpu = g.gpu_on && gcmd_begin(&g.gcmd, &g.frame, PIPE_MAX_DRAWS, (u32)g.fb.w, (u32)g.fb.h,
-                                      color_pack(158, 184, 217, 255), 1.0f, gpu_prog(GPROG_STD_VERT));
+    b32 gpu = g.gpu_on && gcmd_begin(&g.gcmd, &g.frame, PIPE_MAX_DRAWS, gpu_prog(GPROG_STD_VERT));
+    if (gpu) {
+        shadow_pass_gpu();
+        gcmd_frame(&g.gcmd, (u32)g.fb.w, (u32)g.fb.h, color_pack(158, 184, 217, 255), 1.0f, g.fb.samples == RASTER_MSAA ? 4u : 1u);
+    } else if (g.gpu_on) {
+        g.shadow_active = FALSE;
+    }
+    set_frame_uniforms();
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     if (gpu) pipe_set_gpu(&g.pipe, &g.gcmd);
@@ -1954,7 +2025,6 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     render_scene();
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
-    if (gpu) gcmd_end(&g.gcmd);
     if (g.ip_active) interp_restore();
     f64 t1 = sys_now_ms();
     if (!gpu) fb_resolve(&g.fb);   /* MSAA: örnekler → renk */
@@ -2022,12 +2092,16 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     g.stats[ST_IMPACTS] = g.impact.played;
     g.stats[ST_AUDIO_UNDERRUNS] = audio_is_running() ? __atomic_load_n(&audio_ring()->underruns, __ATOMIC_RELAXED) : 0u;
     g.stats[ST_HUD_US] = 0;
-    if (g.hud_on && !g.gpu_on) {   /* GPU kipinde panel / editör bindirmesi faz 8c (yazılım tamponu gösterilmiyor) */
+    if (g.hud_on) {
         f64 th = sys_now_ms();
-        draw_hud();
+        draw_hud(gpu);
         g.stats[ST_HUD_US] = (u32)((sys_now_ms() - th) * 1000.0);
     }
-    if (g.edit_open && g.edit_ready && !g.gpu_on) editor_draw();
+    if (g.edit_open && g.edit_ready) {
+        if (gpu) editor_draw_gpu();
+        else editor_draw();
+    }
+    if (gpu) gcmd_end(&g.gcmd);
     /* ses: halka tamponu 60 ms gecikmeye kadar doldur (AudioWorklet okur; ses başlamadıysa iş yok) */
     g.stats[ST_AUDIO_US] = 0;
     if (audio_is_running()) {
@@ -2342,6 +2416,18 @@ static void editor_draw(void) {
     b32 compile = editor_update_and_draw(g.editor, &g.ui, &g.ui_in, g.fps_ms * 0.001f, g.fb.w - w - 8, 8, w, h);
     ui_end(&g.ui);
     if (compile) editor_compile();
+}
+
+/* GPU kipi: editör girdi işlediği için bir kez çizilir: siyah zemin, opak bindirme */
+static void editor_draw_gpu(void) {
+    i32 w = MIN(g.fb.w - 16, MAX(320, g.fb.w * 11 / 20)), h = g.fb.h - 16, x = g.fb.w - w - 8;
+    if (w <= 0 || h <= 0) return;
+    fb_rect_fill(&g.fb, x, 8, w, h, 0xFF000000u);
+    editor_draw();
+    u32* px = ARENA_TRY_ARRAY(&g.frame, u32, (usize)w * (usize)h);
+    if (!px) return;
+    fb_rect_copy(&g.fb, x, 8, w, h, px);
+    gcmd_overlay(&g.gcmd, (u32)x, 8, (u32)w, (u32)h, px);
 }
 
 EXPORT(engine_pointer) void engine_pointer(i32 x, i32 y, i32 buttons) {

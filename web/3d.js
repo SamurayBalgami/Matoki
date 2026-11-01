@@ -156,6 +156,7 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
     const c0 = performance.now();
     if (gpu) {
       gpu.render(gpuCtx.getCurrentTexture().createView(), gpuFmt);
+      ex.engine_gpu_report(gpu.gpuTime.lastMs);
     } else {
       img.data.set(new Uint8Array(mem.buffer, ex.engine_framebuffer(), W * H * 4));
       ctx.putImageData(img, 0, 0);
@@ -167,7 +168,7 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
     const st = Object.fromEntries(ST.map((k, i) => [k, s[i]]));
     const ms = {
       dt, total: st.totalUs / 1000, clear: st.clearUs / 1000, geo: st.geoUs / 1000, flush: st.flushUs / 1000,
-      phys: st.physUs / 1000, soft: st.softUs / 1000, copy: copyMs, wall: wallMs, resolve: st.resolveUs / 1000,
+      phys: st.physUs / 1000, soft: st.softUs / 1000, copy: copyMs, wall: wallMs, resolve: st.resolveUs / 1000, gpu: gpu ? gpu.gpuTime.lastMs : 0,
       vert: st.vertUs / 1000, setup: st.setupUs / 1000,
     };
     acc += dt; frames++;
@@ -203,8 +204,11 @@ if (!PROF && !qs.has('nohud')) ex.engine_set_hud(1);   // motor içi panel (U ka
         (PROF ? (prof.i < PROF_SCENES.length ? `PROFİL: sahne ${PROF_SCENES[prof.i]} ölçülüyor…\n` : 'PROFİL bitti (konsol / window.__prof)\n') : '') +
         `sahne ${st.scene}   mipmap ${st.mip ? 'AÇIK' : 'kapalı'}   kamera ${['uçuş', 'orbit', 'oyun'][st.cam] || '?'}\n` +
         `${fps.toFixed(1)} FPS   motor ${f('total')} ms   ${W}×${H} (%${Math.round(SCALES[scaleIdx] * 100)})   ${threads} thread   ${gpu ? 'WebGPU' : 'yazılım'}\n` +
-        `  temizle ${f('clear')}  geometri ${f('geo')}  boyama ${f('flush')}  fizik ${f('phys')}  yumuşak ${f('soft')}  kopya ${f('copy')}\n` +
-        `raster ${st.rasterMode ? 'SIMD' : 'skaler'}   shader ${SHADER_NAMES[st.shaderMode]}   MSAA ${st.msaa}x (çözümleme ${f('resolve')} ms)\n` +
+        (gpu
+          ? `  GPU ${gpu.gpuTime.lastMs < 0 ? 'ölçülemiyor' : f('gpu') + ' ms' + (gpu.gpuTime.precise ? ` (gölge ${gpu.gpuTime.shadowMs.toFixed(2)}, ana ${gpu.gpuTime.mainMs.toFixed(2)})` : ' (üst sınır)')}   geometri ${f('geo')}  fizik ${f('phys')}  yumuşak ${f('soft')}  gönderim ${f('copy')}\n` +
+            `shader ${SHADER_NAMES[st.shaderMode]}   MSAA ${st.msaa}x\n`
+          : `  temizle ${f('clear')}  geometri ${f('geo')}  boyama ${f('flush')}  fizik ${f('phys')}  yumuşak ${f('soft')}  kopya ${f('copy')}\n` +
+            `raster ${st.rasterMode ? 'SIMD' : 'skaler'}   shader ${SHADER_NAMES[st.shaderMode]}   MSAA ${st.msaa}x (çözümleme ${f('resolve')} ms)\n`) +
         `köşe aşaması ${st.vertMode ? 'Matoki' : 'C'} ${f('vert')} ms   üçgen kurulumu ${f('setup')} ms   ${st.verts} köşe, ${st.batches} parti\n` +
         `bin ${st.binItems} (tam ${st.binFull})\n` +
         (st.scene >= 3

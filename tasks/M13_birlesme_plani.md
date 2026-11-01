@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0–7 + 8a + 8b TAMAM (2026-11-01) → sıradaki faz 8c (MSAA, gölge, panel, GPU süresi).
+Durum: TÜM FAZLAR TAMAM (0–7, 8a, 8b, 8c; 2026-11-01).
 Depo kuralı: yalnız bizim depoya (SamurayBalgami/Matoki) gönderilir; Xassemblianist deposuna hiçbir şey yazılmaz.
 Kaynak sürümü: faz 0–3 0a7b782; faz 4'ten itibaren 2ac467a (onların 61 yeni commit'inde faz 0–3 dosyaları değişmedi). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
@@ -60,7 +60,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 7 ✓ | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
 | 8a ✓ | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
 | 8b ✓ | Matoki → WGSL hedefi; lit / lit_hq / water / sky iki arka uçta | — | 10 görünüm × shader görüntü farkı testi |
-| 8c | GPU'da doku, MSAA, gölge, okyanus FFT görüntüsü; CPU/GPU boru hattı örtüşmesi; sayfada CPU ms / GPU ms / kare ms | — | 1080p önce/sonra ölçüm tablosu (bugün 30–52 ms) |
+| 8c ✓ | GPU'da doku, MSAA, gölge, okyanus FFT görüntüsü; CPU/GPU boru hattı örtüşmesi; sayfada CPU ms / GPU ms / kare ms | — | 1080p önce/sonra ölçüm tablosu (bugün 30–52 ms) |
 
 Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.mjs`) mevcut görünümlerde değişmemeli.
 
@@ -262,6 +262,12 @@ Kod incelemesi (yüksek düzey, 8 açı) 8 bulgu verdi; hepsi düzeltildi:
 - A/B dersi: ilk ölçüm +%9,6 çıktı, ama `3d.html?gpu` aynı anda çalışıyordu; temiz koşuda fark gürültü içinde.
 - 8c'ye devredilen: panel durum satırları GPU kipinde yazılım değerlerini gösteriyor (MSAA 4x, raster SIMD, 0 köşe);
   doku içerik sürümü; storage tampon doku maliyetinin GPU zaman damgasıyla ölçümü; uniform alanı (8 MB ayrılıyor).
+
+## Faz 8c notları (2026-11-01)
+- Ayrıntı ve ölçüm: D44. `gcmd` sürüm 3, `assets/gpu_overlay.wgsl`, `gpu_check.html` 6 kip × 10 görünüm.
+- Sonuç: 254/254 test (worker'lı / worker'sız), demo denetimleri geçti, yazılım kare hash'leri 8c öncesiyle aynı.
+- Plandaki "okyanus FFT görüntüsü" ayrı iş gerektirmedi: köşeler CPU'da, GPU aynı mesh'i çizer (görünüm 6 denetimde).
+- Açık kalan: donanım dokusu denemesi (GPU'daki en büyük olası kazanç), tek adaptörde sınandı, gerçek ekranda FPS ölçülmedi.
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

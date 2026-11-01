@@ -94,7 +94,7 @@ for (const [scene, dtms] of [[5, 125], [6, 125], [3, 250]]) {
 }
 
 // 5. GPU programları (D42): her programın WGSL'i var; canlı derleme lit'in sürümünü artırır, reddedilen derleme artırmaz
-const GPROG_LIT = 3;
+const GPROG_LIT = 4;
 const progText = (id) => new TextDecoder().decode(new Uint8Array(mem(), ex.engine_gpu_prog_text(id), ex.engine_gpu_prog_len(id)));
 for (let id = 0; id < ex.engine_gpu_prog_count(); id++) check(ex.engine_gpu_prog_len(id) > 0, `GPU programı ${id}: WGSL var`);
 const gen0 = ex.engine_gpu_prog_gen(GPROG_LIT), text0 = progText(GPROG_LIT);

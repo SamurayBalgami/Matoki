@@ -14,10 +14,10 @@
 </style>
 </head>
 <body>
-<h1>MATOKI — yazılım ↔ WebGPU piksel karşılaştırması (faz 8a, 8b)</h1>
+<h1>MATOKI — yazılım ↔ WebGPU piksel karşılaştırması (faz 8a-8c)</h1>
 <div id="out">yükleniyor…</div>
 <script type="module">
-// Her ölçüm görünümü × shader, MSAA ve gölge kapalı. Düz kip (shade_flat ↔ gpu_flat.wgsl, renk = 2×2 dörtlü konumu):
+// Her ölçüm görünümü × shader × gölge × MSAA. Düz kip (shade_flat ↔ gpu_flat.wgsl, renk = 2×2 dörtlü konumu):
 // iki arka uç yalnız kaplamada ayrışabilir, her piksel birebir beklenir. Matoki shader'ları (JIT ↔ WGSL, aynı IR): kanal
 // farkı kenar yuvarlaması + interpolasyon gürültüsüdür, eşik farklı piksel oranı (fark > TOL). Derinlik iki tamponda yerel
 // eğime göre ölçeklenen toleransla (CPU düzlem denklemi ↔ GPU interpolasyonu). Sonuç window.__gpuCheck'te.
@@ -28,11 +28,16 @@ const qs = new URLSearchParams(location.search);
 const [W, H] = (qs.get('res') || '640x360').split('x').map(Number);
 const FLAT_LIMIT = 0.005;     // düz kip: farklı piksel oranı eşiği (kenar yuvarlaması)
 const SHADER_LIMIT = 0.001;   // Matoki shader'ları: fark > TOL olan piksel oranı eşiği (lit'te 1 piksellik kenar kaymaları: en çok %0,055)
+const SHADOW_LIMIT = 0.001;   // gölge kenarı: harita iki yolda ayrı rasterize edilir (ölçülen en kötü %0,029)
+const MSAA_LIMIT = 0.001;     // kenar pikselleri (ölçülen en kötü %0,056)
 const TOL = 8;                // kanal farkı (0..255)
 const MODES = [
-  { name: 'düz', flat: 1, shader: 3, limit: FLAT_LIMIT, tol: 0 },
-  { name: 'lit', flat: 0, shader: 3, limit: SHADER_LIMIT, tol: TOL },   // demo.c SHADER_MATOKI
-  { name: 'lit_hq', flat: 0, shader: 4, limit: SHADER_LIMIT, tol: TOL },   // demo.c SHADER_HQ
+  { name: 'düz', flat: 1, shader: 3, shadow: 0, msaa: 0, limit: FLAT_LIMIT, tol: 0 },
+  { name: 'lit', flat: 0, shader: 3, shadow: 0, msaa: 0, limit: SHADER_LIMIT, tol: TOL },   // demo.c SHADER_MATOKI
+  { name: 'lit_hq', flat: 0, shader: 4, shadow: 0, msaa: 0, limit: SHADER_LIMIT, tol: TOL },   // demo.c SHADER_HQ
+  { name: 'hq+gölge', flat: 0, shader: 4, shadow: 1, msaa: 0, limit: SHADOW_LIMIT, tol: TOL },
+  { name: 'lit+msaa', flat: 0, shader: 3, shadow: 0, msaa: 1, limit: MSAA_LIMIT, tol: TOL },
+  { name: 'hq+g+msaa', flat: 0, shader: 4, shadow: 1, msaa: 1, limit: MSAA_LIMIT, tol: TOL },
 ];
 try {
   const { state, ex } = await loadEngine(await WebAssembly.compileStreaming(fetch('engine.wasm')), () => {});
@@ -40,16 +45,16 @@ try {
   const mem = state.memory;
   const gpu = await createGpu(ex, mem, 'rgba8unorm');
   if (!gpu) throw new Error('WebGPU yok');
-  ex.engine_set_msaa(0);
-  ex.engine_set_shadow(0);
   const rows = [];
   const only = qs.get('mode');
   let lines = `adaptör: ${gpu.adapter.info?.vendor || '?'} ${gpu.adapter.info?.architecture || ''}   ${W}×${H}\n\n` +
-    'shader | görünüm | çizim | fark>tol | oran     | ort. fark | en büyük | derinlik>tol | en büyük z farkı | sonuç\n';
+    '   shader | görünüm | çizim | fark>tol | oran     | ort. fark | en büyük | derinlik>tol | en büyük z farkı | sonuç\n';
   for (const mode of MODES) {
     if (only && only !== mode.name) continue;
     ex.engine_set_flat(mode.flat);
     ex.engine_set_shader_mode(mode.shader);
+    ex.engine_set_shadow(mode.shadow);
+    ex.engine_set_msaa(mode.msaa);
     for (let v = 1; v <= ex.engine_bench_view_count(); v++) {
       ex.engine_gpu_set(0);
       ex.engine_bench_view(v);
@@ -72,7 +77,7 @@ try {
       // görünüm 6, kameraya yakın: CPU −1,4e-5 … −1,9e-5, GPU −4e-6 … −7e-6 (CPU büyük üçgeni kendisi kırptığı için).
       // Amaç sıra doğrulaması (renkler ayrıca); daha sıkı denetim için zemin bölünmeli (ayrı iş).
       let zbad = 0, zmax = 0;
-      for (let y = 0; y < H - 1; y++) {
+      for (let y = 0; depth && y < H - 1; y++) {
         for (let x = 0; x < W - 1; x++) {
           const i = y * W + x;
           const dz = Math.abs(swz[i] - depth[i]);
@@ -83,7 +88,7 @@ try {
       }
       const ratio = diff / (W * H), mean = sum / (W * H), ok = ratio < mode.limit && zbad / (W * H) < mode.limit;
       rows.push({ mode: mode.name, view: v, draws, diff, ratio, mean, maxd, zbad, zmax, ok });
-      lines += `${mode.name.padStart(6)} | ${String(v).padStart(7)} | ${String(draws).padStart(5)} | ${String(diff).padStart(8)} | ${(ratio * 100).toFixed(3).padStart(7)}% | ${mean.toFixed(3).padStart(9)} | ${String(maxd).padStart(8)} | ${String(zbad).padStart(12)} | ${zmax.toExponential(2).padStart(16)} | ${ok ? 'GEÇTİ' : 'KALDI'}\n`;
+      lines += `${mode.name.padStart(9)} | ${String(v).padStart(7)} | ${String(draws).padStart(5)} | ${String(diff).padStart(8)} | ${(ratio * 100).toFixed(3).padStart(7)}% | ${mean.toFixed(3).padStart(9)} | ${String(maxd).padStart(8)} | ${String(zbad).padStart(12)} | ${zmax.toExponential(2).padStart(16)} | ${ok ? 'GEÇTİ' : 'KALDI'}\n`;
       out.textContent = lines;
     }
   }

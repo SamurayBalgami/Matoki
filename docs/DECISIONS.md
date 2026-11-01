@@ -531,3 +531,44 @@ lit_hq dahil. Bilerek bozma: kollar ters, lane'e bağlı maske, kısmi maske, bi
 `guard_same_mask_not_adjacent` bunun için eklendi, dördü de yakalanıyor. Test sırasında bulunan ayrı kusur: dışa açık
 `engine_matoki_recompile` her başarılı derlemede `g.perm`'i büyütür, tekrarlanınca panikler; editör kendi arenalarını kullandığı
 için oyuncu etkilenmez, araç / test yolu.
+
+## D44. GPU'da gölge, MSAA, bindirme ve süre ölçümü (M13 faz 8c)
+Gölge: aynı `render_scene` akışa yalnız derinlik çizer (`GC_SHADOW`, parça programsız), derinlik `copyTextureToBuffer` ile doku
+tamponuna kopyalanır; `lit_hq.mtk` değişmez, aynı `texel_fetch` + `bitcast_f32` okur. MSAA: GC_FRAME örnek sayısı taşır; yazılım
+örnek konumları standart 4x desenle aynı, çözümleme donanımda. Bindirme: panel kodu değişmez, siyah ve beyaz zeminde iki kez
+çizilir, alfa aradaki farktan (test: 8 alfa × zemin, en büyük kanal hatası 1). Editör girdi işlediği için bir kez çizilir: opak.
+GPU süresi: `timestamp-query` (yoksa kuyruk gecikmesi, "üst sınır" etiketiyle); panel ve sayfa gösterir, yazılım satırları GPU'da
+gizlenir. Aynı boyutlu dinamik mesh'te tampon yeniden ayrılmaz; kare başı 10 MB akış / yuva sıfırlanmaz (ayrı ölçülmedi).
+
+**Kabul** (`web/gpu_check.html`, Intel Gen12LP, 640×360, 10 görünüm; fark > 8 piksel, eşik %0,1, düz %0,5 / tolerans 0):
+
+| Kip | Geçen | En kötü | Ortalama kanal farkı |
+|---|---|---|---|
+| düz | 10/10 | %0 | 0 |
+| lit | 10/10 | %0,055 | 0,103 |
+| lit_hq | 10/10 | %0,029 | 0,165 |
+| lit_hq + gölge | 10/10 | %0,029 | 0,165 |
+| lit + MSAA 4x | 10/10 | %0,056 | 0,135 |
+| lit_hq + gölge + MSAA 4x | 10/10 | %0,030 | 0,217 |
+
+Denetimin gerçekten sınadığı: gölgenin değiştirdiği piksel iki yolda 3373 ↔ 3372, 785 ↔ 785, 2366 ↔ 2367, 2326 ↔ 2326; MSAA'nın
+11171 ↔ 11120, 1306 ↔ 1311. Bilerek bozma: derinlik kopyası yok → %53'e varan fark; örnek sayısı hep 1 → %4,4'e varan fark. Derinlik
+karşılaştırması yalnız MSAA kapalı kiplerde (çok örnekli derinlik kopyalanamaz).
+
+**1080p** (tarayıcı, 16 thread, Intel tümleşik GPU, ms; GPU = zaman damgası, çalışma sırasında motor CPU'su serbest):
+
+| Görünüm | Varsayılan (HQ + gölge + MSAA): yazılım | motor | GPU | Gölge / MSAA yok: yazılım | motor | GPU |
+|---|---|---|---|---|---|---|
+| 1 | 56,3 | 0,63 | 27,3 | 27,1 | 0,39 | 23,2 |
+| 2 | 57,0 | 0,58 | 15,0 | 24,1 | 0,29 | 10,4 |
+| 4 | 55,2 | 0,23 | 20,6 | 24,4 | 0,17 | 18,5 |
+| 5 | 39,8 | 0,30 | 16,3 | 20,4 | 0,21 | 14,5 |
+| 6 | 66,8 | 1,85 | 27,6 | 36,4 | 2,29 | 24,2 |
+| 8 | 46,9 | 0,24 | 17,6 | 24,4 | 0,18 | 13,8 |
+| 10 | 44,3 | 0,30 | 17,4 | 20,6 | 0,14 | 11,1 |
+
+Varsayılanda GPU 2-3 kat kısa, ayrıca motor CPU'su neredeyse tamamen boşalır. Gölge ve MSAA kapalıyken fark küçük (1,2-2,3 kat):
+doku okuması donanım örnekleyicisi değil, storage tampon + 16'ya kadar bilinear IR'da (D42'nin bilinçli bedeli). Sıradaki büyük
+GPU kazancı büyük olasılıkla burada; donanım dokusu görüntüyü değiştirir, ayrı karar. Sınırlar: tek adaptör. Bu ölçüm döngüsünde
+kare başına duvar süresi 15-41 ms (kuyruk bekleme dahil); ön izleme bölmesi rAF'ı kıstığı için gerçek sayfada FPS ölçülemedi (yazılım
+da 1 FPS gösterdi). Gölge geçişi zaman damgası 0-0,7 ms okudu; bu adaptörde güvenilirliği doğrulanmadı.
