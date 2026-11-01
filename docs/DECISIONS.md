@@ -576,3 +576,41 @@ da 1 FPS gösterdi). Gölge geçişi zaman damgası 0-0,7 ms okudu; bu adaptörd
 Yayın dersi: ilk Pages denetimi 32/60 verdi (yerelde 60/60). Neden kod değil: tarayıcı `max-age=600` ile eski `gpu.mjs`'i yeni
 `engine.wasm`'la çalıştırdı, sessizce bozuk çizdi. Düzeltme: `coi.js` aynı kökenli dosyaları her açılışta sunucuya sordurur;
 `createGpu` akış sürümünü denetler, uyuşmazsa kurulum düşer ve sayfa yazılım render'da kalır (`check_demo` iki sürümün eşitliğini denetler).
+
+## D45. Shader kalitesi: parlaklık, kabartı, yumuşak gölge, renkli ortam, su kırışıklığı
+Bütçe: kaliteyi yazılımda ortalama %5'in altında, GPU'da %20'nin altında almak. `lit.mtk` ve C shader'ları değişmez; görünüm 6 dışında
+`lit` hash'leri aynı (o görünümde su, `water.mtk`).
+
+`lit_hq.mtk`:
+- Gölge: 2×2 → 4×4 üçüncü derece B-spline (basamaksız, ≈ 4 texel kenar). Her komşu alıcı düzleminin kendi derinliğiyle karşılaştırılır
+  (ekran türevlerinden, kenetli): geniş çekirdek eğik yüzeyi kendi gölgesi saymasın. Tekerlek altındaki çizgili gölge lekesi de böyle gitti.
+- Ön bakış: 5 nokta (quad ayak izi kadar açık köşeler + orta) quad'da hep aydınlık / hep gölgeyse 16 okuma atlanır (D43 dalı). Koşul quad-sabit
+  olmalı; `q = dFdx(probe · piksel x)` probe sabitken değerin kendisini verir. Türevler dördüncü lane'i görmez: köşelerin açık olması bunun için.
+- Ortam: tepe gök, dip zemin rengi; gölgeler soğuk dolgu alır. Parlaklık: Blinn-Phong + Fresnel'li gök yansıması, `LitUniforms.spec / gloss`.
+  `pow` yerine `(1 - gloss (1 - x) / 16)^16`: görünüm 2'de `pow` +%37'ydi (düz), ayrıca tek bölmeli Schlick yaklaşımının kuyruğu düz yüzeyi yıkıyordu.
+- Kabartı: doku parlaklığı yükseklik, normal ekran türevlerinden (Mikkelsen 2010), `LitUniforms.bump`. Türevler kolun dışında: türevli kol GPU'da
+  dallanamaz, yoksa kabartısız zemin de öder (görünüm 8: 20,7 → 17,0 ms). Dezavantajı 2×2 blok; yalnız tuğla ve ızgarada açık, zemin ve kumaşta kapalı.
+
+`water.mtk`: normale üç yönlü sinüs eğimi, uzakta söner. Zaman `LitUniforms.wrap`'in yerinde (`time`, su wrap okumaz).
+
+**Maliyet** (A/B aynı süreçte dönüşümlü, 1920×1080, 16 thread, Intel Gen12LP; toplam = 10 görünüm):
+
+| Yol | Ayar | Önce | Sonra | Oran | Görünüm aralığı |
+|---|---|---|---|---|---|
+| Yazılım | gölge + MSAA | 598 | 622 | 1,040 | 1,009 – 1,122 |
+| Yazılım | düz | 346 | 355 | 1,026 | 0,917 – 1,229 |
+| GPU (zaman damgası) | gölge + MSAA | 186 | 217 | 1,167 | 0,994 – 1,577 |
+| GPU (zaman damgası) | düz | 160 | 172 | 1,077 | 1,028 – 1,146 |
+
+Yazılım mutlak süreleri koşudan koşuya ×2 oynadı (ısınma / başka yük), yalnız oranlar anlamlı. GPU'da en çok gölge kenarı kaplayan görünümler (2, 3, 10:
++5..7 ms) artar. Bu adaptörde 1080p'de görünüm 8 ve 9 varsayılanda 16,6 ms sınırını aşar; gölge açık GPU maliyeti bütçede ama FPS'e bedava değil.
+
+**Ön bakışın hatası** (tam 16 okumaya göre, 1920×1080, gölge + MSAA): fark > 8 piksel en çok 339 (%0,016, görünüm 7, top temas bölgesi), yazılımda %3,4
+ve GPU'da daha büyük kazanç. Bilinen kusur: üst üste topların temasında ve tekerlek yanında birkaç blok parlak quad kalır; 1 texel'lik ince gölgeler
+ön bakıştan kaçabilir.
+
+Kabul: `gpu_check` 60/60 (en kötü %0,056), 255/255 test. Yeni test `lit_hq_shadow_factor_in_range`; koşuldan türev denetimi çıkarılınca (`q` taşar, beyaz benek)
+yakalar. Gözle bulunan iki hata testten önce buradaydı: `q`'nun lane'in kendi değerinin yerine geçmemesi ve koşuldaki toplamın taşması.
+
+Bilerek yapılmadı: suda düzlem yansıması (ek geçiş), harita çözünürlüğünü artırmak (basamak boyu 1024 texel'den geliyor; bellek ×4), güneş diski dışında gökyüzü
+detayı. Sınır: tek adaptör, gerçek ekranda FPS ölçülmedi (D44).

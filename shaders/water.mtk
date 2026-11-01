@@ -2,6 +2,8 @@
 // Schlick Fresnel: dik bakışta derin su rengi, sığ açıda gök yansıması; güneşten speküler parıltı
 // (yansıyan bakış · ışık)^96; yarım küre ortam. Uniform'lar LitUniforms ile aynı yerleşim:
 // tint = derin su rengi, fog_color = ufuk / gök rengi (sis de aynı renge kaçar). Doku kullanılmaz.
+// Kırışıklık (D45): ağın taşıyamadığı küçük dalgalar yalnız normalde, üç yönlü sinüs eğimi; uzakta söner (örtüşmesin).
+// time, LitUniforms'ta wrap'ın yeri (su wrap okumaz; demo set_frame_uniforms yazar).
 
 uniform tex: texture2d;
 uniform to_light: vec3;
@@ -13,17 +15,24 @@ uniform fog_end: f32;
 uniform eye: vec3;
 uniform use_mip: i32;
 uniform tint: vec3;
-uniform wrap: f32;
+uniform time: f32;
 uniform translucency: f32;
 
 varying wpos: vec3;
 varying nrm: vec3;
 varying uv: vec2;
 
+// (x, z) eğimi: yön · dalga sayısı · genlik · cos(faz)
+fn ripple(d: vec2, k: f32, a: f32, w: f32) -> vec2 {
+    return d * (a * cos((wpos.x * d.x + wpos.z * d.y) * k + time * w));
+}
+
 fn frag() -> vec4 {
-    let n = normalize(nrm);
     let to_eye = eye - wpos;
     let d = length(to_eye);
+    let g = ripple(vec2(0.8, 0.6), 3.7, 0.05, 2.3) + ripple(vec2(-0.5, 0.87), 7.1, 0.035, 3.2) + ripple(vec2(0.28, -0.96), 12.3, 0.025, 4.3);
+    let fade = 1.0 / (1.0 + d * d * 0.0012);
+    let n = normalize(nrm - vec3(g.x, 0.0, g.y) * fade);
     let v = to_eye * (1.0 / max(d, 0.0001));
     let ndv = clamp(dot(n, v), 0.0, 1.0);
     // Schlick: F0 = 0.02 (su)

@@ -259,6 +259,9 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->shadow = shadow_none();
     mem_zero(&u->shadow_mat, sizeof(u->shadow_mat));   /* 0 → harita koordinatı (0, 0, 0): her yer aydınlık */
     u->shadow_bias = 0.0f;
+    u->spec = 0.0f;
+    u->gloss = 32.0f;
+    u->bump = 0.0f;
     lit_uniforms_prepare(u);
 }
 
@@ -319,7 +322,9 @@ static const LitField LIT_FIELDS[] = {
     LIT_FIELD(light_color, TB_FLOAT, 3), LIT_FIELD(fog_start, TB_FLOAT, 1), LIT_FIELD(fog_color, TB_FLOAT, 3),
     LIT_FIELD(fog_end, TB_FLOAT, 1), LIT_FIELD(eye, TB_FLOAT, 3), LIT_FIELD(use_mip, TB_INT, 1), LIT_FIELD(tint, TB_FLOAT, 3),
     LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
-    LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1),
+    LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(spec, TB_FLOAT, 1), LIT_FIELD(gloss, TB_FLOAT, 1),
+    LIT_FIELD(bump, TB_FLOAT, 1),
+    { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
 };
 
 static b32 lit_layout_ok_at(const MatokiProgram* p, const GlobalDecl** bad) {
@@ -1365,6 +1370,26 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_car, g.tex_grid, v3(0.95f, 0.18f, 0.12f));
     lit_defaults(&g.u_tire, g.tex_checker, v3(0.16f, 0.16f, 0.18f));
     lit_defaults(&g.u_char, g.tex_grid, v3(0.3f, 0.55f, 1.0f));
+    /* parlaklık / kabartı (D45): boya ve metal parlak, plastik orta, tuğla pürüzlü; zemin ve kumaş mat */
+    g.u_car.spec = 1.0f;
+    g.u_car.gloss = 90.0f;
+    g.u_char.spec = 0.45f;
+    g.u_tire.spec = 0.25f;
+    g.u_jelly.spec = 0.6f;
+    g.u_jelly.gloss = 48.0f;
+    g.u_pole.spec = 0.7f;
+    g.u_pole.gloss = 60.0f;
+    g.u_arm.spec = 0.35f;
+    g.u_tent.spec = 0.35f;
+    for (u32 i = 0; i < 3; i++) {
+        g.u_grid[i].spec = 0.4f;
+        g.u_grid[i].gloss = 40.0f;
+        g.u_grid[i].bump = 0.012f;
+    }
+    g.u_bricks.spec = 0.08f;
+    g.u_bricks.bump = 0.03f;
+    g.u_pillar.spec = 0.08f;
+    g.u_pillar.bump = 0.03f;
     material(&g.m_car, &g.u_car);
     material(&g.m_tire, &g.u_tire);
     material(&g.m_char, &g.u_char);
@@ -1374,7 +1399,6 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_jelly, g.tex_grid, v3(0.35f, 0.95f, 0.45f));
     g.u_jelly.wrap = 0.7f;
     lit_defaults(&g.u_water, g.tex_grid, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
-    g.u_water.wrap = 0.5f;
     material(&g.m_water, &g.u_water);
     material(&g.m_ocean, &g.u_water);
     g.m_ocean.cull = CULL_NONE;
@@ -1504,6 +1528,7 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 }
 
 static void set_frame_uniforms(void) {
+    g.u_water.wrap = g.time;   /* water.mtk: wrap yerinde zaman */
     LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
                            &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky, &g.u_pole,
                            &g.u_arm, &g.u_tent };

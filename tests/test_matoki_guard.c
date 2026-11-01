@@ -249,7 +249,7 @@ TEST(guard_lit_hq_matches_oracle) {
     CHECK(ef != NULL);
     MatokiProgram p;
     if (!guard_compile(t_, (const char*)ef->data, ef->len, &p)) return;
-    CHECK(branch_count(&p) >= 4u);   /* seviye + 3 örnek sayısı dalı × iki seviye */
+    CHECK(branch_count(&p) >= 6u);   /* seviye + 3 örnek sayısı dalı × iki seviye + parlaklık + kabartı */
     Texture* tex = tex_create(a, 64, 64, TEX_FLAG_MIPMAP | TEX_FLAG_BILINEAR);
     Rng r = rng_make(7);
     for (u32 i = 0; i < 64u * 64u; i++) tex->px[i] = rng_u32(&r) | 0xFF000000u;
@@ -275,6 +275,54 @@ TEST(guard_lit_hq_matches_oracle) {
     CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 1000, 71) > 500u);
     u.use_mip = FALSE;
     CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 300, 72) > 100u);
+    /* parlaklık + kabartı kolları (D45): 0'dayken yukarıdaki iki koşu kolları atlar, burada çalışırlar */
+    u.use_mip = TRUE;
+    u.spec = 0.8f;
+    u.gloss = 48.0f;
+    u.bump = 0.03f;
+    CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 1000, 73) > 500u);
+    u.bump = 0.0f;
+    CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 300, 74) > 100u);
+    u.spec = 0.0f;
+    u.bump = 0.03f;
+    CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 300, 75) > 100u);
+}
+
+/* gölge çarpanı [0, 1]'den çıkmaz (D45): beş noktalı ön bakış quad'da sabit değilken q anlamsız, kenar dalına gitmeli; gitmezse çarpan
+ * piksel x'i kadar büyür. Beyaz doku, ortamsız ışık → çıktı en çok ışık rengi; rastgele derinlikte iki dal da çalışır */
+TEST(lit_hq_shadow_factor_in_range) {
+    Arena* a = test_arena();
+    const EmbedFile* ef = embed_find("lit_hq.mtk");
+    CHECK(ef != NULL);
+    MatokiProgram p;
+    if (!guard_compile(t_, (const char*)ef->data, ef->len, &p)) return;
+    Texture* tex = tex_create(a, 2, 2, TEX_FLAG_BILINEAR);
+    for (u32 i = 0; i < 4u; i++) tex->px[i] = 0xFFFFFFFFu;
+    Texture* sh = tex_create(a, 16, 16, TEX_FLAG_CLAMP);
+    Rng r = rng_make(91);
+    for (u32 i = 0; i < 256u; i++) sh->px[i] = m_f32_bits(rng_range(&r, 0.0f, 1.0f));
+    LitUniforms u;
+    mem_zero(&u, sizeof(u));
+    u.tex = tex;
+    u.shadow = sh;
+    u.to_light = v3(0.0f, 1.0f, 0.0f);
+    u.light_color = v3(0.4f, 0.4f, 0.4f);
+    u.fog_start = 1000.0f;
+    u.fog_end = 2000.0f;
+    u.tint = v3(1.0f, 1.0f, 1.0f);
+    u.shadow_mat = mat4_mul(mat4_translate(v3(0.5f, 0.5f, 0.5f)), mat4_scale(v3(1.0f / 6.0f, 1.0f / 6.0f, 1.0f / 6.0f)));
+    if (p.prelude) p.prelude(&u);
+    u32 top = 0;
+    for (u32 k = 0; k < 4000u; k++) {
+        ShadeQuad q;
+        quad_random(&q, &r, VAR3D_COUNT);
+        _Alignas(16) u32 o[4];
+        p.fn_fast(&q, &u, o);
+        for (u32 l = 0; l < 4; l++) if ((o[l] & 0xFFu) > top) top = o[l] & 0xFFu;
+    }
+    test_note("gölge aralığı: en parlak kanal", (f64)top, 0);
+    CHECK(top > 0u);
+    CHECK(top <= 103u);   /* 0,4 · 255 = 102 + yuvarlama */
 }
 
 /* aynı maskeli iki select arasında koşulsuz bir değer var ve ikincinin kolu onu okuyor: tek dal olsalardı kol, değer

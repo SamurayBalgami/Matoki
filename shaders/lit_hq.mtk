@@ -3,9 +3,12 @@
 // 4, 8) çift doğrusal örnek, iki komşu seviye arasında kesirli seviyeyle karışım (seviye sınırında görünür bant yok).
 // Işık: Lambert ↔ half-Lambert² diffuse + yarım küre ortam + arkadan ışık. Sis: 1 - 2^(-4x²), x = (d - başla) / aralık
 // (yumuşak başlar, ufukta gök rengine erir; sky.mtk ile aynı ufuk rengi).
-// Gölge (M13 faz 7): gfx3d/shadow.h haritası, f32 derinlik bitleri texel_fetch + bitcast_f32 ile, 2×2 süzmeli karşılaştırma
+// Gölge (M13 faz 7): gfx3d/shadow.h haritası, f32 derinlik bitleri texel_fetch + bitcast_f32 ile, süzmeli karşılaştırma
 // (PCF); yalnız doğrudan ışığı keser. Kapalıyken 1×1 / derinlik 2 / shadow_mat = 0 → çarpan tam 1 (çıktı bit-bit aynı).
-// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias).
+// Kalite (D45): gölge 4×4 komşuda üçüncü derece B-spline (basamaksız, yumuşak kenar); ortam gök ↔ zemin rengi (gölgeler soğuk dolgu
+// alır); parlaklık: Blinn-Phong + Fresnel'li gök yansıması; kabartı: doku parlaklığı
+// yükseklik sayılır, normal ekran türevlerinden bozulur (Mikkelsen 2010). spec / bump 0 olan malzeme bu kolları çalıştırmaz (D43).
+// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, spec, gloss, bump).
 
 uniform tex: texture2d @mipmap @bilinear;
 uniform to_light: vec3;
@@ -22,6 +25,9 @@ uniform translucency: f32;
 uniform shadow: texture2d @clamp;
 uniform shadow_mat: mat4;
 uniform shadow_bias: f32;
+uniform spec: f32;
+uniform gloss: f32;
+uniform bump: f32;
 
 varying wpos: vec3;
 varying nrm: vec3;
@@ -81,7 +87,26 @@ fn sample_aniso(p: vec2) -> vec4 {
     return select(frac > 0.0, mix(a0, axis_avg(p, axis, l1, ratio2), frac), a0);
 }
 
-// ışık görüşünden görünür mü: 1 = aydınlık, 0 = gölgede; dört komşu texel'in sonucu çift doğrusal karışır
+// üçüncü derece B-spline ağırlıkları, kesir f ∈ [0, 1): dört komşu (taban - 1 .. taban + 2), toplam 1
+fn spline(f: f32) -> vec4 {
+    let g = 1.0 - f;
+    let f2 = f * f;
+    let g2 = g * g;
+    return vec4(g2 * g, 4.0 - 3.0 * f2 * (2.0 - f), 4.0 - 3.0 * g2 * (2.0 - g), f2 * f) * (1.0 / 6.0);
+}
+
+fn shadow_cmp(ix: i32, iy: i32, z: f32) -> f32 {
+    return select(z > bitcast_f32(texel_fetch(shadow, ix, iy)), 0.0, 1.0);
+}
+
+// bir satırın ağırlıklı toplamı; z satırın lane konumundaki derinliği, zu yatayda texel başına eğimi, cx taban sütunun lane'e uzaklığı
+fn shadow_row(ix: i32, iy: i32, z: f32, zu: f32, cx: f32, w: vec4) -> f32 {
+    return shadow_cmp(ix - 1, iy, z + zu * (cx - 1.0)) * w.x + shadow_cmp(ix, iy, z + zu * cx) * w.y +
+           shadow_cmp(ix + 1, iy, z + zu * (cx + 1.0)) * w.z + shadow_cmp(ix + 2, iy, z + zu * (cx + 2.0)) * w.w;
+}
+
+// ışık görüşünden görünür mü: 1 = aydınlık, 0 = gölgede; 4×4 komşunun sonucu B-spline ağırlıklarıyla karışır. Her komşu alıcı
+// düzleminin o noktadaki derinliğiyle karşılaştırılır: yoksa geniş çekirdek eğik yüzeyin kendisini gölge sayar
 fn shadow_lit(p: vec3) -> f32 {
     let s = shadow_mat * vec4(p, 1.0);
     let ts = tex_size(shadow);
@@ -89,24 +114,81 @@ fn shadow_lit(p: vec3) -> f32 {
     let y = s.y * ts.y - 0.5;
     let fx = floor(x);
     let fy = floor(y);
-    let ax = x - fx;
-    let ay = y - fy;
+    let wx = spline(x - fx);
+    let wy = spline(y - fy);
     let ix = i32(fx);
     let iy = i32(fy);
     let z = s.z - shadow_bias;
-    let l00 = select(z > bitcast_f32(texel_fetch(shadow, ix, iy)), 0.0, 1.0);
-    let l10 = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy)), 0.0, 1.0);
-    let l01 = select(z > bitcast_f32(texel_fetch(shadow, ix, iy + 1)), 0.0, 1.0);
-    let l11 = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy + 1)), 0.0, 1.0);
-    let lit = mix(mix(l00, l10, ax), mix(l01, l11, ax), ay);
-    // haritanın dışı (kapsanmayan bölge) aydınlık
-    let inside = s.x >= 0.0 && s.x <= 1.0 && s.y >= 0.0 && s.y <= 1.0 && s.z <= 1.0;
+    // derinliğin texel başına eğimi: ekran türevlerinden (2×2 sistemin çözümü), sıçrama olan quad'da taşmasın diye kenetli
+    let xdx = dFdx(x);
+    let xdy = dFdy(x);
+    let ydx = dFdx(y);
+    let ydy = dFdy(y);
+    let zdx = dFdx(s.z);
+    let zdy = dFdy(s.z);
+    let det = xdx * ydy - ydx * xdy;
+    let inv = select(abs(det) > 0.000001, 1.0 / det, 0.0);
+    let lim = shadow_bias * 2.0;
+    let zu = clamp((ydy * zdx - ydx * zdy) * inv, -lim, lim);
+    let zv = clamp((xdx * zdy - xdy * zdx) * inv, -lim, lim);
+    let cx = fx - x;
+    let cy = fy - y;
+    // önce beş nokta (köşeler + orta): quad'da hepsi aydınlık ya da hepsi gölgeyse kenarda değiliz, 16 okuma gereksiz (koşul quad-sabit →
+    // gerçek dal, D43). Köşeler quad'ın ayak izi kadar açık: türev dördüncü lane'i görmez, ama onun çekirdeği de bu karenin içinde.
+    // q = dFdx(probe · piksel x): probe quad'da sabitken probe'un kendisi; sabit değilse zaten kenar
+    let mi = min(i32(ceil(max(abs(xdx) + abs(xdy), abs(ydx) + abs(ydy)))), 3);
+    let m = f32(mi);
+    let probe = shadow_cmp(ix - 1 - mi, iy - 1 - mi, z + zu * (cx - 1.0 - m) + zv * (cy - 1.0 - m)) +
+                shadow_cmp(ix + 2 + mi, iy - 1 - mi, z + zu * (cx + 2.0 + m) + zv * (cy - 1.0 - m)) +
+                shadow_cmp(ix - 1 - mi, iy + 2 + mi, z + zu * (cx - 1.0 - m) + zv * (cy + 2.0 + m)) +
+                shadow_cmp(ix + 2 + mi, iy + 2 + mi, z + zu * (cx + 2.0 + m) + zv * (cy + 2.0 + m)) +
+                shadow_cmp(ix, iy, z + zu * cx + zv * cy);
+    let q = dFdx(probe * frag_coord().x);
+    let edge = dFdx(probe) != 0.0 || dFdy(probe) != 0.0 || abs(q - 2.5) < 2.5;
+    let full = shadow_row(ix, iy - 1, z + zv * (cy - 1.0), zu, cx, wx) * wy.x + shadow_row(ix, iy, z + zv * cy, zu, cx, wx) * wy.y +
+               shadow_row(ix, iy + 1, z + zv * (cy + 1.0), zu, cx, wx) * wy.z + shadow_row(ix, iy + 2, z + zv * (cy + 2.0), zu, cx, wx) * wy.w;
+    let lit = select(edge, full, q * 0.2);
+    // haritanın dışı (kapsanmayan bölge) aydınlık; 0'ın kendisi de dışarıda: kapalı harita (shadow_mat = 0) ağırlık toplamının
+    // yuvarlamasına girmeden tam 1 verir
+    let inside = s.x > 0.0 && s.x <= 1.0 && s.y > 0.0 && s.y <= 1.0 && s.z <= 1.0;
     return select(inside, lit, 1.0);
+}
+
+// yükseklik h'nin ekran türevlerinden bozulmuş normal: n - bump · (yüzeydeki yükseklik eğimi). Türevler çağıranda: türevli kol GPU'da
+// dallanamaz (D43), kabartısız zemin de bu hesabı öderdi
+fn bump_normal(n: vec3, px: vec3, py: vec3, hx: f32, hy: f32) -> vec3 {
+    let r1 = cross(py, n);
+    let r2 = cross(n, px);
+    let det = dot(px, r1);
+    let g = (r1 * hx + r2 * hy) * select(det < 0.0, -1.0, 1.0);
+    return norm_safe(n * abs(det) - g * bump);
+}
+
+// parlaklık + gök yansıması; v göze doğru birim vektör, vis gölge çarpanı (yansıma gölgede de kalır, yalnız güneş kesilir)
+fn gloss_light(n: vec3, v: vec3, nl: f32, vis: f32) -> vec3 {
+    let h = norm_safe(v + to_light);
+    let ndh = max(dot(n, h), 0.0);
+    let m = 1.0 - clamp(dot(v, h), 0.0, 1.0);
+    let m2 = m * m;
+    let schlick = 0.6 + 0.4 * m2 * m2 * m;
+    // ndh^gloss ≈ (1 - gloss (1 - ndh) / 16)^16: pow'un log2 + exp2 polinomları yerine dört kare (görünüm 2'de +%37 → ölçüm D45)
+    let q = max(1.0 - gloss * (1.0 - ndh) * 0.0625, 0.0);
+    let q2 = q * q;
+    let q4 = q2 * q2;
+    let q8 = q4 * q4;
+    let sun = light_color * (q8 * q8 * schlick * clamp(nl * 8.0, 0.0, 1.0) * vis);
+    let r = reflect(-v, n);
+    let mv = 1.0 - clamp(dot(n, v), 0.0, 1.0);
+    let mv2 = mv * mv;
+    let sky = mix(fog_color, vec3(0.32, 0.52, 0.86), clamp(r.y, 0.0, 1.0));
+    return (sun + sky * (0.5 * mv2 * mv2 * mv)) * spec;
 }
 
 fn frag() -> vec4 {
     let texel = sample_aniso(uv);
-    let n = norm_safe(nrm);
+    let n0 = norm_safe(nrm);
+    let height = dot(texel.rgb, vec3(0.3, 0.6, 0.1));
+    let n = select(bump > 0.0, bump_normal(n0, dFdx(wpos), dFdy(wpos), dFdx(height), dFdy(height)), n0);
     let nl = dot(n, to_light);
     // yumuşak diffuse: Lambert ile half-Lambert² arası (wrap = 0 → Lambert, 1 → ((n·l)/2 + 1/2)²).
     // Kare, gölge tarafını kara basmadan kıvrımlardaki eğim farkını korur → kıvrımlar belli olur.
@@ -114,10 +196,14 @@ fn frag() -> vec4 {
     let diffuse = mix(max(nl, 0.0), h * h, wrap);
     // arkadan ışık (ters yüz aydınlanır), yumuşak
     let back = max(-nl, 0.0) * translucency;
-    let hemi = ambient * (0.75 + 0.25 * n.y);
-    let light = vec3(hemi) + light_color * (diffuse * shadow_lit(wpos) + back);
-    let c = texel.rgb * tint * light;
-    let d = length(wpos - eye);
+    let vis = shadow_lit(wpos);
+    // tepe gök, dip zemin rengi; ortalamaları eski tek renkli ortama yakın (tepe 1.0, dip 0.5)
+    let hemi = mix(vec3(0.56, 0.5, 0.44), vec3(0.96, 1.0, 1.08), n.y * 0.5 + 0.5) * ambient;
+    let light = hemi + light_color * (diffuse * vis + back);
+    let to_eye = eye - wpos;
+    let d = length(to_eye);
+    let v = to_eye * (1.0 / max(d, 0.0001));
+    let c = texel.rgb * tint * light + select(spec > 0.0, gloss_light(n, v, nl, vis), vec3(0.0));
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
     let x = max(d - fog_start, 0.0) * fog_scale;
     let f = 1.0 - exp2(-4.0 * x * x);

@@ -41,6 +41,10 @@ typedef struct LitUniforms {
     const Texture* shadow;
     Mat4 shadow_mat;    /* dünya → (u, v, derinlik), u, v ∈ [0, 1] */
     f32  shadow_bias;   /* derinlik sapması (ışık uzayı, 0..1 ölçeğinde) */
+    /* yalnız lit_hq.mtk (D45): 0 → kol çalışmaz */
+    f32  spec;          /* parlaklık + gök yansıması gücü */
+    f32  gloss;         /* parlaklık üssü */
+    f32  bump;          /* doku parlaklığı → yükseklik (m) */
     u32  lv_count;                  /* lit_uniforms_prepare doldurur */
     TexLevel lv[TEX_MAX_LEVELS];
 } LitUniforms;
