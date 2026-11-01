@@ -69,6 +69,7 @@ enum { PLAY_DRIVE, PLAY_WALK, PLAY_FLY, PLAY_COUNT };
 #include "audio/impact.h"
 #include "ui/editor.h"
 #include "gpu/gcmd.h"
+#include "matoki/wgsl.h"
 
 /* sahne 9: glTF kolu (bend_linear / STEP / CUBICSPLINE klipleri) + ECS hiyerarşisine bağlı dokunaçlar */
 #define ANIM_ARMS   3
@@ -279,6 +280,9 @@ static ShadeFn g_sky;                   /* sky.mtk (gökyüzü kubbesi) */
 static PreludeFn g_sky_pre;
 static PreludeFn g_water_pre;
 static PreludeFn g_std_vert_pre, g_wave_vert_pre;
+/* GPU programları (D42): aynı IR'dan WGSL; canlı derleme GPROG_LIT'i yeniler */
+enum { GPROG_STD_VERT = 1, GPROG_WAVE_VERT, GPROG_LIT, GPROG_HQ, GPROG_WATER, GPROG_SKY, GPROG_COUNT };
+static GpuProgram g_gpu[GPROG_COUNT];
 
 /* Matoki'de shader önsözle birlikte gelir; diğerlerinde önsöz yok */
 static PreludeFn lit_prelude_for(i32 mode) {
@@ -431,8 +435,25 @@ static MatokiProgram* matoki_load_hq_noshadow(Arena* a) {
     return matoki_load_src(a, "lit_hq.mtk (gölgesiz)", out, n - k + 3, MATOKI_STAGE_FRAG);
 }
 
+/* program GPU yolunun sınırlarını aşarsa g_gpu[id] öncekini korur (yazılım yolu etkilenmez) */
+static void gpu_prog_set(Arena* a, u32 id, const MatokiProgram* p) {
+    MatokiWgsl w;
+    MatokiError e;
+    if (!p) return;
+    if (!matoki_wgsl(a, p, &w, &e)) {
+        LOG("matoki: program %u WGSL'e çevrilemedi: %s", id, e.msg);
+        return;
+    }
+    g_gpu[id].id = id;
+    g_gpu[id].gen++;
+    g_gpu[id].wgsl = w;
+}
+
+static const GpuProgram* gpu_prog(u32 id) { return g_gpu[id].wgsl.text ? &g_gpu[id] : NULL; }
+
 static void matoki_lit_init(Arena* a) {
     MatokiProgram* p = matoki_load(a, "lit.mtk", MATOKI_STAGE_FRAG);
+    gpu_prog_set(a, GPROG_LIT, p);
     if (p) {
         g_matoki_lit = p->fn_fast;
         g_matoki_pre = p->prelude;
@@ -440,6 +461,7 @@ static void matoki_lit_init(Arena* a) {
     }
     MatokiProgram* hq = matoki_load(a, "lit_hq.mtk", MATOKI_STAGE_FRAG);
     MatokiProgram* hq0 = hq ? matoki_load_hq_noshadow(a) : NULL;
+    gpu_prog_set(a, GPROG_HQ, hq0 ? hq0 : hq);   /* GPU gölgesi faz 8c: şimdilik gölgesiz türev */
     if (hq) {
         g_hq_sh_lit = hq->fn_fast;
         g_hq_sh_pre = hq->prelude;
@@ -447,16 +469,19 @@ static void matoki_lit_init(Arena* a) {
         g_hq_pre = hq0 ? hq0->prelude : hq->prelude;
     }
     MatokiProgram* wf = matoki_load(a, "water.mtk", MATOKI_STAGE_FRAG);
+    gpu_prog_set(a, GPROG_WATER, wf);
     if (wf) {
         g_water = wf->fn_fast;
         g_water_pre = wf->prelude;
     }
     MatokiProgram* sk = matoki_load(a, "sky.mtk", MATOKI_STAGE_FRAG);
+    gpu_prog_set(a, GPROG_SKY, sk);
     if (sk) {
         g_sky = sk->fn_fast;
         g_sky_pre = sk->prelude;
     }
     MatokiProgram* sv = matoki_load(a, "std_vert.mtk", MATOKI_STAGE_VERT);
+    gpu_prog_set(a, GPROG_STD_VERT, sv);
     if (sv) {
         g_std_vert = (VertexFn)sv->fn_fast;
         g_std_vert_pre = sv->prelude;
@@ -465,6 +490,7 @@ static void matoki_lit_init(Arena* a) {
     if (wv && matoki_find_uniform(wv, "amp")->offset == __builtin_offsetof(VertUniforms, params)) {
         g_wave_vert = (VertexFn)wv->fn_fast;
         g_wave_vert_pre = wv->prelude;
+        gpu_prog_set(a, GPROG_WAVE_VERT, wv);
     }
 }
 
@@ -1465,21 +1491,27 @@ static void set_frame_uniforms(void) {
         mats[i]->prelude = pre;
         mats[i]->vert = vf;
         mats[i]->vert_prelude = vpre;
+        /* GPU: C / SIMD / Matoki lit bit-bit aynı shader → tek program */
+        mats[i]->gpu_frag = gpu_prog(g.shader_mode == SHADER_HQ ? GPROG_HQ : GPROG_LIT);
     }
     if (g_wave_vert) {
         g.m_water.vert = g_wave_vert;
         g.m_water.vert_prelude = g_wave_vert_pre;
+        g.m_water.gpu_vert = gpu_prog(GPROG_WAVE_VERT);
     }
     if (g_water && !g.capture) {
         g.m_water.shade = g_water;
         g.m_water.prelude = g_water_pre;
         g.m_ocean.shade = g_water;   /* köşeler CPU'da yazılı: köşe aşaması std (Matoki / C) */
         g.m_ocean.prelude = g_water_pre;
+        g.m_water.gpu_frag = gpu_prog(GPROG_WATER);
+        g.m_ocean.gpu_frag = gpu_prog(GPROG_WATER);
     }
     g.m_sky.shade = g_sky;
     g.m_sky.prelude = g_sky_pre;
     g.m_sky.vert = vf;
     g.m_sky.vert_prelude = vpre;
+    g.m_sky.gpu_frag = gpu_prog(GPROG_SKY);
 }
 
 /* gökyüzü kubbesi: kameraya ortalanmış, uzak düzlemin hemen içinde büyük küre (iç yüz, eleme yok) */
@@ -1705,15 +1737,23 @@ EXPORT(engine_set_shadow) void engine_set_shadow(i32 on) { g.shadow_on = on != 0
 EXPORT(engine_gpu_set) void engine_gpu_set(i32 on) { g.gpu_on = on != 0; }
 /* son karenin komut akışı (gpu/gcmd.h başlığıyla); GPU kipi kapalıysa ya da akış kurulamadıysa 0 */
 EXPORT(engine_gpu_cmds) u32* engine_gpu_cmds(void) { return g.gpu_on && g.gcmd.cap ? g.gcmd.words : NULL; }
-/* gömülü WGSL (assets/gpu_8a.wgsl) */
-EXPORT(engine_gpu_shader) const u8* engine_gpu_shader(void) {
-    const EmbedFile* f = embed_find("gpu_8a.wgsl");
-    return f ? f->data : NULL;
+/* WGSL programları: id 0 gömülü düz shader, diğerleri Matoki'den (D42); len 0 = program yok */
+EXPORT(engine_gpu_prog_count) u32 engine_gpu_prog_count(void) { return GPROG_COUNT; }
+EXPORT(engine_gpu_prog_text) const char* engine_gpu_prog_text(u32 id) {
+    if (id == GPROG_FLAT) {
+        const EmbedFile* f = embed_find("gpu_flat.wgsl");
+        return f ? (const char*)f->data : NULL;
+    }
+    return id < GPROG_COUNT ? g_gpu[id].wgsl.text : NULL;
 }
-EXPORT(engine_gpu_shader_len) u32 engine_gpu_shader_len(void) {
-    const EmbedFile* f = embed_find("gpu_8a.wgsl");
-    return f ? f->len : 0;
+EXPORT(engine_gpu_prog_len) u32 engine_gpu_prog_len(u32 id) {
+    if (id == GPROG_FLAT) {
+        const EmbedFile* f = embed_find("gpu_flat.wgsl");
+        return f ? f->len : 0;
+    }
+    return id < GPROG_COUNT ? g_gpu[id].wgsl.len : 0;
 }
+EXPORT(engine_gpu_prog_gen) u32 engine_gpu_prog_gen(u32 id) { return id < GPROG_COUNT ? g_gpu[id].gen : 0; }
 
 EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (!g.ready) return;
@@ -1906,7 +1946,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     set_frame_uniforms();
     /* GPU kipi: komut akışı pipe_begin'den önce (pipe_end kare arenasını pipe_begin noktasına geri sarar) */
     b32 gpu = g.gpu_on && gcmd_begin(&g.gcmd, &g.frame, PIPE_MAX_DRAWS, (u32)g.fb.w, (u32)g.fb.h,
-                                      color_pack(158, 184, 217, 255), 1.0f, g.flat ? GPU_MODE_FLAT : GPU_MODE_NORMAL);
+                                      color_pack(158, 184, 217, 255), 1.0f, gpu_prog(GPROG_STD_VERT));
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     if (gpu) pipe_set_gpu(&g.pipe, &g.gcmd);
@@ -2231,6 +2271,7 @@ static b32 lit_recompile(Arena* a, const char* src, u32 len, MatokiError* err, u
     g_matoki_lit = p->fn_fast;
     g_matoki_pre = p->prelude;
     g_matoki_full = p->fn;
+    gpu_prog_set(a, GPROG_LIT, p);   /* metin a'da: JIT'li programla aynı ömür */
     if (wasm_bytes) *wasm_bytes = p->wasm.len;
     return TRUE;
 }

@@ -182,6 +182,14 @@ void vert_std_c(const VertexIn* in, const void* uniforms, VertexOut* out) {
     }
 }
 
+static void vert_uniforms_fill(VertUniforms* vu, const Pipeline* p, const DrawItem* d) {
+    vu->model = d->model;
+    vu->view_proj = p->view_proj;
+    vu->normal_mat = mat3_normal_from_mat4(&d->model);
+    vu->time = p->time;
+    for (u32 k = 0; k < VERT_PARAMS; k++) vu->params[k] = d->mat->vert_params[k];
+}
+
 void pipe_draw(Pipeline* p, const DrawItem* d) {
     const Mesh* m = d->mesh;
     const Material* mat = d->mat;
@@ -200,9 +208,10 @@ void pipe_draw(Pipeline* p, const DrawItem* d) {
         return;
     }
     if (p->gpu) {
-        Mat3 nm = mat3_normal_from_mat4(&d->model);
+        VertUniforms gu;
+        vert_uniforms_fill(&gu, p, d);
         u32 before = p->gpu->draws;
-        gcmd_draw(p->gpu, m, &d->model, &p->view_proj, &nm, mat->cull, p->r->depth_test, p->r->depth_write);
+        gcmd_draw(p->gpu, m, &gu, mat->gpu_vert, mat->gpu_frag, mat->uniforms, mat->cull, p->r->depth_test, p->r->depth_write);
         if (p->gpu->draws == before) p->stats.draws_dropped++;
         else p->stats.tris_in += m->index_count / 3;
         return;
@@ -216,11 +225,7 @@ void pipe_draw(Pipeline* p, const DrawItem* d) {
     mem_zero(r, sizeof(*r));
     r->mesh = m;
     r->mat = mat;
-    vu->model = d->model;
-    vu->view_proj = p->view_proj;
-    vu->normal_mat = mat3_normal_from_mat4(&d->model);
-    vu->time = p->time;
-    for (u32 k = 0; k < VERT_PARAMS; k++) vu->params[k] = mat->vert_params[k];
+    vert_uniforms_fill(vu, p, d);
     r->vu = vu;
     /* çizim durumu: materyal + raster'ın o anki derinlik ayarı */
     const Raster* rs = p->r;

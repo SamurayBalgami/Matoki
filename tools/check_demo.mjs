@@ -93,5 +93,16 @@ for (const [scene, dtms] of [[5, 125], [6, 125], [3, 250]]) {
   check(worst <= 0, `sahne ${scene}: fizik süresi bütçe içinde`);
 }
 
+// 5. GPU programları (D42): her programın WGSL'i var; canlı derleme lit'in sürümünü artırır, reddedilen derleme artırmaz
+const GPROG_LIT = 3;
+const progText = (id) => new TextDecoder().decode(new Uint8Array(mem(), ex.engine_gpu_prog_text(id), ex.engine_gpu_prog_len(id)));
+for (let id = 0; id < ex.engine_gpu_prog_count(); id++) check(ex.engine_gpu_prog_len(id) > 0, `GPU programı ${id}: WGSL var`);
+const gen0 = ex.engine_gpu_prog_gen(GPROG_LIT), text0 = progText(GPROG_LIT);
+check(recompile(lit.replace('uniform wrap: vec4;', '').replace('0.75 + 0.25', '0.5 + 0.5')) === 1, 'değiştirilmiş lit derlenir');
+check(ex.engine_gpu_prog_gen(GPROG_LIT) === gen0 + 1 && progText(GPROG_LIT) !== text0, 'canlı derleme GPU programını yeniler');
+const gen1 = ex.engine_gpu_prog_gen(GPROG_LIT);
+check(recompile('fn frag( {') === 0 && ex.engine_gpu_prog_gen(GPROG_LIT) === gen1, 'reddedilen derleme GPU programına dokunmaz');
+check(recompile(afterTint('uniform wrap: vec4;')) === 0 && ex.engine_gpu_prog_gen(GPROG_LIT) === gen1, 'yerleşimi uymayan derleme GPU programına dokunmaz');
+
 console.log(fails ? `${fails} denetim başarısız` : 'tüm demo denetimleri geçti');
 process.exit(fails ? 1 : 0);

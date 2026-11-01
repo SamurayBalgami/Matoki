@@ -1,6 +1,6 @@
 # M13 — Xassemblianist/MatokiEngine sistemlerini bu depoya alma planı
 
-Durum: FAZ 0–7 + 8a TAMAM (2026-10-31) → sıradaki faz 8b (Matoki → WGSL).
+Durum: FAZ 0–7 + 8a + 8b TAMAM (2026-11-01) → sıradaki faz 8c (MSAA, gölge, panel, GPU süresi).
 Depo kuralı: yalnız bizim depoya (SamurayBalgami/Matoki) gönderilir; Xassemblianist deposuna hiçbir şey yazılmaz.
 Kaynak sürümü: faz 0–3 0a7b782; faz 4'ten itibaren 2ac467a (onların 61 yeni commit'inde faz 0–3 dosyaları değişmedi). Kaynak: https://github.com/Xassemblianist/MatokiEngine (0a7b782).
 Kararlar: ana depo bu depo; iki depo da aynı ekibin yönetiminde (izin sorunu yok); WebGPU en son, isteğe bağlı arka uç;
@@ -59,7 +59,7 @@ CPU simülasyon / GPU çizim (docs/DECISIONS.md D37).
 | 6 ✓ | ui (immediate-mode) + canlı Matoki editörü bizim `matoki_compile` / `engine_matoki_recompile` ile | ~1 900 | editörde hata konumlu gösterilir, derleme motoru düşürmez (D36) |
 | 7 ✓ | seçerek özellik: gölge haritası (`g3d_set_shadow`), ertelenmiş çizim, JIT WAT raster çekirdekleri — önce/sonra ölçümle | değişken | yalnız ölçülen kazanç varsa alınır |
 | 8a ✓ | WebGPU: C'de komut akışı (`DrawRec` → komut tamponu) + ince `web/gpu.mjs`; yoksa yazılım render'a dönüş | — | düz renkli küp iki yolda aynı (piksel farkı < eşik) |
-| 8b | Matoki → WGSL hedefi; lit / lit_hq / water / sky iki arka uçta | — | 10 görünüm × shader görüntü farkı testi |
+| 8b ✓ | Matoki → WGSL hedefi; lit / lit_hq / water / sky iki arka uçta | — | 10 görünüm × shader görüntü farkı testi |
 | 8c | GPU'da doku, MSAA, gölge, okyanus FFT görüntüsü; CPU/GPU boru hattı örtüşmesi; sayfada CPU ms / GPU ms / kare ms | — | 1080p önce/sonra ölçüm tablosu (bugün 30–52 ms) |
 
 Her faz ayrı commit (ve istenirse ayrı oturum / dal); hash'ler (`tools/hashes.mjs`) mevcut görünümlerde değişmemeli.
@@ -254,6 +254,14 @@ Kod incelemesi (yüksek düzey, 8 açı) 8 bulgu verdi; hepsi düzeltildi:
   (11 tur) 1,004 / 0,997. engine.wasm 581 633 → 585 137 bayt.
 - Not: GPU kipinde kare arenasından 16 384 yuvalık (4 MB) uniform alanı ayrılıyor; gerçek çizim sayısına göre
   küçültülebilir (8c).
+
+## Faz 8b notları (2026-11-01)
+- Ayrıntı ve ölçüm: D42. `matoki/wgsl`, `gcmd` sürüm 2, `assets/gpu_8a.wgsl` → `gpu_flat.wgsl` (yalnız düz shader),
+  `web/gpu.mjs` program + doku önbelleği, `test_matoki_wgsl` (5 test), `gpu_check.html` 3 shader × 10 görünüm.
+- Sonuç: 243/243 test (worker'lı / worker'sız), demo denetimleri geçti, yazılım kare hash'leri değişmedi.
+- A/B dersi: ilk ölçüm +%9,6 çıktı, ama `3d.html?gpu` aynı anda çalışıyordu; temiz koşuda fark gürültü içinde.
+- 8c'ye devredilen: panel durum satırları GPU kipinde yazılım değerlerini gösteriyor (MSAA 4x, raster SIMD, 0 köşe);
+  doku içerik sürümü; storage tampon doku maliyetinin GPU zaman damgasıyla ölçümü; uniform alanı (8 MB ayrılıyor).
 
 ## Riskler
 - Anlam farkları sessiz hata üretebilir (aynı adlı ama farklı davranan fonksiyonlar) → faz 0'da çift çift test.

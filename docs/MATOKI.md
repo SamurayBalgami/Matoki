@@ -7,7 +7,8 @@ Matoki, MATOKI motorunun kendi shader dilidir. Shader **tek bir piksel** için y
 ```
 kaynak (.mtk) → lexer → parser (AST) → sema (tipler, isimler, yerleşim) → lower (IR)
              → [sabit katlama + CSE kurulum sırasında] → DCE → codegen (wasm SIMD) → JIT
-                                                         └→ ir_eval (skaler kâhin, testler)
+                                                         ├→ ir_eval (skaler kâhin, testler)
+                                                         └→ wgsl (GPU arka ucu, D42)
 ```
 
 ## Örnek

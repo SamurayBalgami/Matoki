@@ -462,3 +462,33 @@ göre +%12-13: kısa iş, her çağrıda worker uyanması) → sıralı. Sürekl
 12 rastgele katlanmada (52 471 temas) taramalı ↔ `self_no_scan` birebir; üç bilerek bozma (son hücre, yarım tarama,
 min yerine i) testte yakalanır. Kalan: jöle kısıtları, üçgen teması, bayrak kısıtları — sırası bağımlı, bit bit aynı
 kalan kolay kazanç görülmedi; alt adım sayısını azaltmak sonucu değiştirir, ayrı karar.
+
+## D42. Matoki → WGSL: AST değil IR'dan, doku motorun kendi düzeniyle (M13 faz 8b)
+`matoki/wgsl.c` JIT'in kullandığı IR'dan üretir: düz SSA, canlı komut başına bir skaler `let`. sin, pow, exp2, doku süzme
+zaten IR aritmetiği olduğundan iki arka uç aynı işlemleri aynı sırayla yapar; WGSL'in yerleşik `sin` / `textureSample`
+işlevleri kullanılmaz (sürücüye göre değişirlerdi). Lane'e özgü semantik donanıma eşlenir (kaba türev, `@builtin(position)`).
+Uniform bloğu C yapısının ham baytları (`array<vec4u, 16>`, 256 baytlık yuva; köşe `@binding(0)`, parça `@binding(1)`).
+Doku: `Texture` başlığı (88 sözcük) + px tek storage tampon; IR'ın doku okumaları doğrudan bu tampona. Donanım örnekleyicisi
+değil, bilerek: bilinear / aniso / mip seçimi yazılım yoluyla aynı kalır. Bedeli GPU'da performans; ölçümü ve gerekirse
+donanım dokusuna geçiş 8c. `gcmd` akışı sürüm 2: `GC_TEX`, çizim başına köşe / parça programı, iki uniform yuvası (ardışık
+aynı materyal parça yuvasını paylaşır), 8 köşe akışı (uv dahil). Dalga köşe shader'ı artık GPU'da da çalışır. Bilinen sınır:
+doku kimliği adres + px + boyut, içerik sürümü yok; demo dokuları sabit, gölge haritası (8c) sürüm isteyecek.
+
+**Kabul** (`web/gpu_check.html`, Intel Gen12LP, 640×360, MSAA ve gölge kapalı, 10 görünüm):
+
+| Shader | Geçen | Fark > 8 olan piksel (en kötü) | Ortalama kanal farkı (en kötü) | En büyük kanal farkı | Derinlik hatası |
+|---|---|---|---|---|---|
+| düz | 10/10 | %0 (tolerans 0) | 0 | 0 | 0 |
+| lit | 10/10 | %0,055 | 0,103 | 228 | 0 |
+| lit_hq, su, gök | 10/10 | %0 | 0,164 | 8 | 0 |
+
+lit'in büyük farkları 1 piksellik kaymalar: en yakın komşu dokunun ve kaplamanın sert kenarlarında (10 görünümde 496 pikselin
+492'sinde aynı renk 3×3 komşulukta var). Eşik %0,1. Canlı derleme gerçek çizimde: kırmızı shader sonrası 37 893 kırmızı
+piksel, iki yol arasında 0 fark. Yazılım yolu: kare hash'leri aynı; tek thread A/B (11 tur, görünüm 1 / 3 / 6) oran
+0,995 / 0,988 / 1,005. engine.wasm 590 275 → 599 573 bayt. WGSL üretimi 0,03–1,0 ms / program, metin 4–78 KB.
+İlk kare `?gpu`'da boru hattı derlemesiyle yaklaşık 2 kat uzun (1280×720, 42 ms ↔ 22 ms, lit).
+
+Test: görüntü farkı anlamı koruyan yanlışları görmez: `round` → `floor` (`exp2` içinde) ortalama farkı değiştirmedi, denetimden
+geçti. Bu yüzden `test_matoki_wgsl` her IR komutunun ifadesini sabitler; aynı bozma orada yakalanır. Diğer iki bozma (`dpdy`
+yerine `dpdx`, doku başlığı −1) görüntü testinde %14–23'e varan farkla yakalanır. Sayısal sınır durumları (NaN, doygun
+kesme) WGSL belirtimine dayanır, donanımda tek tek sınanmadı; yalnız bir adaptörde koşuldu. Kalan: 8c (MSAA, gölge, panel, GPU süresi).
