@@ -257,7 +257,7 @@ Kod incelemesi (yüksek düzey, 8 açı) 8 bulgu verdi; hepsi düzeltildi:
 
 ## Faz 8b notları (2026-11-01)
 - Ayrıntı ve ölçüm: D42. `matoki/wgsl`, `gcmd` sürüm 2, `assets/gpu_8a.wgsl` → `gpu_flat.wgsl` (yalnız düz shader),
-  `web/gpu.mjs` program + doku önbelleği, `test_matoki_wgsl` (5 test), `gpu_check.html` 3 shader × 10 görünüm.
+  `web/gpu.mjs` program + doku önbelleği, `test_matoki_wgsl` (4 test), `test_gcmd` (+1), `gpu_check.html` 3 shader × 10 görünüm.
 - Sonuç: 243/243 test (worker'lı / worker'sız), demo denetimleri geçti, yazılım kare hash'leri değişmedi.
 - A/B dersi: ilk ölçüm +%9,6 çıktı, ama `3d.html?gpu` aynı anda çalışıyordu; temiz koşuda fark gürültü içinde.
 - 8c'ye devredilen: panel durum satırları GPU kipinde yazılım değerlerini gösteriyor (MSAA 4x, raster SIMD, 0 köşe);
