@@ -5,10 +5,13 @@
 // sayfa yazılım render'da kalır.
 
 const GC_END = 0, GC_FRAME = 1, GC_MESH = 2, GC_DRAW = 3, GC_TEX = 4, GC_SHADOW = 5, GC_SHADOW_END = 6, GC_OVERLAY = 7, GPROG_OVERLAY = 1, GPROG_NONE = 0xFFFFFFFF, MAGIC = 0x5550474d, SLOT = 256, TEX_HEADER = 352;
+const STREAM_VERSION = 3;   // gpu/gcmd.h GCMD_VERSION
 const CULL = ['none', 'back', 'front'];   // raster.h CullMode sırası; ön yüz NDC'de CCW (D3)
 
 export async function createGpu(ex, memory, colorFormat) {
   if (!navigator.gpu) return null;
+  // önbellekten gelen eski JS + yeni motor (ya da tersi) sessizce bozuk çizmesin: kurulum düşer, sayfa yazılım render'da kalır
+  if (ex.engine_gpu_stream_version?.() !== STREAM_VERSION) throw new Error(`GPU akışı sürümü uyuşmuyor (motor ${ex.engine_gpu_stream_version?.()}, gpu.mjs ${STREAM_VERSION}): sayfayı yenileyin`);
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) return null;
   const hasTs = adapter.features.has('timestamp-query');

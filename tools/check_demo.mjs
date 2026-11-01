@@ -104,5 +104,9 @@ const gen1 = ex.engine_gpu_prog_gen(GPROG_LIT);
 check(recompile('fn frag( {') === 0 && ex.engine_gpu_prog_gen(GPROG_LIT) === gen1, 'reddedilen derleme GPU programına dokunmaz');
 check(recompile(afterTint('uniform wrap: vec4;')) === 0 && ex.engine_gpu_prog_gen(GPROG_LIT) === gen1, 'yerleşimi uymayan derleme GPU programına dokunmaz');
 
+// 6. gpu.mjs'in beklediği akış sürümü motorla aynı (biri değişip öteki unutulursa GPU kurulumu düşer)
+const jsVersion = +fs.readFileSync(new URL('../web/gpu.mjs', import.meta.url), 'utf8').match(/STREAM_VERSION = (\d+)/)[1];
+check(jsVersion === ex.engine_gpu_stream_version(), `GPU akış sürümü: gpu.mjs ${jsVersion}, motor ${ex.engine_gpu_stream_version()}`);
+
 console.log(fails ? `${fails} denetim başarısız` : 'tüm demo denetimleri geçti');
 process.exit(fails ? 1 : 0);

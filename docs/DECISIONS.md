@@ -572,3 +572,7 @@ doku okuması donanım örnekleyicisi değil, storage tampon + 16'ya kadar bilin
 GPU kazancı büyük olasılıkla burada; donanım dokusu görüntüyü değiştirir, ayrı karar. Sınırlar: tek adaptör. Bu ölçüm döngüsünde
 kare başına duvar süresi 15-41 ms (kuyruk bekleme dahil); ön izleme bölmesi rAF'ı kıstığı için gerçek sayfada FPS ölçülemedi (yazılım
 da 1 FPS gösterdi). Gölge geçişi zaman damgası 0-0,7 ms okudu; bu adaptörde güvenilirliği doğrulanmadı.
+
+Yayın dersi: ilk Pages denetimi 32/60 verdi (yerelde 60/60). Neden kod değil: tarayıcı `max-age=600` ile eski `gpu.mjs`'i yeni
+`engine.wasm`'la çalıştırdı, sessizce bozuk çizdi. Düzeltme: `coi.js` aynı kökenli dosyaları her açılışta sunucuya sordurur;
+`createGpu` akış sürümünü denetler, uyuşmazsa kurulum düşer ve sayfa yazılım render'da kalır (`check_demo` iki sürümün eşitliğini denetler).

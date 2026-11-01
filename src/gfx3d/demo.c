@@ -1807,6 +1807,7 @@ EXPORT(engine_gpu_cmds) u32* engine_gpu_cmds(void) { return g.gpu_on && g.gcmd.c
 static const EmbedFile* gpu_prog_embed(u32 id) {
     return id == GPROG_FLAT ? embed_find("gpu_flat.wgsl") : id == GPROG_OVERLAY ? embed_find("gpu_overlay.wgsl") : NULL;
 }
+EXPORT(engine_gpu_stream_version) u32 engine_gpu_stream_version(void) { return GCMD_VERSION; }
 EXPORT(engine_gpu_prog_count) u32 engine_gpu_prog_count(void) { return GPROG_COUNT; }
 EXPORT(engine_gpu_prog_text) const char* engine_gpu_prog_text(u32 id) {
     const EmbedFile* f = gpu_prog_embed(id);
