@@ -89,6 +89,7 @@ SoftBody* soft_cloth(Arena* a, Vec3 origin, Vec3 du, Vec3 dv, u32 nu, u32 nv, f3
     while (b->hash_cap < 2 * n) b->hash_cap <<= 1;
     b->hash_start = ARENA_ARRAY(a, u32, b->hash_cap + 1);
     b->hash_items = ARENA_ARRAY(a, u32, n);
+    b->hash_key = ARENA_ARRAY(a, u32, n);
     b->self_collide = TRUE;
     b->tri_collide = TRUE;
     b->catch_fast = TRUE;
@@ -703,65 +704,117 @@ static void collide_rigid(SoftWorld* sw, PhysWorld* pw, u32 k, SoftBody* b, Cand
 
 /* ---- kumaş öz-çarpışması: uzamsal karma (hücre = 2r), sayma sıralaması (artan indeks, belirleyici) ---- */
 
-static inline u32 cell_hash(i32 x, i32 y, i32 z, u32 mask) {
-    return ((u32)x * 92837111u ^ (u32)y * 689287499u ^ (u32)z * 283923481u) & mask;
+/* karma = (x·A ^ y·B ^ z·C) & maske; eksen başına çarpımlar ayrı: 27 komşu hücre için parçacık başına 9 çarpım */
+#define HASH_A 92837111u
+#define HASH_B 689287499u
+#define HASH_C 283923481u
+
+static inline u32 cell_key(Vec3 p, f32 inv, u32 mask) {
+    return ((u32)(i32)m_floorf(p.x * inv) * HASH_A ^ (u32)(i32)m_floorf(p.y * inv) * HASH_B ^
+            (u32)(i32)m_floorf(p.z * inv) * HASH_C) & mask;
+}
+
+/* p'nin hücresi ve 26 komşusunun kovaları, sabit sırada (z, y, x = −1, 0, 1) */
+static void neighbor_buckets(Vec3 p, f32 inv, u32 mask, u32 out[27]) {
+    i32 cx = (i32)m_floorf(p.x * inv), cy = (i32)m_floorf(p.y * inv), cz = (i32)m_floorf(p.z * inv);
+    u32 hx[3], hy[3], hz[3];
+    for (i32 o = 0; o < 3; o++) {
+        hx[o] = (u32)(cx + o - 1) * HASH_A;
+        hy[o] = (u32)(cy + o - 1) * HASH_B;
+        hz[o] = (u32)(cz + o - 1) * HASH_C;
+    }
+    u32 c = 0;
+    for (u32 dz = 0; dz < 3; dz++) {
+        for (u32 dy = 0; dy < 3; dy++) {
+            for (u32 dx = 0; dx < 3; dx++) out[c++] = (hx[dx] ^ hy[dy] ^ hz[dz]) & mask;
+        }
+    }
+}
+
+/* sıralı döngünün düzeltme koşulu (i < j); simetrik */
+static b32 self_pair_hits(const SoftBody* b, u32 i, u32 j, f32 d2) {
+    if (b->w[i] + b->w[j] == 0.0f) return FALSE;
+    Vec3 dv = v3_sub(b->x[j], b->x[i]);
+    f32 l2 = v3_dot(dv, dv);
+    if (l2 >= d2 || l2 < 1e-18f) return FALSE;
+    Vec3 r0 = v3_sub(b->x0[j], b->x0[i]);
+    return v3_dot(r0, r0) >= d2;
+}
+
+/* Ön tarama (yalnız okur): düzeltme yapacak ilk parçacık i0 = menzildeki çiftlerin min(i, j)'si; çift yoksa count.
+ * Sıralı döngü bir çift düzeltene dek konum değiştirmez → i0'dan önceki her i'nin denetimi tarama anındaki konumlarla
+ * aynıdır ve hiçbir şey yapmaz; döngü i0'dan başlar, sonuç bit bit aynı. Tarama sıradan bağımsız olduğu için yarım
+ * kabuk: kendi hücresi (j > i) + 13 "ileri" komşu → her çift bir kez (27 yerine 14 kova). Thread'lere bölmek ölçümde
+ * daha yavaştı (kısa iş, her çağrıda worker uyanması). */
+static u32 self_scan(const SoftBody* b, f32 d2, f32 inv, u32 mask) {
+    u32 first = b->count;
+    for (u32 i = 0; i < b->count; i++) {
+        u32 hb[27];
+        neighbor_buckets(b->x[i], inv, mask, hb);
+        /* hb sırası z, y, x = −1..1: indeks 13 kendi hücresi, 14..26 ileri yarı */
+        for (u32 q = 13; q < 27; q++) {
+            for (u32 k = b->hash_start[hb[q]], e = b->hash_start[hb[q] + 1]; k < e; k++) {
+                u32 j = b->hash_items[k];
+                if (q == 13 ? j <= i : j == i) continue;
+                u32 lo = i < j ? i : j;
+                if (lo < first && self_pair_hits(b, lo, lo == i ? j : i, d2)) first = lo;
+            }
+        }
+    }
+    return first;
 }
 
 static void self_collide(SoftWorld* sw, SoftBody* b) {
     f32 d = 2.0f * b->radius, d2 = d * d, inv = 1.0f / d;
     u32 n = b->count, mask = b->hash_cap - 1;
     u32* start = b->hash_start;
+    u32* key = b->hash_key;
     mem_zero(start, sizeof(u32) * (b->hash_cap + 1));
+    /* sayma + doldurma arasında konumlar değişmez: anahtar bir kez */
     for (u32 i = 0; i < n; i++) {
-        Vec3 p = b->x[i];
-        start[cell_hash((i32)m_floorf(p.x * inv), (i32)m_floorf(p.y * inv), (i32)m_floorf(p.z * inv), mask) + 1]++;
+        key[i] = cell_key(b->x[i], inv, mask);
+        start[key[i] + 1]++;
     }
     for (u32 k = 0; k < b->hash_cap; k++) start[k + 1] += start[k];
     /* doldurma: start[h] ilerletilir, sonra bir kaydırılarak geri alınır */
-    for (u32 i = 0; i < n; i++) {
-        Vec3 p = b->x[i];
-        u32 h = cell_hash((i32)m_floorf(p.x * inv), (i32)m_floorf(p.y * inv), (i32)m_floorf(p.z * inv), mask);
-        b->hash_items[start[h]++] = i;
-    }
+    for (u32 i = 0; i < n; i++) b->hash_items[start[key[i]]++] = i;
     for (u32 k = b->hash_cap; k > 0; k--) start[k] = start[k - 1];
     start[0] = 0;
-    for (u32 i = 0; i < n; i++) {
-        Vec3 p = b->x[i];
-        i32 cx = (i32)m_floorf(p.x * inv), cy = (i32)m_floorf(p.y * inv), cz = (i32)m_floorf(p.z * inv);
-        for (i32 dz = -1; dz <= 1; dz++) {
-            for (i32 dy = -1; dy <= 1; dy++) {
-                for (i32 dx = -1; dx <= 1; dx++) {
-                    /* (komşu hücreler aynı karma kovasına düşerse çift iki kez işlenir: seyrek ve zararsız) */
-                    u32 h = cell_hash(cx + dx, cy + dy, cz + dz, mask);
-                    for (u32 k = start[h]; k < start[h + 1]; k++) {
-                        u32 j = b->hash_items[k];
-                        if (j <= i) continue;
-                        f32 wi = b->w[i], wj = b->w[j];
-                        if (wi + wj == 0.0f) continue;
-                        Vec3 dv = v3_sub(b->x[j], b->x[i]);
-                        f32 l2 = v3_dot(dv, dv);
-                        if (l2 >= d2 || l2 < 1e-18f) continue;
-                        Vec3 r0 = v3_sub(b->x0[j], b->x0[i]);
-                        if (v3_dot(r0, r0) < d2) continue;   /* dinlenmede zaten yakın: kumaşın kendi örgüsü */
-                        f32 l = m_sqrtf(l2);
-                        Vec3 nn = v3_scale(dv, 1.0f / l);
-                        f32 depth = d - l;
-                        Vec3 corr = v3_scale(nn, depth / (wi + wj));
-                        b->x[i] = v3_sub(b->x[i], v3_scale(corr, wi));
-                        b->x[j] = v3_add(b->x[j], v3_scale(corr, wj));
-                        /* sürtünme: göreli teğetsel yer değiştirme */
-                        Vec3 rel = v3_sub(v3_sub(b->x[j], b->prev[j]), v3_sub(b->x[i], b->prev[i]));
-                        Vec3 tg = v3_sub(rel, v3_scale(nn, v3_dot(rel, nn)));
-                        f32 lt = v3_len(tg);
-                        if (lt > 0.0f) {
-                            Vec3 fr = lt < b->friction * depth ? tg : v3_scale(tg, b->friction * depth / lt);
-                            fr = v3_scale(fr, 1.0f / (wi + wj));
-                            b->x[i] = v3_add(b->x[i], v3_scale(fr, wi));
-                            b->x[j] = v3_sub(b->x[j], v3_scale(fr, wj));
-                        }
-                        sw->self_contacts++;
-                    }
+    u32 i0 = b->self_no_scan ? 0 : self_scan(b, d2, inv, mask);
+    for (u32 i = i0; i < n; i++) {
+        /* hücre, i'nin sırası geldiğindeki konumdan (önceki çiftlerin düzeltmesi dahil) */
+        u32 hb[27];
+        neighbor_buckets(b->x[i], inv, mask, hb);
+        for (u32 q = 0; q < 27; q++) {
+            /* (komşu hücreler aynı karma kovasına düşerse çift iki kez işlenir: seyrek ve zararsız) */
+            u32 h = hb[q];
+            for (u32 k = start[h], e = start[h + 1]; k < e; k++) {
+                u32 j = b->hash_items[k];
+                if (j <= i) continue;
+                f32 wi = b->w[i], wj = b->w[j];
+                if (wi + wj == 0.0f) continue;
+                Vec3 dv = v3_sub(b->x[j], b->x[i]);
+                f32 l2 = v3_dot(dv, dv);
+                if (l2 >= d2 || l2 < 1e-18f) continue;
+                Vec3 r0 = v3_sub(b->x0[j], b->x0[i]);
+                if (v3_dot(r0, r0) < d2) continue;   /* dinlenmede zaten yakın: kumaşın kendi örgüsü */
+                f32 l = m_sqrtf(l2);
+                Vec3 nn = v3_scale(dv, 1.0f / l);
+                f32 depth = d - l;
+                Vec3 corr = v3_scale(nn, depth / (wi + wj));
+                b->x[i] = v3_sub(b->x[i], v3_scale(corr, wi));
+                b->x[j] = v3_add(b->x[j], v3_scale(corr, wj));
+                /* sürtünme: göreli teğetsel yer değiştirme */
+                Vec3 rel = v3_sub(v3_sub(b->x[j], b->prev[j]), v3_sub(b->x[i], b->prev[i]));
+                Vec3 tg = v3_sub(rel, v3_scale(nn, v3_dot(rel, nn)));
+                f32 lt = v3_len(tg);
+                if (lt > 0.0f) {
+                    Vec3 fr = lt < b->friction * depth ? tg : v3_scale(tg, b->friction * depth / lt);
+                    fr = v3_scale(fr, 1.0f / (wi + wj));
+                    b->x[i] = v3_add(b->x[i], v3_scale(fr, wi));
+                    b->x[j] = v3_sub(b->x[j], v3_scale(fr, wj));
                 }
+                sw->self_contacts++;
             }
         }
     }

@@ -6,6 +6,7 @@
 #include "core/math.h"
 #include "phys/phys.h"
 #include "phys/soft.h"
+#include "core/rng.h"
 
 static const f32 DT = 1.0f / 60.0f;
 
@@ -128,6 +129,55 @@ TEST(cloth_self_collision_pile) {
     test_note("  adım ms", ms[1], 3);
     CHECK(deep[0] > 0);    /* sorunu doğrular */
     CHECK(deep[1] == 0);
+}
+
+/* öz-çarpışma ön taraması (self_scan) tam döngüyle bit bit aynı: katlanan kumaşta gerçekten çarpışma varken.
+ * seed 0 = sade kurulum (hash eski, taramasız koddan); diğerleri parçacık başına rastgele hız → farklı katlanmalar */
+#define PILE_HASH_SEED0 3180667438u
+
+static u32 pile_hash(u32 seed, b32 scan, u32* contacts, f64* ms) {
+    PhysWorld* pw = rigid(4);
+    BodyDesc g = phys_desc_plane(v3(0, 1, 0), 0.0f);
+    g.friction = 0.6f;
+    phys_add_body(pw, &g);
+    SoftWorld* sw = ARENA_NEW(test_arena(), SoftWorld);
+    soft_world_init(sw, test_arena(), 2);
+    SoftBody* c = soft_cloth(test_arena(), v3(-0.6f, 2.6f, 0), v3(1.2f, 0, 0), v3(0.15f, -2.4f, 0.1f), 12, 24, 0.3f, 0.0f, 1e-4f, 0.02f);
+    c->drag = 0.0f;
+    c->self_no_scan = !scan;
+    if (seed) {
+        Rng r = rng_make(seed);
+        for (u32 i = 0; i < c->count; i++) c->v[i] = v3(rng_range(&r, -1.5f, 1.5f), rng_range(&r, -1.5f, 1.5f), rng_range(&r, -1.5f, 1.5f));
+    }
+    soft_world_add(sw, c);
+    *contacts = 0;
+    for (u32 s = 0; s < 150; s++) {
+        phys_step(pw, DT);
+        soft_world_step(sw, pw, DT);
+        *contacts += sw->self_contacts;
+        *ms += sw->step_ms;
+    }
+    return soft_hash(sw);
+}
+
+TEST(cloth_self_collision_scan_matches_full_loop) {
+    u32 total = 0, same = 0;
+    f64 ms0 = 0.0, ms1 = 0.0;
+    for (u32 seed = 0; seed < 12; seed++) {
+        u32 c0, c1;
+        u32 h0 = pile_hash(seed, FALSE, &c0, &ms0), h1 = pile_hash(seed, TRUE, &c1, &ms1);
+        if (seed == 0) {
+            test_note("seed 0 hash", h0, 0);
+            CHECK(h0 == PILE_HASH_SEED0);
+        }
+        same += h0 == h1 && c0 == c1;
+        total += c0;
+    }
+    test_note("öz-temas, 12 kumaş", total, 0);
+    test_note("  adım ms, taramasız", ms0 / (12.0 * 150.0), 3);
+    test_note("  adım ms, taramalı", ms1 / (12.0 * 150.0), 3);
+    CHECK(total > 10000);
+    CHECK(same == 12);
 }
 
 static u32 flag_scene_hash(f64* ms_out) {

@@ -45,10 +45,12 @@ typedef struct SoftBody {
     /* Faz 8: kumaş */
     Vec3*     x0;         /* dinlenme konumları (öz-çarpışmada dinlenmede yakın çiftler hariç) */
     b32       self_collide;   /* parçacık-parçacık öz-çarpışma (uzamsal karma) */
+    b32       self_no_scan;   /* test: ön taramasız tam döngü (sonuç bit bit aynı olmalı) */
     b32       tri_collide;    /* rijit gövde ↔ yüzey üçgeni teması (yavaş gövdeler; GJK/EPA dar faz) */
     b32       catch_fast;     /* hızlı gövdeyi (> 5 m/s) ağ gibi yakala: iz silindiri + iki yönlü tutma */
     u32*      hash_start; /* karma tablosu: hücre başlangıçları (hash_cap + 1) */
     u32*      hash_items;
+    u32*      hash_key;   /* parçacığın karma kovası (öz-çarpışma tablosu kurulurken) */
     u32       hash_cap;
 } SoftBody;
 

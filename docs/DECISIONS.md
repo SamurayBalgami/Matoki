@@ -448,4 +448,17 @@ olamaz; bütçe dolarsa artan süre atılır (sınırlı ağır çekim). Ölçü
 tümünde hız 1,000; 939 gövdeli sahne 3'te 4 fps'te adım 1,2 ms, 15 adım 17 ms (bütçe 125). Bütçe dalı: oran geçici
 %1'e indirilince sahne 6 fizik ~5 ms/kare'de kaldı, hız 0,14'e düştü (beklenen). `check_demo`: 8 / 4 fps'te hız
 > 0,99 ve fizik ≤ bütçe + bir adım (eski yapıda üç hız denetimi başarısız: 0,533 / 0,533 / 0,267).
-Bulgu: sahne 6 yumuşak cisim adımı 2,6 ms (tek thread, 10 alt adım) — 60 fps karenin belirgin payı; ayrı iş.
+Bulgu: sahne 6 yumuşak cisim adımı 2,6 ms (tek thread, 10 alt adım) — 60 fps karenin belirgin payı: D41.
+
+## D41. Kumaş öz-çarpışmasında sıradan bağımsız ön tarama
+Profil (sahne 6 eşi, adım ~2,6 ms): öz-çarpışma %45, ama bayrakta menzile giren çift hiç yok (adım başı 103 680 kova
+yoklaması, 60 648 aday, 0 düzeltme). Sıralı Gauss-Seidel döngüsü düzeltme yapana dek konum değiştirmez: `self_scan`
+yalnız okuyarak ilk düzeltecek parçacığı (menzildeki çiftlerin min(i, j)'si) bulur, döngü oradan başlar → sonuç bit bit
+aynı. Tarama sıra korumak zorunda olmadığı için yarım kabuk (27 yerine 14 kova, her çift bir kez); kova anahtarı
+parçacık başına bir kez. A/B (eski ↔ yeni dönüşümlü, 6 tur × 600 kare, üçer koşu): 1 thread −%23,4 … −%24,0,
+16 thread −%20,7 … −%23,6 (noise ±%2-4). Taramayı thread'lere bölmek denendi, ölçümde daha yavaş (aynı yapı sıralıya
+göre +%12-13: kısa iş, her çağrıda worker uyanması) → sıralı. Sürekli çarpışan kumaşta da yavaşlama yok (adım
+0,997 → 0,926 ms). Doğrulama: `soft_demo_scene` hash'i ve katlanan kumaş seed 0 hash'i değişiklik öncesi koddan sabit;
+12 rastgele katlanmada (52 471 temas) taramalı ↔ `self_no_scan` birebir; üç bilerek bozma (son hücre, yarım tarama,
+min yerine i) testte yakalanır. Kalan: jöle kısıtları, üçgen teması, bayrak kısıtları — sırası bağımlı, bit bit aynı
+kalan kolay kazanç görülmedi; alt adım sayısını azaltmak sonucu değiştirir, ayrı karar.
