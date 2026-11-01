@@ -4,8 +4,10 @@
  *   - kaydırma miktarı uniform ise lane 0'dan alınır, değilse lane lane skaler kaydırma
  *   - DERIV işleneni uniform ise sabit 0 (ir_eval aynı kuralı uygular)
  *   - texel / doku sözcüğü okuma: adresler vektörde, lane başına v128.load32_lane (wasm'da gather yok);
- *     indeks quad-sabitse tek v128.load32_splat. Uniform'lar da v128.load32_splat ile okunur. */
+ *     indeks quad-sabitse tek v128.load32_splat. Uniform'lar da v128.load32_splat ile okunur.
+ *   - quad-sabit maskeli select'in kolları gerçek dalda (ir_guard, D43); select yerinde kalır, sonuç bit bit aynı. */
 #include "matoki/codegen.h"
+#include "matoki/ir_guard.h"
 #include "core/jobs.h"
 #include "core/math.h"
 #include "core/mem.h"
@@ -64,7 +66,7 @@ static void append(WB* dst, const WB* src) {
 
 /* ---- komutlar ---- */
 enum {
-    OP_END = 0x0b, OP_LOCAL_GET = 0x20, OP_LOCAL_SET = 0x21,
+    BLOCK_VOID = 0x40, OP_IF = 0x04, OP_ELSE = 0x05, OP_END = 0x0b, OP_LOCAL_GET = 0x20, OP_LOCAL_SET = 0x21,
     OP_I32_LOAD = 0x28, OP_F32_LOAD = 0x2a, OP_I32_STORE = 0x36, OP_I32_CONST = 0x41,
     OP_I32_ADD = 0x6a, OP_I32_SHL = 0x74, OP_I32_SHR_S = 0x75, OP_I32_SHR_U = 0x76,
     OP_SIMD = 0xfd
@@ -252,6 +254,7 @@ typedef struct Plan {
     u8*  load;        /* bu gövdede önbellekten okunur (FAST) */
     u8*  need_v;      /* v128 biçimi gerekiyor */
     u8*  need_s;      /* skaler biçimi gerekiyor */
+    IrGuards guards;  /* FULL / FAST gövdeleri dallanır; PRELUDE çizim-sabittir, düz */
 } Plan;
 
 typedef struct Emit {
@@ -645,6 +648,12 @@ static void body_needs(const IrFunc* f, Plan* pl, u32 kind) {
             if (pl->hoist[i]) pl->need_v[i] = 1;
         }
     } else {
+        for (u32 gr = 0; gr < pl->guards.ngroups; gr++) {
+            if (!pl->guards.branch[gr]) continue;
+            IrRef m = pl->guards.mask[gr];
+            if (scal(f, m)) pl->need_s[m] = 1;
+            else pl->need_v[m] = 1;
+        }
         pl->need_v[f->out] = 1;
         if (f->kill) pl->need_v[f->kill] = 1;
         for (u32 k = 0; k < f->nxout; k++) pl->need_v[f->xout[k]] = 1;
@@ -655,6 +664,37 @@ static void body_needs(const IrFunc* f, Plan* pl, u32 kind) {
 static void cache_addr(WB* body) {
     byte(body, OP_GLOBAL_GET);
     uleb(body, 0);
+}
+
+/* düğümün üyeleri sırayla; grubun ilk select'inden önce kolları (dal ya da düz) */
+static b32 emit_node(const Emit* e, u32 node) {
+    const IrGuards* g = &e->pl->guards;
+    const IrFunc* f = e->f;
+    WB* b = e->b;
+    for (u32 i = g->nodes[node].head; i; i = g->next[i]) {
+        if (g->group_at[i]) {
+            u32 gr = g->group_at[i] - 1u;
+            if (g->branch[gr]) {
+                IrRef m = g->mask[gr];
+                if (scal(f, m)) {
+                    sget(e, m);
+                } else {
+                    vget(e, m);
+                    simd(b, S_I32X4_EXTRACT);
+                    byte(b, 0);
+                }
+                byte(b, OP_IF);
+                byte(b, BLOCK_VOID);
+            }
+            if (!emit_node(e, ir_guard_true(gr))) return FALSE;
+            if (g->branch[gr]) byte(b, OP_ELSE);
+            if (!emit_node(e, ir_guard_false(gr))) return FALSE;
+            if (g->branch[gr]) byte(b, OP_END);
+        }
+        if (!e->pl->emit[i]) continue;
+        if (!(scal(f, i) ? emit_uniform(e, i) : emit_vector(e, i))) return FALSE;
+    }
+    return TRUE;
 }
 
 static b32 emit_body(WB* body, const IrFunc* f, Plan* pl, u32 kind) {
@@ -691,10 +731,14 @@ static b32 emit_body(WB* body, const IrFunc* f, Plan* pl, u32 kind) {
             }
         }
     }
-    for (u32 i = 1; i < f->count; i++) {
-        if (!pl->emit[i]) continue;
-        b32 ok = scal(f, i) ? emit_uniform(&e, i) : emit_vector(&e, i);
-        if (!ok) return FALSE;
+    if (kind == BODY_PRELUDE) {
+        for (u32 i = 1; i < f->count; i++) {
+            if (!pl->emit[i]) continue;
+            b32 ok = scal(f, i) ? emit_uniform(&e, i) : emit_vector(&e, i);
+            if (!ok) return FALSE;
+        }
+    } else if (!emit_node(&e, 0)) {
+        return FALSE;
     }
     if (kind == BODY_PRELUDE) {
         for (u32 i = 1; i < f->count; i++) {
@@ -813,13 +857,14 @@ b32 codegen_wasm(IrFunc* f, Arena* a, WasmModule* out) {
     out->live_insts = live;
     Plan pl;
     plan_make(f, a, &pl);
+    ir_guard_build(a, f, pl.du, FALSE, &pl.guards);
     out->hoisted = pl.nhoist;
     out->cache = pl.cache;
     out->cache_stride = pl.cache_stride;
 
     WB bodies[3];
     for (u32 k = 0; k < 3; k++) {
-        wb_init(&bodies[k], a, 256 + live * 112 + pl.nhoist * 32);
+        wb_init(&bodies[k], a, 256 + live * 112 + pl.nhoist * 32 + pl.guards.ngroups * 16);
         if (!emit_body(&bodies[k], f, &pl, k)) return FALSE;
     }
     out->body_bytes = bodies[BODY_FULL].len;

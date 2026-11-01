@@ -1,12 +1,14 @@
 /* matoki/wgsl.c — IR → WGSL metni (matoki/wgsl.h, D42). Komut başına bir satır: `let vN: f32 = ...;`, referanslar da
  * adla: sabit bile olsa işlenen `let` olduğundan WGSL sabit değerlendirmesi (1/0 derleme hatası) devreye girmez.
  * Lane'e özgü semantik donanıma eşlenir: IR_DERIV_X/Y kaba türev, FRAG_X/Y @builtin(position) (zaten piksel + 0,5).
- * Maskeler I32 (tüm bitler 1 / 0) kalır, F32 select tam maske sözleşmesiyle (ir.h) WGSL select olur. */
+ * Maskeler I32 (tüm bitler 1 / 0) kalır, F32 select tam maske sözleşmesiyle (ir.h) WGSL select olur.
+ * Quad-sabit maskeli kollar `if` içinde (ir_guard, D43): kol değerleri işlev başında `var`, türev içeren kol dallanmaz. */
 #include "matoki/wgsl.h"
 #include "core/mem.h"
+#include "matoki/ir_guard.h"
 #include "matoki/matoki.h"
 
-#define WGSL_LINE_BYTES 112u   /* en uzun satırın üst sınırı */
+#define WGSL_LINE_BYTES 176u   /* komut başına üst sınır: en uzun satır + var bildirimi + if / else */
 #define WGSL_HEAD_BYTES 2048u
 
 static void put_hex(StrBuf* s, u32 v, u32 digits) {
@@ -222,24 +224,56 @@ static b32 wgsl_fail(MatokiError* err, const char* msg) {
     return FALSE;
 }
 
-static void put_body(StrBuf* s, const IrFunc* f, const MatokiWgsl* w, u32 stage, b32* ok) {
-    for (u32 i = 1; i < f->count; i++) {
-        const IrInst* in = &f->ins[i];
-        if (!in->live) continue;
-        if (in->op == IR_CONST && in->type == IR_T_F32 && ((in->imm >> 23) & 0xFFu) == 0xFFu) {
-            sb_cstr(s, "  let k");
-            sb_u64(s, i);
-            sb_cstr(s, ": u32 = 0x");
-            put_hex(s, in->imm, 8);
-            sb_cstr(s, "u;\n");
-        }
+static void put_inst(StrBuf* s, const IrFunc* f, const MatokiWgsl* w, u32 stage, u32 i, b32 is_var, b32* ok) {
+    const IrInst* in = &f->ins[i];
+    if (in->op == IR_CONST && in->type == IR_T_F32 && ((in->imm >> 23) & 0xFFu) == 0xFFu) {
+        sb_cstr(s, "  let k");
+        sb_u64(s, i);
+        sb_cstr(s, ": u32 = 0x");
+        put_hex(s, in->imm, 8);
+        sb_cstr(s, "u;\n");
+    }
+    if (is_var) {
+        sb_cstr(s, "  v");
+        sb_u64(s, i);
+        sb_cstr(s, " = ");
+    } else {
         sb_cstr(s, "  let v");
         sb_u64(s, i);
         sb_cstr(s, in->type == IR_T_F32 ? ": f32 = " : ": i32 = ");
-        if (in->op == IR_CONST) put_const(s, in, i);
-        else if (!put_expr(s, w, in, stage)) *ok = FALSE;
-        sb_cstr(s, ";\n");
     }
+    if (in->op == IR_CONST) put_const(s, in, i);
+    else if (!put_expr(s, w, in, stage)) *ok = FALSE;
+    sb_cstr(s, ";\n");
+}
+
+static void put_node(StrBuf* s, const IrFunc* f, const MatokiWgsl* w, const IrGuards* g, u32 stage, u32 node, b32* ok) {
+    for (u32 i = g->nodes[node].head; i; i = g->next[i]) {
+        if (g->group_at[i]) {
+            u32 gr = g->group_at[i] - 1u;
+            if (g->branch[gr]) {
+                sb_cstr(s, "  if (");
+                put_ref(s, g->mask[gr]);
+                sb_cstr(s, " != 0i) {\n");
+            }
+            put_node(s, f, w, g, stage, ir_guard_true(gr), ok);
+            if (g->branch[gr]) sb_cstr(s, "  } else {\n");
+            put_node(s, f, w, g, stage, ir_guard_false(gr), ok);
+            if (g->branch[gr]) sb_cstr(s, "  }\n");
+        }
+        put_inst(s, f, w, stage, i, node != 0, ok);
+    }
+}
+
+/* işlev gövdesi: kola düşen değerler işlev kapsamında `var` (select kolun dışında okur), kalanı `let` */
+static void put_body(StrBuf* s, const IrFunc* f, const MatokiWgsl* w, const IrGuards* g, u32 stage, b32* ok) {
+    for (u32 i = 1; i < f->count; i++) {
+        if (!f->ins[i].live || !g->node[i]) continue;
+        sb_cstr(s, "  var v");
+        sb_u64(s, i);
+        sb_cstr(s, f->ins[i].type == IR_T_F32 ? ": f32;\n" : ": i32;\n");
+    }
+    put_node(s, f, w, g, stage, 0, ok);
 }
 
 static const char VOUT_DECL[] =
@@ -271,6 +305,8 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
     usize mark = arena_mark(a);
     char* buf = (char*)arena_try(a, cap, 1);
     if (!buf) return wgsl_fail(err, "gpu: WGSL metni için bellek yok");
+    IrGuards guards;
+    ir_guard_build(a, f, NULL, TRUE, &guards);
     StrBuf sb;
     StrBuf* s = &sb;
     sb_init(s, buf, cap);
@@ -297,7 +333,7 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
             sb_cstr(s, ": f32");
         }
         sb_cstr(s, ") -> VOut {\n");
-        put_body(s, f, out, p->stage, &ok);
+        put_body(s, f, out, &guards, p->stage, &ok);
         sb_cstr(s, "  var o: VOut;\n");
         sb_cstr(s, "  o.pos.x = ");
         put_ref(s, f->out);
@@ -321,7 +357,7 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
         sb_cstr(s, "  return o;\n}\n");
     } else {
         sb_cstr(s, "@fragment fn fs(in: VOut) -> @location(0) vec4f {\n");
-        put_body(s, f, out, p->stage, &ok);
+        put_body(s, f, out, &guards, p->stage, &ok);
         if (f->kill) {
             sb_cstr(s, "  if (");
             put_ref(s, f->kill);
@@ -334,7 +370,7 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
     }
     if (!ok) return wgsl_fail(err, "gpu: IR komutunun WGSL karşılığı yok");
     if (s->len >= cap) return wgsl_fail(err, "iç hata: WGSL tamponu taştı");
-    arena_reset(a, mark + s->len);   /* üst sınırın kullanılmayan kısmı geri */
+    arena_reset(a, mark + s->len);   /* üst sınırın kullanılmayanı ve dal planı geri */
     out->text = buf;
     out->len = s->len;
     return TRUE;

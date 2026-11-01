@@ -1,6 +1,6 @@
 // shaders/lit_hq.mtk — yüksek kaliteli aydınlatma: anizotropik + trilinear doku süzme, yumuşak diffuse, kumaş
-// geçirgenliği, üstel sis. Doku: mip seviyesi KÜÇÜK eksenden (ayak izi ≥ büyük / 8), büyük eksen boyunca 8 çift
-// doğrusal örnek, iki komşu seviye arasında kesirli seviyeyle karışım (seviye sınırında görünür bant yok).
+// geçirgenliği, üstel sis. Doku: mip seviyesi KÜÇÜK eksenden (ayak izi ≥ büyük / 8), büyük eksen boyunca oran kadar (1, 2,
+// 4, 8) çift doğrusal örnek, iki komşu seviye arasında kesirli seviyeyle karışım (seviye sınırında görünür bant yok).
 // Işık: Lambert ↔ half-Lambert² diffuse + yarım küre ortam + arkadan ışık. Sis: 1 - 2^(-4x²), x = (d - başla) / aralık
 // (yumuşak başlar, ufukta gök rengine erir; sky.mtk ile aynı ufuk rengi).
 // Gölge (M13 faz 7): gfx3d/shadow.h haritası, f32 derinlik bitleri texel_fetch + bitcast_f32 ile, 2×2 süzmeli karşılaştırma
@@ -32,7 +32,30 @@ fn norm_safe(v: vec3) -> vec3 {
     return select(l > 0.0, v * (1.0 / l), v);
 }
 
-// anizotropik + trilinear: büyük eksen boyunca 8 örnek (oran en çok 8), her örnek iki seviyede
+// büyük eksen boyunca n eşit aralıklı örnek, ayak izini kapsar
+fn axis2(p: vec2, axis: vec2, k: i32) -> vec4 {
+    var a = vec4(0.0);
+    for i in 0..2 { a += sample_level(tex, p + axis * ((f32(i) + 0.5) * 0.5 - 0.5), k); }
+    return a * 0.5;
+}
+fn axis4(p: vec2, axis: vec2, k: i32) -> vec4 {
+    var a = vec4(0.0);
+    for i in 0..4 { a += sample_level(tex, p + axis * ((f32(i) + 0.5) * 0.25 - 0.5), k); }
+    return a * 0.25;
+}
+fn axis8(p: vec2, axis: vec2, k: i32) -> vec4 {
+    var a = vec4(0.0);
+    for i in 0..8 { a += sample_level(tex, p + axis * ((f32(i) + 0.5) * 0.125 - 0.5), k); }
+    return a * 0.125;
+}
+// örnek sayısı quad başına: büyük / küçük eksen oranı kadar (GPU'lardaki gibi). Koşullar quad-sabit → seçilmeyen kol çalışmaz (D43)
+fn axis_avg(p: vec2, axis: vec2, k: i32, ratio2: f32) -> vec4 {
+    return select(ratio2 <= 1.5, sample_level(tex, p, k),
+           select(ratio2 <= 4.0, axis2(p, axis, k),
+           select(ratio2 <= 16.0, axis4(p, axis, k), axis8(p, axis, k))));
+}
+
+// anizotropik + trilinear: büyük eksen boyunca en çok 8 örnek, her örnek gerekirse iki seviyede
 fn sample_aniso(p: vec2) -> vec4 {
     let ts = tex_size(tex);
     let dx = dFdx(p);
@@ -52,14 +75,10 @@ fn sample_aniso(p: vec2) -> vec4 {
     let frac = lodf - l0f;
     let l0 = clamp(i32(l0f), 0, 15);
     let l1 = min(l0 + 1, 15);          // son seviyenin ötesi sample_level'da kenetlenir
-    var a0 = vec4(0.0);
-    var a1 = vec4(0.0);
-    for i in 0..8 {
-        let q = p + axis * ((f32(i) + 0.5) * 0.125 - 0.5);
-        a0 += sample_level(tex, q, l0);
-        a1 += sample_level(tex, q, l1);
-    }
-    return mix(a0, a1, frac) * 0.125;
+    let ratio2 = select(foot2 > 0.0, major2 / max(foot2, 0.000001), 1.0);
+    let a0 = axis_avg(p, axis, l0, ratio2);
+    // seviye tam sayıysa (büyütme) ikinci seviye gereksiz: mix(a0, a1, 0) = a0
+    return select(frac > 0.0, mix(a0, axis_avg(p, axis, l1, ratio2), frac), a0);
 }
 
 // ışık görüşünden görünür mü: 1 = aydınlık, 0 = gölgede; dört komşu texel'in sonucu çift doğrusal karışır

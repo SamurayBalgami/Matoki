@@ -73,7 +73,7 @@ static u32 check_ssa(const char* s, u32 n, Arena* a) {
         u32 j = i + 1, num = 0;
         while (j < n && s[j] >= '0' && s[j] <= '9') num = num * 10 + (u32)(s[j++] - '0');
         if (j == i + 1 || num >= 70000) continue;
-        b32 is_decl = i >= 4 && mem_equal(s + i - 4, "let ", 4);
+        b32 is_decl = i >= 4 && (mem_equal(s + i - 4, "let ", 4) || mem_equal(s + i - 4, "var ", 4));
         u8* seen = c == 'v' ? seen_v : seen_k;
         if (is_decl) {
             if (seen[num]) return 0;   /* iki kez tanım */

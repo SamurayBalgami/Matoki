@@ -11,6 +11,12 @@ kaynak (.mtk) → lexer → parser (AST) → sema (tipler, isimler, yerleşim) �
                                                          └→ wgsl (GPU arka ucu, D42)
 ```
 
+Koşulu quad boyunca sabit olan (`fwidth`, `dFdx`, uniform'dan türeyen) `if` / `select`'te seçilmeyen kol çalışmaz (D43);
+sonuç aynıdır, pahalı kolları bu koşullarla ayırmak hız kazandırır. Koşul piksele bağlıysa iki kol da hesaplanır.
+
+```
+```
+
 ## Örnek
 
 ```

@@ -492,3 +492,42 @@ Test: görüntü farkı anlamı koruyan yanlışları görmez: `round` → `floo
 geçti. Bu yüzden `test_matoki_wgsl` her IR komutunun ifadesini sabitler; aynı bozma orada yakalanır. Diğer iki bozma (`dpdy`
 yerine `dpdx`, doku başlığı −1) görüntü testinde %14–23'e varan farkla yakalanır. Sayısal sınır durumları (NaN, doygun
 kesme) WGSL belirtimine dayanır, donanımda tek tek sınanmadı; yalnız bir adaptörde koşuldu. Kalan: 8c (MSAA, gölge, panel, GPU süresi).
+
+## D43. Quad-sabit koşula gerçek dal; lit_hq'da uyarlanabilir anizotropi
+Sorun: HQ, lit'in 2-3 katı (640×360, 16 thread: kare başına 3-6 ms fazla), çünkü her piksel 8 × 2 = 16 bilinear örnek alıyordu.
+Ölçüm: 8 → 4 → 2 örnek görünüm 1'de 35 → 24 → 20 ms (tek thread); piksellerin çoğu 8 örneğe gerek duymuyor. Ama IR düz: `if` ve
+`select` iki kolu da hesaplar, örnek sayısını seçmek tek başına kazandırmaz.
+
+Derleyici (`matoki/ir_guard`): maskesi quad'ın tüm lane'lerinde aynı ve tam (0 / ~0) olan select'te yalnız bir kola yarayan
+komutlar wasm `if` içine girer. Select yerinde kalır, seçilmeyen kolun yereli okunup maskeyle atılır: sonuç bit bit aynı.
+Ters SSA geçişi, düğüm = kullanıcı kenarlarının en yakın ortak atası. Grup yalnız bitişik, aynı maskeli select'ler (vec
+bileşenleri tek dal). Derinlik en çok 16; iki kol toplamı 8 komuttan azsa dal açılmaz; çizim-sabit select'ler önsözde kalır.
+WGSL aynı planı kullanır (kol değerleri `var`), türevli kol dallanmaz (düzgünlük analizi). Tüm Matoki shader'ları yararlanır.
+
+Shader (`lit_hq.mtk`): örnek sayısı quad başına büyük / küçük eksen oranından: 1 (oran² ≤ 1,5), 2 (≤ 4), 4 (≤ 16), 8. Seviye
+tam sayıysa ikinci mip seviyesi okunmaz. GPU'lardaki anizotropiyle aynı fikir; görüntü değişir, HQ hash'leri bu yüzden yeni.
+
+| Görünüm (640×360, 8 thread, MSAA + gölge kapalı) | Eski ms | Yeni ms | Oran | Eskiye göre PSNR (dB) | Fark > 8 piksel |
+|---|---|---|---|---|---|
+| 1 | 5,67 | 4,21 | 0,742 | 54,5 | %0,00 |
+| 2 | 6,13 | 3,22 | 0,525 | 52,0 | %0,33 |
+| 3 | 3,49 | 2,25 | 0,646 | 57,3 | %0,03 |
+| 4 | 3,72 | 2,99 | 0,804 | 52,9 | %0,03 |
+| 5 | 3,56 | 2,62 | 0,735 | 50,8 | %0,52 |
+| 6 | 8,16 | 6,78 | 0,831 | 44,2 | %0,73 |
+| 7 | 3,84 | 2,91 | 0,758 | 55,7 | %0,02 |
+| 8 | 4,59 | 3,21 | 0,700 | 51,3 | %0,02 |
+| 9 | 5,18 | 3,71 | 0,716 | 52,9 | %0,00 |
+| 10 | 6,33 | 3,73 | 0,589 | 54,7 | %0,08 |
+| Toplam | 50,7 | 35,6 | 0,703 | | |
+
+Varsayılan ayarlar (1280×720, 8 thread, 7 görünüm toplamı): gölge açık oran 0,668; gölge + MSAA 4x oran 0,780 (ör. görünüm 10:
+50,9 → 35,4 ms). Değişiklik yalnız HQ'da: `lit` ve C shader hash'leri birebir aynı. Fark ×8 büyütülünce damalı zeminde örnek
+sayısının değiştiği yerlerde soluk bantlar; hareket halinde titreşim ayrıca ölçülmedi. Bedel: lit_hq wasm 59,8 → 103,7 KB (JIT
+hâlâ yaklaşık 3 ms), engine.wasm +7,2 KB. GPU: `gpu_check` 30/30, lit_hq en kötü fark > 8 %0,029, ama GPU süresi ölçülmedi.
+
+Doğrulama: `test_matoki_guard` (9 test) JIT tam gövde ve önsöz + hızlı gövdeyi `ir_eval` kâhiniyle bit bit karşılaştırır, gerçek
+lit_hq dahil. Bilerek bozma: kollar ters, lane'e bağlı maske, kısmi maske, bitişiklik denetimi yok. İlk sürüm sonuncuyu yakalamadı;
+`guard_same_mask_not_adjacent` bunun için eklendi, dördü de yakalanıyor. Test sırasında bulunan ayrı kusur: dışa açık
+`engine_matoki_recompile` her başarılı derlemede `g.perm`'i büyütür, tekrarlanınca panikler; editör kendi arenalarını kullandığı
+için oyuncu etkilenmez, araç / test yolu.
