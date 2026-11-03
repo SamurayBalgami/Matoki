@@ -700,7 +700,7 @@ Hedef: görüntü test sahnesi gibi durmasın, FPS düşmesin. Bu yüzden iş ka
 | GPU, gölge + MSAA | 149 ms | 140 ms | 0,94 |
 | GPU, düz | 95 ms | 89 ms | 0,94 |
 
-Kazanç eşit dağılmadı. Gök ağırlıklı görünümler pahalandı: yazılımda görünüm 3 ×1,24–1,39, görünüm 5 düz kipte ×1,16; GPU'da görünüm 3 varsayılanda 11,7 → 15,1 ms. En ağır görünümler ucuzladı: görünüm 6 yazılımda ×0,75–0,79, GPU'da 21,2 → 14,4 ms. GPU varsayılan ayarda 16,6 ms üstü: görünüm 2 (19,5) ve 10 (16,8). Başlangıç 48 → 129 ms (1080p, doku üretimi). Bellek: dokular + mip'ler yaklaşık 2,1 MB.
+Kazanç eşit dağılmadı. Gök ağırlıklı görünümler pahalandı: yazılımda görünüm 3 ×1,24–1,39, görünüm 5 düz kipte ×1,16; GPU'da görünüm 3 varsayılanda 11,7 → 15,1 ms. En ağır görünümler ucuzladı: görünüm 6 yazılımda ×0,75–0,79, GPU'da 21,2 → 14,4 ms. GPU varsayılan ayarda 16,6 ms üstü: görünüm 2 (19,5) ve 10 (16,8). Başlangıç 48 → 129 ms (1080p, doku üretimi). Bellek: dokular + mip'ler yaklaşık 2,9 MB.
 
 Kabul: `gpu_check` 66/66 (en kötü %0,029), 268/268 test (iki kipte), `check_demo` geçti (ara değerleme kıyasında gök kapalı: bulut saate bağlı).
 Sınır: kıyı çizgisi hâlâ sert, bulut yansıması ve bulut gölgesi yok, orta mesafede döşeme tekrarı hafifçe seçiliyor. Tek adaptör; gerçek ekranda FPS ölçülmedi.
