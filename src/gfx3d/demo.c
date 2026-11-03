@@ -266,6 +266,8 @@ typedef struct Demo {
 
 static Demo g;
 
+#define EDIT_CODE_BYTES ((usize)8 << 20)   /* canlı derleme başına (IR ≤ 65 536 komut + wasm + önsöz önbelleği) */
+
 /* yansıma kapalıyken su ve alanı olmayan malzeme: tek sıfır texel (yansıyan her ışın gökten, alan kolu çalışmaz) */
 static const Texture* refl_none(void) {
     static u32 px[1];
@@ -2613,10 +2615,16 @@ static b32 lit_recompile(Arena* a, const char* src, u32 len, MatokiError* err, u
 
 EXPORT(engine_matoki_recompile) i32 engine_matoki_recompile(u32 len) {
     if (!g_src_buf || len > g_src_cap) return 0;
-    usize mark = arena_mark(&g.perm);
+    /* editörle aynı iki arena: yürürlükteki program yaşar, öteki silinir. Kalıcı arena her derlemede büyürdü, yüzlerce derlemede motor dururdu */
+    for (u32 k = 0; k < 2; k++) {
+        if (!g.edit_code[k].base && !arena_init_sys(&g.edit_code[k], EDIT_CODE_BYTES)) return 0;
+    }
+    u32 next = g.edit_cur ^ 1u;
+    arena_reset(&g.edit_code[next], 0);
     MatokiError e;
-    if (!lit_recompile(&g.perm, g_src_buf, len, &e, NULL)) {
-        arena_reset(&g.perm, mark);
+    b32 ok = lit_recompile(&g.edit_code[next], g_src_buf, len, &e, NULL);
+    if (ok) g.edit_cur = next;
+    if (!ok) {
         char buf[300];
         StrBuf sb;
         sb_init(&sb, buf, sizeof(buf));
@@ -2629,7 +2637,6 @@ EXPORT(engine_matoki_recompile) i32 engine_matoki_recompile(u32 len) {
 }
 
 /* ---- canlı shader editörü (M13 faz 6): F2 açar / kapatır, Ctrl+Enter lit.mtk'yi derler ---- */
-#define EDIT_CODE_BYTES ((usize)8 << 20)   /* derleme başına (IR ≤ 65 536 komut + wasm + önsöz önbelleği) */
 
 static b32 editor_setup(void) {
     if (g.edit_ready) return TRUE;

@@ -21,6 +21,7 @@ typedef enum IrOp {
     IR_TEX_FIELD,   /* imm = tex_ofs | (alan_ofs << 16): *(u32*)(*(Texture**)(uni + tex_ofs) + alan_ofs) (I32) */
     IR_TEXEL_LOAD,  /* a = indeks (I32), imm = tex_ofs: px[a[lane]] (I32) */
     IR_TEX_WORD,    /* a = u32 indeksi (I32), imm = tex_ofs: ((u32*)tex)[a[lane]] (I32; mip ofset tablosu) */
+    IR_HW_SAMPLE,   /* yalnız WGSL IR'ı (D50): a, b = u, v (F32), c = seviye (I32), imm = tex_ofs | (bileşen << 16) | (kenet << 18): donanım bilinear */
     /* f32 aritmetik (IEEE, wasm f32x4 semantiği) */
     IR_FADD, IR_FSUB, IR_FMUL, IR_FDIV,
     IR_FMIN, IR_FMAX,                  /* wasm min/max: NaN yayılır, -0 < +0 */

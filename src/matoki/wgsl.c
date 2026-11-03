@@ -4,6 +4,7 @@
  * Maskeler I32 (tüm bitler 1 / 0) kalır, F32 select tam maske sözleşmesiyle (ir.h) WGSL select olur.
  * Quad-sabit maskeli kollar `if` içinde (ir_guard, D43): kol değerleri işlev başında `var`, türev içeren kol dallanmaz. */
 #include "matoki/wgsl.h"
+#include "matoki/sema.h"
 #include "core/mem.h"
 #include "matoki/ir_guard.h"
 #include "matoki/matoki.h"
@@ -147,6 +148,18 @@ static b32 put_expr(StrBuf* s, const MatokiWgsl* w, const IrInst* in, u32 stage)
         put_ref(s, in->a);
         sb_cstr(s, "])");
         return TRUE;
+    case IR_HW_SAMPLE:
+        sb_cstr(s, "textureSampleLevel(h");
+        sb_i64(s, tex_binding(w, in->imm & 0xFFFFu));
+        sb_cstr(s, in->imm & (1u << 18) ? ", sc, vec2f(" : ", sw, vec2f(");
+        put_ref(s, in->a);
+        sb_cstr(s, ", ");
+        put_ref(s, in->b);
+        sb_cstr(s, "), f32(");
+        put_ref(s, in->c);
+        sb_cstr(s, ")).");
+        sb_char(s, "rgba"[(in->imm >> 16) & 3u]);
+        return TRUE;
     case IR_FADD: case IR_IADD: put2(s, in->a, " + ", in->b); return TRUE;
     case IR_FSUB: case IR_ISUB: put2(s, in->a, " - ", in->b); return TRUE;
     case IR_FMUL: case IR_IMUL: put2(s, in->a, " * ", in->b); return TRUE;
@@ -280,7 +293,18 @@ static const char VOUT_DECL[] =
     "struct VOut {\n  @builtin(position) pos: vec4f,\n  @location(0) v0: vec4f,\n  @location(1) v1: vec4f,\n};\n";
 
 b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* err) {
+    /* kaynaktan derlenmiş programda IR ayrıca indirilir: bilinear okuma donanıma gider (D50). JIT IR'ı yazılımın kâhini olarak kalır */
+    IrFunc gpu_ir;
     const IrFunc* f = &p->ir;
+    usize mark0 = arena_mark(a);
+    mem_zero(err, sizeof(*err));
+    if (p->sema.frag || p->sema.vert) {
+        ir_init(&gpu_ir, a, p->ir.count + 1024u, FALSE);
+        MatokiProgram* mp = (MatokiProgram*)p;
+        if (!lower_module_gpu(a, &mp->module, &p->sema, p->stage, &gpu_ir, err)) return FALSE;
+        ir_mark_live(&gpu_ir);
+        f = &gpu_ir;
+    }
     b32 vert = p->stage == MATOKI_STAGE_VERT;
     mem_zero(out, sizeof(*out));
     mem_zero(err, sizeof(*err));
@@ -292,11 +316,11 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
     for (u32 i = 1; i < f->count; i++) {
         const IrInst* in = &f->ins[i];
         if (!in->live) continue;
-        if (in->op != IR_TEX_FIELD && in->op != IR_TEXEL_LOAD && in->op != IR_TEX_WORD) continue;
+        if (in->op != IR_TEX_FIELD && in->op != IR_TEXEL_LOAD && in->op != IR_TEX_WORD && in->op != IR_HW_SAMPLE) continue;
         if (vert) return wgsl_fail(err, "gpu: köşe aşamasında doku yok");
-        u32 ofs = in->op == IR_TEX_FIELD ? (in->imm & 0xFFFFu) : in->imm;
+        u32 ofs = in->op == IR_TEX_FIELD || in->op == IR_HW_SAMPLE ? (in->imm & 0xFFFFu) : in->imm;
         if (tex_binding(out, ofs) >= 0) continue;
-        if (out->tex_count == WGSL_MAX_TEX) return wgsl_fail(err, "gpu: parça başına en çok 2 doku");
+        if (out->tex_count == WGSL_MAX_TEX) return wgsl_fail(err, "gpu: parça başına en çok 3 doku");
         out->tex_ofs[out->tex_count++] = ofs;
     }
     u32 live = 0;
@@ -319,6 +343,17 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
         sb_cstr(s, ") var<storage, read> t");
         sb_u64(s, k);
         sb_cstr(s, ": array<u32>;\n");
+    }
+    if (!vert) {
+        /* bilinear okuma için aynı yuvanın donanım dokusu + sabit örnekleyiciler (web/gpu.mjs bağlar, D50) */
+        for (u32 k = 0; k < out->tex_count; k++) {
+            sb_cstr(s, "@group(1) @binding(");
+            sb_u64(s, k + WGSL_MAX_TEX);
+            sb_cstr(s, ") var h");
+            sb_u64(s, k);
+            sb_cstr(s, ": texture_2d<f32>;\n");
+        }
+        sb_cstr(s, "@group(1) @binding(6) var sw: sampler;\n@group(1) @binding(7) var sc: sampler;\n");
     }
     sb_cstr(s, "fn mask(b: bool) -> i32 { return select(0i, -1i, b); }\n");
     b32 ok = TRUE;
@@ -370,8 +405,11 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
     }
     if (!ok) return wgsl_fail(err, "gpu: IR komutunun WGSL karşılığı yok");
     if (s->len >= cap) return wgsl_fail(err, "iç hata: WGSL tamponu taştı");
-    arena_reset(a, mark + s->len);   /* üst sınırın kullanılmayanı ve dal planı geri */
-    out->text = buf;
+    /* metin arenanın başına: GPU IR'ı, üst sınırın kullanılmayanı ve dal planı geri (ileri kopya: hedef kaynağın önünde) */
+    char* text = buf - (mark - mark0);
+    for (u32 i = 0; i < s->len; i++) text[i] = buf[i];
+    arena_reset(a, mark0 + s->len);
+    out->text = text;
     out->len = s->len;
     return TRUE;
 }

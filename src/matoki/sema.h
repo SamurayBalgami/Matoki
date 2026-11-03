@@ -53,5 +53,7 @@ b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err);
 /* lower: tip denetimi geçmiş modülü IR'a çevirir. frag: çıktı paketlenmiş renk; vert: pos (out + xout[0..2])
  * ve varying'ler (xout, VertexOut ofsetleri). Aşamaya ait olmayan yapılar (türev, discard, attribute ...) hata. */
 b32 lower_module(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err);
+/* WGSL için: bilinear sample_level IR_HW_SAMPLE olur (D50); gerisi lower_module ile aynı */
+b32 lower_module_gpu(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err);
 
 #endif

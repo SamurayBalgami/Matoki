@@ -662,3 +662,16 @@ Maliyet (1920×1080, gölge + MSAA, yazılım): fizik adımı çalışmayan kare
 
 Kabul: `gpu_check` artık bayrak ve gölü 20 kare ilerletip karşılaştırır, 60/60. Bozma denemeleri: `gen` yüklemesi kapatılınca görünüm 6 %0,31–0,43 ile düşer (ilk denemede yakalanmıyordu: etki çok zayıftı, kaynak ve eğim düzeltildi), kademe ofseti bozulunca hq+gölge tüm görünümlerde %11–34 ile düşer. `check_demo`: sandıklar dalga üretir, bayrak alanı dolar. 263/263 test.
 Sınır: dalga yalnız göl düzleminde, jöle gövdeleri henüz alan yazmıyor, bayrak alanının görsel etkisi ince. Gerçek ekranda FPS ölçülmedi, tek adaptör.
+
+## D50. GPU'da donanım bilinear: görüntü aynı, kare süresi yarı
+Ölçüm: 1080p, gölge/MSAA'sız ana geçiş görünüm 4'te 20,3 ms; aynı shader tek bilinear okumayla 6,3 ms, dokusuz 4,5 ms. Süre anizotropinin her örneğinde depolama tamponundan IR ile yapılan 4 okuma + ağırlıktaydı. Anizotropi mantığı shader'da aynen kalır, yalnız her bilinear `sample_level` donanıma gider: WGSL için IR ayrıca indirilir (`lower_module_gpu`, `IR_HW_SAMPLE`), JIT IR'ı ve yazılım yolu değişmez. Depolama tamponu başlık ve `texel_fetch` (gölge) için kalır. `lit_hq` WGSL'i 182 → 44 KB.
+
+| GPU, 1080p (zaman damgası, A/B aynı sayfada; 10 görünüm) | Önce | Sonra | Oran | Görünüm aralığı (sonra) |
+|---|---|---|---|---|
+| gölge + MSAA | 252 ms | 124 ms | 0,491 | 9,1 – 18,2 ms |
+| düz | 185 ms | 76 ms | 0,410 | 5,6 – 12,3 ms |
+
+Varsayılan ayarda 10 görünümün 9'u 16,6 ms altında (görünüm 2, ekranı dolduran küpler: 18,2 ms). Görüntü yazılımla daha da yakın: `gpu_check` 60/60, HQ en kötü %0,019. Dinamik doku yazımı bilerek kapatılınca görünüm 6 denetimde düşer.
+
+Ek: `lit_hq`'da "brilinear": seviye geçişi kesrin orta bandında, uçlarda tek seviye. Yazılım toplam ×0,972 (gölge + MSAA) / ×0,984 (düz), görüntü farkı en kötü 636 / 2 073 600 piksel > 8. Canlı derleme (`engine_matoki_recompile`) kalıcı arenayı büyütüyordu; editörle aynı iki arenaya alındı, `check_demo` 400 derlemeyi art arda sınar.
+Sınır: tek adaptör, sekme zaman damgası ölçümü; gerçek ekranda FPS ölçülmedi.

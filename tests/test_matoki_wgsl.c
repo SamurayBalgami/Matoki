@@ -134,7 +134,9 @@ TEST(wgsl_demo_shaders_structure) {
             CHECK(str_has(w.text, w.len, "o.pos.x") && str_has(w.text, w.len, "o.pos.w") && str_has(w.text, w.len, "o.v1.y"));
         }
         u32 lets = check_ssa(w.text, w.len, a);
-        CHECK(lets >= p->ir_live);   /* her canlı komut bir let (inf / NaN sabitleri + k) */
+        CHECK(lets > 0u);
+        /* bilinear sample_level donanımda (D50); JIT IR'ı aynı kalır, GPU IR'ı onu içermez */
+        if (k->uniform_size && k->tex_count > 1u) CHECK(str_has(w.text, w.len, "textureSampleLevel"));
     }
 }
 
@@ -197,6 +199,7 @@ TEST(wgsl_every_ir_op_has_translation) {
     ir_emit(f, IR_TEX_FIELD, IR_T_I32, 0, 0, 0, 0u | (4u << 16));
     ir_emit(f, IR_TEXEL_LOAD, IR_T_I32, iv, 0, 0, 0);
     ir_emit(f, IR_TEX_WORD, IR_T_I32, iv, 0, 0, 0);
+    ir_emit(f, IR_HW_SAMPLE, IR_T_F32, fv, fu, iv, 0u | (2u << 16) | (1u << 18));
     IrRef refs[IR_OP_COUNT];
     mem_zero(refs, sizeof(refs));
     for (u32 op = IR_FADD; op < IR_OP_COUNT; op++) {

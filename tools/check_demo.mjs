@@ -108,6 +108,11 @@ check(recompile(afterTint('uniform wrap: vec4;')) === 0 && ex.engine_gpu_prog_ge
 const jsVersion = +fs.readFileSync(new URL('../web/gpu.mjs', import.meta.url), 'utf8').match(/STREAM_VERSION = (\d+)/)[1];
 check(jsVersion === ex.engine_gpu_stream_version(), `GPU akış sürümü: gpu.mjs ${jsVersion}, motor ${ex.engine_gpu_stream_version()}`);
 
+// 7. uzun oturum: yüzlerce canlı derleme motoru büyütmez, durdurmaz
+let okCount = 0;
+for (let i = 0; i < 400; i++) okCount += recompile(lit);
+check(okCount === 400, `400 canlı derleme art arda (${okCount})`);
+
 // fizik alanları (D49): sandıklar dalga denklemini besler, bayrak gerinim dokusunu doldurur
 ex.engine_set_shader_mode(4);
 ex.engine_bench_view(6);

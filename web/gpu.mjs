@@ -20,8 +20,11 @@ export async function createGpu(ex, memory, colorFormat) {
   const uniformEntry = (binding, visibility) => ({ binding, visibility,
     buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: SLOT } });
   const bglU = device.createBindGroupLayout({ entries: [uniformEntry(0, GPUShaderStage.VERTEX), uniformEntry(1, GPUShaderStage.FRAGMENT)] });
-  const bglT = device.createBindGroupLayout({ entries: [0, 1, 2].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT,
-    buffer: { type: 'read-only-storage' } })) });
+  const bglT = device.createBindGroupLayout({ entries: [
+    ...[0, 1, 2].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } })),
+    ...[3, 4, 5].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } })),
+    ...[6, 7].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } })),
+  ] });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bglU, bglT] });
   const vbufs = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ arrayStride: 4, attributes: [{ shaderLocation: i, offset: 0, format: 'float32' }] }));
 
@@ -68,9 +71,26 @@ export async function createGpu(ex, memory, colorFormat) {
   const textures = new Map();   // kimlik → { px, words, buf }
   const texBinds = new Map();   // "doku0|doku1|doku2" → bind group
   const noTex = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE });   // okunmayan doku yuvası
+  // bilinear okuma donanımda (D50): depolama tamponu başlık ve texel_fetch için kalır, sample_level bu dokudan okur
+  const noHw = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING }).createView();
+  const hwSampler = (addr) => device.createSampler({ addressModeU: addr, addressModeV: addr, magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'nearest' });
+  const samplerWrap = hwSampler('repeat'), samplerClamp = hwSampler('clamp-to-edge');
+  const TW_LEVELS = 7, TW_LVOFS = 8, TW_LVW = 24, TW_LVH = 40;
+  function hwCreate(id) {
+    const h = new Uint32Array(memory.buffer, id, TEX_HEADER / 4);
+    return device.createTexture({ size: [h[TW_LVW], h[TW_LVH]], mipLevelCount: h[TW_LEVELS], format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  }
+  function hwWrite(tex, id, px) {
+    const h = new Uint32Array(memory.buffer, id, TEX_HEADER / 4);
+    for (let k = 0; k < h[TW_LEVELS]; k++) {
+      const [lw, lh] = [h[TW_LVW + k], h[TW_LVH + k]];
+      device.queue.writeTexture({ texture: tex, mipLevel: k }, memory.buffer, { offset: px + h[TW_LVOFS + k] * 4, bytesPerRow: lw * 4 }, [lw, lh]);
+    }
+  }
   let ubuf = null, bindU = null, depth = null, frameNo = 0, keepDepth = false, msaaColor = null, lastSamples = 1;
   let shadowDepth = null;   // gölge derinliği; içerik her gölge geçişinde doku tamponuna kopyalanır
-  let reflColor = null, reflDepth = null;   // su yansıması; renk her karede doku tamponuna kopyalanır (D47)
+  let reflColor = null, reflDepth = null;   // su yansıması; renk her karede donanım dokusuna kopyalanır (D47, D50)
 
   // bindirme: motorun CPU'da çizdiği panel / editör, ekran boyu doku + makas
   let ovTex = null, ovBind = null;
@@ -123,17 +143,20 @@ export async function createGpu(ex, memory, colorFormat) {
     const t = textures.get(id);
     if (t && t.px === px && t.words === words) {
       if (t.gen !== gen) {   // fizik alanı gibi her kare değişen doku: tampon kalır, yalnız içerik
-        device.queue.writeBuffer(t.buf, TEX_HEADER, memory.buffer, px, words * 4);
+        if (t.hw) hwWrite(t.hw, id, px);
+        else device.queue.writeBuffer(t.buf, TEX_HEADER, memory.buffer, px, words * 4);
         t.gen = gen;
       }
       return;
     }
-    if (t) t.buf.destroy();
+    if (t) { t.buf.destroy(); t.hw?.destroy(); }
     texBinds.clear();
     const buf = device.createBuffer({ size: TEX_HEADER + words * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(buf, 0, memory.buffer, id, TEX_HEADER);
     device.queue.writeBuffer(buf, TEX_HEADER, memory.buffer, px, words * 4);
-    textures.set(id, { px, words, buf, gen });
+    const hw = hwCreate(id);
+    if (hw) hwWrite(hw, id, px);
+    textures.set(id, { px, words, buf, gen, hw });
   }
 
   function texBind(a, b, c) {
@@ -141,7 +164,10 @@ export async function createGpu(ex, memory, colorFormat) {
     let g = texBinds.get(key);
     if (!g) {
       const res = (id) => ({ buffer: id ? textures.get(id).buf : noTex });
-      g = device.createBindGroup({ layout: bglT, entries: [{ binding: 0, resource: res(a) }, { binding: 1, resource: res(b) }, { binding: 2, resource: res(c) }] });
+      const hwRes = (id) => (id && textures.get(id).hw ? textures.get(id).hw.createView() : noHw);
+      g = device.createBindGroup({ layout: bglT, entries: [{ binding: 0, resource: res(a) }, { binding: 1, resource: res(b) }, { binding: 2, resource: res(c) },
+        { binding: 3, resource: hwRes(a) }, { binding: 4, resource: hwRes(b) }, { binding: 5, resource: hwRes(c) },
+        { binding: 6, resource: samplerWrap }, { binding: 7, resource: samplerClamp }] });
       texBinds.set(key, g);
     }
     return g;
@@ -203,9 +229,9 @@ export async function createGpu(ex, memory, colorFormat) {
           reflDepth = device.createTexture({ size: [rw, rh], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT });
         }
         if (!textures.has(id)) {
-          const buf = device.createBuffer({ size: TEX_HEADER + rw * rh * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+          const buf = device.createBuffer({ size: TEX_HEADER + 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
           device.queue.writeBuffer(buf, 0, memory.buffer, id, TEX_HEADER);
-          textures.set(id, { px: 0, words: rw * rh, buf });
+          textures.set(id, { px: 0, words: 1, buf, hw: hwCreate(id) });
           texBinds.clear();
         }
         reflTex = id;
@@ -218,7 +244,7 @@ export async function createGpu(ex, memory, colorFormat) {
       } else if (op === GC_REFLECT_END) {
         pass.end();
         pass = null;
-        enc.copyTextureToBuffer({ texture: reflColor }, { buffer: textures.get(reflTex).buf, offset: TEX_HEADER, bytesPerRow: reflColor.width * 4 }, [reflColor.width, reflColor.height]);
+        enc.copyTextureToTexture({ texture: reflColor }, { texture: textures.get(reflTex).hw }, [reflColor.width, reflColor.height]);
         passFmt = fmt;
         i += 1;
       } else if (op === GC_FRAME) {

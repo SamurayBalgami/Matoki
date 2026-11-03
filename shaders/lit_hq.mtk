@@ -89,9 +89,10 @@ fn sample_aniso(p: vec2) -> vec4 {
     let l0 = clamp(i32(l0f), 0, 15);
     let l1 = min(l0 + 1, 15);          // son seviyenin ötesi sample_level'da kenetlenir
     let ratio2 = select(foot2 > 0.0, major2 / max(foot2, 0.000001), 1.0);
-    let a0 = axis_avg(p, axis, l0, ratio2);
-    // seviye tam sayıysa (büyütme) ikinci seviye gereksiz: mix(a0, a1, 0) = a0
-    return select(frac > 0.0, mix(a0, axis_avg(p, axis, l1, ratio2), frac), a0);
+    // seviye geçişi yalnız kesrin orta bandında (donanımlardaki "brilinear"): uçlarda tek seviye yeter, örnek sayısı yarıya iner (D50)
+    let w = clamp((frac - 0.2) * 1.6667, 0.0, 1.0);
+    return select(w <= 0.0, axis_avg(p, axis, l0, ratio2),
+           select(w >= 1.0, axis_avg(p, axis, l1, ratio2), mix(axis_avg(p, axis, l0, ratio2), axis_avg(p, axis, l1, ratio2), w)));
 }
 
 // üçüncü derece B-spline ağırlıkları, kesir f ∈ [0, 1): dört komşu (taban - 1 .. taban + 2), toplam 1

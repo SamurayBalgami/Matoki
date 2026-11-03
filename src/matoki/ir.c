@@ -6,7 +6,7 @@
 #include "core/mem.h"
 
 static const char* const OP_NAMES[IR_OP_COUNT] = {
-    "nop", "const", "uniform", "varying", "attr", "frag_x", "frag_y", "frag_z", "tex_field", "texel_load", "tex_word",
+    "nop", "const", "uniform", "varying", "attr", "frag_x", "frag_y", "frag_z", "tex_field", "texel_load", "tex_word", "hw_sample",
     "fadd", "fsub", "fmul", "fdiv", "fmin", "fmax",
     "fneg", "fabs", "fsqrt", "ffloor", "fceil", "ftrunc", "fnearest",
     "feq", "fne", "flt", "fle", "fgt", "fge",
@@ -27,7 +27,7 @@ u32 ir_op_arity(IrOp op) {
     case IR_INEG: case IR_F2I: case IR_I2F: case IR_BITCAST_F2I: case IR_BITCAST_I2F:
     case IR_DERIV_X: case IR_DERIV_Y:
         return 1;
-    case IR_SELECT:
+    case IR_SELECT: case IR_HW_SAMPLE:
         return 3;
     default:
         return 2;
@@ -239,6 +239,9 @@ b32 ir_verify(const IrFunc* f, StrBuf* err) {
         case IR_TEXEL_LOAD:
         case IR_TEX_WORD:
             if (f->ins[in->a].type != IR_T_I32 || in->type != IR_T_I32) want = 1;
+            break;
+        case IR_HW_SAMPLE:
+            if (f->ins[in->a].type != IR_T_F32 || f->ins[in->b].type != IR_T_F32 || f->ins[in->c].type != IR_T_I32 || in->type != IR_T_F32) want = 1;
             break;
         default:
             if (ar >= 1) {

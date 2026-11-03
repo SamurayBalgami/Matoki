@@ -18,6 +18,7 @@ typedef struct Lower {
     IrRef        cond;     /* etkin yol maskesi (iç içe if koşullarının VE'si); 0 = her lane */
     IrRef        kill;     /* discard edilen lane maskesi; 0 = hiç discard yok */
     u32          stage;    /* MATOKI_STAGE_FRAG / MATOKI_STAGE_VERT */
+    b32          hw_sample;   /* WGSL: bilinear sample_level donanıma (D50) */
 } Lower;
 
 static b32 failed(Lower* L) { return L->err->failed; }
@@ -423,7 +424,12 @@ static u32 lower_builtin(Lower* L, Node* e, IrRef out[4]) {
         /* lod < 0 → 0, lod > son → son (ref_sample_level u32 aldığı için negatifi son seviyeye götürür; burada 0) */
         const GlobalDecl* g = args[0]->sym->g;
         IrRef k = op2(L, IR_IMIN, I, op2(L, IR_IMAX, I, av[2][0], ci(L, 0)), last_level(L, g));
-        lower_sample_lod(L, g, av[1][0], av[1][1], k, out);
+        if (L->hw_sample && (g->attrs & ATTR_BILINEAR)) {
+            u32 cl = g->attrs & ATTR_CLAMP ? 1u << 18 : 0u;
+            for (u32 c = 0; c < 4; c++) out[c] = ir_emit(L->f, IR_HW_SAMPLE, F, av[1][0], av[1][1], k, g->offset | (c << 16) | cl);
+        } else {
+            lower_sample_lod(L, g, av[1][0], av[1][1], k, out);
+        }
         return 4;
     }
     case BI_MIP_LEVEL:
@@ -718,10 +724,21 @@ static IrRef pack_color(Lower* L, const IrRef c[4]) {
     return r;
 }
 
+static b32 lower_run(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err, b32 hw_sample);
+
 b32 lower_module(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err) {
+    return lower_run(a, m, s, stage, f, err, FALSE);
+}
+
+b32 lower_module_gpu(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err) {
+    return lower_run(a, m, s, stage, f, err, TRUE);
+}
+
+static b32 lower_run(Arena* a, Module* m, const SemaResult* s, u32 stage, IrFunc* f, MatokiError* err, b32 hw_sample) {
     UNUSED(m);
     Lower L;
     mem_zero(&L, sizeof(L));
+    L.hw_sample = hw_sample;
     L.f = f;
     L.a = a;
     L.err = err;
