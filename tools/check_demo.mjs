@@ -71,7 +71,9 @@ const physRun = (interp) => {
   return { shown, state: fbHash() };
 };
 ex.engine_set_hud(0);   // panel ölçüm sürelerini yazar: kare hash'ini oynatır
+ex.engine_set_sky(0);   // bulutlar saatle kayar: iki koşunun saati farklı, fizik kıyasına karışmasın
 const ipOn = physRun(1), ipOff = physRun(0);
+ex.engine_set_sky(1);
 check(ipOn.state === ipOff.state, 'ara değerleme fizik durumunu değiştirmez (144 Hz, 200 kare)');
 check(ipOn.shown !== ipOn.state, 'ara değer açıkken çizilen poz ara pozdur');
 ex.engine_set_interp(1);

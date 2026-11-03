@@ -97,7 +97,7 @@ TEST(wgsl_demo_shaders_structure) {
         { "lit.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, wrap) },
         { "lit_hq.mtk", MATOKI_STAGE_FRAG, 3, (u32)__builtin_offsetof(LitUniforms, lv_count) },
         { "water.mtk", MATOKI_STAGE_FRAG, 3, (u32)__builtin_offsetof(LitUniforms, field_scale) },
-        { "sky.mtk", MATOKI_STAGE_FRAG, 0, (u32)__builtin_offsetof(LitUniforms, shadow) },
+        { "sky.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, shadow) },
         { "std_vert.mtk", MATOKI_STAGE_VERT, 0, 168 },
         { "wave_vert.mtk", MATOKI_STAGE_VERT, 0, 184 },
     };

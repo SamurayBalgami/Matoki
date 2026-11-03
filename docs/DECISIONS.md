@@ -684,3 +684,23 @@ Sınır: tek adaptör, sekme zaman damgası ölçümü; gerçek ekranda FPS öl�
 
 Maliyet (A/B, 1920×1080, yazılım, 10 görünüm): gölge + MSAA 554 → 554 ms (×1,001), düz 310 → 309 ms (×0,999). GPU (zaman damgası, tek motor): gölge + MSAA 10 görünüm 138 ms (10,4 – 18,4 ms; 2 ve 6 sınırın üstünde), düz 91 ms (6,8 – 15,7 ms; hepsi 16,6 ms altında). D50'ye göre artış (124 → 138, 76 → 91) esas olarak bu turun GPU'da dallanamayan türevleri ve suyun ek okumaları; ayrı ölçülmedi.
 Kabul: `gpu_check` 66/66 (en kötü %0,056), 263/263 test. Sınır: jöle alanı dinlenmede neredeyse boş, yalnız ezilmede görünür.
+
+## D52. Gerçekçi malzeme ve gök: kare maliyeti eklemeden
+Hedef: görüntü test sahnesi gibi durmasın, FPS düşmesin. Bu yüzden iş kare başına hesaba değil, başlangıçta bir kez üretilen dokulara kondu.
+- **Dokular** (`img/procgen`, periyodik fbm, dikişsiz): beton döşeme, kaya, çim, kumaş, yıpranmış boya; dama ve ızgara demodan kalktı. Tuğlada harç artık koyu: kabartı parlaklıktan okunduğu için açık harç dışa çıkıyordu.
+- **Bulut** (`sky.mtk`): piksel başına tek bilinear okuma, doku R yoğunluk, G güneş tarafı aydınlığı, saatle kayar. Yansımaya girmez: su analitik göğü yansıtır.
+- **Ortam:** gölge çarpanı ortamı %22'ye kadar kısar (ek okuma yok), ortam ×1,24: ACES'in karanlık ucu gölgeyi ezmesin. Renkler doygunluktan çekildi.
+- **Zemin:** küçük zemin kalktı, her sahne tek 4 km zemin (doku 4 m, taş 0,5 m, 16 parça). Dev tek üçgende yazılım ↔ GPU farkı sınırı aşıyordu (görünüm 1 %0,26, görünüm 8 derinlik). Sis 450 → 160 m: ufuk birkaç piksele sıkışıp sert çizgi yapıyordu.
+- **Maliyeti karşılayan:** gök ve zemin en sona çizilir, kapanan piksel derinlikte elenir, gölgelenmez. Seviye ≥ 3'te anizotropi en çok 2 örnek.
+
+| 1920×1080, A/B aynı süreç, 10 görünüm toplamı | Önce | Sonra | Oran |
+|---|---|---|---|
+| Yazılım, gölge + MSAA | 666 ms | 641 ms | 0,962 |
+| Yazılım, düz | 411 ms | 394 ms | 0,958 |
+| GPU, gölge + MSAA | 149 ms | 140 ms | 0,94 |
+| GPU, düz | 95 ms | 89 ms | 0,94 |
+
+Kazanç eşit dağılmadı. Gök ağırlıklı görünümler pahalandı: yazılımda görünüm 3 ×1,24–1,39, görünüm 5 düz kipte ×1,16; GPU'da görünüm 3 varsayılanda 11,7 → 15,1 ms. En ağır görünümler ucuzladı: görünüm 6 yazılımda ×0,75–0,79, GPU'da 21,2 → 14,4 ms. GPU varsayılan ayarda 16,6 ms üstü: görünüm 2 (19,5) ve 10 (16,8). Başlangıç 48 → 129 ms (1080p, doku üretimi). Bellek: dokular + mip'ler yaklaşık 2,1 MB.
+
+Kabul: `gpu_check` 66/66 (en kötü %0,029), 268/268 test (iki kipte), `check_demo` geçti (ara değerleme kıyasında gök kapalı: bulut saate bağlı).
+Sınır: kıyı çizgisi hâlâ sert, bulut yansıması ve bulut gölgesi yok, orta mesafede döşeme tekrarı hafifçe seçiliyor. Tek adaptör; gerçek ekranda FPS ölçülmedi.

@@ -137,16 +137,19 @@ typedef struct Demo {
     f32 time;
 
     Mesh* cube;
-    Mesh* ground;
     Mesh* big_floor;
     Texture* tex_bricks;
-    Texture* tex_grid;
-    Texture* tex_checker;
+    Texture* tex_paint;
+    Texture* tex_pavers;
+    Texture* tex_rock;
+    Texture* tex_grass;
+    Texture* tex_cloth;
+    Texture* tex_clouds;
     Texture* tex_white;     /* 4×4 beyaz: düz renkli malzemeler (direk, cetvel) — ince gövdede doku uzamasın */
     LitUniforms u_pole;
     Material m_pole;
-    LitUniforms u_bricks, u_grid[3], u_ground, u_floor, u_pillar;
-    Material m_bricks, m_grid[3], m_ground, m_floor, m_pillar;
+    LitUniforms u_bricks, u_grid[3], u_floor, u_pillar;
+    Material m_bricks, m_grid[3], m_floor, m_pillar;
     Mat4* grid_models;
     PhysWorld phys;
     Vehicle car;
@@ -1156,8 +1159,8 @@ static b32 anim_scene_build(void) {
         transform_set_parent(&g.ecs, g.tent_ent[i], g.anim_root);
     }
 
-    lit_defaults(&g.u_arm, g.tex_grid, v3(0.95f, 0.75f, 0.35f));
-    lit_defaults(&g.u_tent, g.tex_grid, v3(0.9f, 0.35f, 0.55f));
+    lit_defaults(&g.u_arm, g.tex_paint, v3(0.95f, 0.75f, 0.35f));
+    lit_defaults(&g.u_tent, g.tex_paint, v3(0.9f, 0.35f, 0.55f));
     g.u_tent.wrap = 0.6f;
     g.u_tent.translucency = 0.25f;
     material(&g.m_arm, &g.u_arm);
@@ -1215,7 +1218,6 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model);
 static void pillar_pos(i32 k, f32* x, f32* z);
 
 static void render_scene9(void) {
-    draw(g.ground, &g.m_ground, mat4_identity());
     if (!g.anim_ready) return;
     EcsCompId tr = transform_comp_id(&g.ecs);
     draw(g.cylinder, &g.m_pole, mat4_mul(mat4_translate(v3(0.0f, 0.15f, 0.0f)),
@@ -1350,22 +1352,33 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     raster_init(&g.raster, &g.fb);
     camera_init(&g.cam, (f32)w / (f32)h);
 
-    g.tex_bricks = tex_create(&g.perm, 128, 128, TEX_FLAG_MIPMAP);
+    /* malzemeler (D52): başlangıçta bir kez üretilir, kare maliyeti eklemez */
+    g.tex_bricks = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
     procgen_bricks(g.tex_bricks, 7);
     tex_build_mips(g.tex_bricks);
-    g.tex_grid = tex_create(&g.perm, 64, 64, TEX_FLAG_MIPMAP);
-    procgen_grid(g.tex_grid, 32, color_pack(235, 235, 235, 255), color_pack(60, 60, 70, 255));
-    tex_build_mips(g.tex_grid);
-    g.tex_checker = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
-    procgen_checker(g.tex_checker, 32, color_pack(240, 240, 240, 255), color_pack(25, 25, 30, 255));
-    tex_build_mips(g.tex_checker);
+    g.tex_paint = tex_create(&g.perm, 128, 128, TEX_FLAG_MIPMAP);
+    procgen_paint(g.tex_paint, 11);
+    tex_build_mips(g.tex_paint);
+    g.tex_pavers = tex_create(&g.perm, 512, 512, TEX_FLAG_MIPMAP);
+    procgen_pavers(g.tex_pavers, 8, 21);
+    tex_build_mips(g.tex_pavers);
+    g.tex_rock = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
+    procgen_rock(g.tex_rock, 31);
+    tex_build_mips(g.tex_rock);
+    g.tex_grass = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
+    procgen_grass(g.tex_grass, 41);
+    tex_build_mips(g.tex_grass);
+    g.tex_cloth = tex_create(&g.perm, 128, 128, TEX_FLAG_MIPMAP);
+    procgen_cloth(g.tex_cloth, 51);
+    tex_build_mips(g.tex_cloth);
+    g.tex_clouds = tex_create(&g.perm, 256, 256, TEX_FLAG_BILINEAR);
+    procgen_clouds(g.tex_clouds, 61, 0.4f, 0.35f);
 
     g.tex_white = tex_create(&g.perm, 4, 4, 0);
     for (u32 i = 0; i < 16; i++) g.tex_white->px[i] = color_pack(255, 255, 255, 255);
 
     g.cube = mesh_cube(&g.perm);
-    g.ground = mesh_plane(&g.perm, 80.0f, 80.0f, 0.25f, 8);
-    g.big_floor = mesh_plane(&g.perm, 4000.0f, 4000.0f, 0.5f, 1);
+    g.big_floor = mesh_plane(&g.perm, 4000.0f, 4000.0f, 0.25f, 16);   /* doku 4 m: 8 × 8 taş, taş 0,5 m. 16 parça: dev üçgende CPU ↔ GPU interpolasyon farkı büyür */
     g.water = mesh_plane(&g.perm, 40.0f, 40.0f, 0.15f, 128);   /* 129² köşe, 32 768 üçgen */
     g.ocean_mesh = mesh_plane(&g.perm, 40.0f, 40.0f, 0.15f, 128);
     g.ocean_bx = ARENA_ARRAY(&g.perm, f32, g.ocean_mesh->vertex_count);
@@ -1388,21 +1401,17 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.ocean_on = TRUE;
     g.refl_on = TRUE;
     lit_defaults(&g.u_bricks, g.tex_bricks, v3(1, 1, 1));
-    lit_defaults(&g.u_grid[0], g.tex_grid, v3(1.0f, 0.55f, 0.45f));
-    lit_defaults(&g.u_grid[1], g.tex_grid, v3(0.45f, 0.85f, 0.55f));
-    lit_defaults(&g.u_grid[2], g.tex_grid, v3(0.5f, 0.6f, 1.0f));
-    lit_defaults(&g.u_ground, g.tex_checker, v3(0.75f, 0.8f, 0.7f));
-    g.u_ground.fog_start = 8.0f;      /* 80 m'lik zeminin kenarı ufukta sise erisin (sert çizgi olmasın) */
-    g.u_ground.fog_end = 48.0f;
-    lit_defaults(&g.u_floor, g.tex_checker, v3(1, 1, 1));
+    lit_defaults(&g.u_grid[0], g.tex_paint, v3(0.78f, 0.42f, 0.32f));
+    lit_defaults(&g.u_grid[1], g.tex_paint, v3(0.42f, 0.6f, 0.42f));
+    lit_defaults(&g.u_grid[2], g.tex_paint, v3(0.42f, 0.5f, 0.72f));
+    lit_defaults(&g.u_floor, g.tex_pavers, v3(1, 1, 1));
     g.u_floor.fog_start = 10.0f;      /* üstel sis: uzak zemin ufukta gök rengine erir (pus) */
-    g.u_floor.fog_end = 450.0f;
+    g.u_floor.fog_end = 160.0f;       /* ufkun birkaç pikseline sıkışmasın: zemin hava perspektifiyle geniş bir bantta erir */
     lit_defaults(&g.u_pillar, g.tex_bricks, v3(1, 1, 1));
     g.u_pillar.fog_start = 10.0f;
     g.u_pillar.fog_end = 450.0f;
     material(&g.m_bricks, &g.u_bricks);
     for (u32 i = 0; i < 3; i++) material(&g.m_grid[i], &g.u_grid[i]);
-    material(&g.m_ground, &g.u_ground);
     material(&g.m_floor, &g.u_floor);
     material(&g.m_pillar, &g.u_pillar);
     lit_defaults(&g.u_pole, g.tex_white, v3(0.55f, 0.56f, 0.6f));   /* mat metal gri */
@@ -1426,13 +1435,13 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.cylinder = mesh_cylinder(&g.perm, 18);
     terrain_build(&g.perm);
     rocks_build(&g.perm);
-    lit_defaults(&g.u_rock, g.tex_checker, v3(0.55f, 0.5f, 0.45f));
-    lit_defaults(&g.u_terrain, g.tex_grid, v3(0.45f, 0.75f, 0.35f));
+    lit_defaults(&g.u_rock, g.tex_rock, v3(0.72f, 0.68f, 0.62f));
+    lit_defaults(&g.u_terrain, g.tex_grass, v3(1, 1, 1));
     material(&g.m_rock, &g.u_rock);
     material(&g.m_terrain, &g.u_terrain);
-    lit_defaults(&g.u_car, g.tex_grid, v3(0.95f, 0.18f, 0.12f));
-    lit_defaults(&g.u_tire, g.tex_checker, v3(0.16f, 0.16f, 0.18f));
-    lit_defaults(&g.u_char, g.tex_grid, v3(0.3f, 0.55f, 1.0f));
+    lit_defaults(&g.u_car, g.tex_paint, v3(0.66f, 0.13f, 0.1f));
+    lit_defaults(&g.u_tire, g.tex_rock, v3(0.2f, 0.2f, 0.22f));
+    lit_defaults(&g.u_char, g.tex_paint, v3(0.26f, 0.4f, 0.66f));
     /* yüzey (D45, D48): boya ve metal parlak, plastik orta, tuğla pürüzlü; zemin ve kumaş tam mat */
     g.u_car.rough = 0.22f;
     g.u_char.rough = 0.5f;
@@ -1452,11 +1461,11 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     material(&g.m_car, &g.u_car);
     material(&g.m_tire, &g.u_tire);
     material(&g.m_char, &g.u_char);
-    lit_defaults(&g.u_flag, g.tex_checker, v3(0.95f, 0.22f, 0.18f));
+    lit_defaults(&g.u_flag, g.tex_cloth, v3(0.74f, 0.17f, 0.14f));
     g.u_flag.wrap = 1.0f;          /* half-Lambert²: kıvrımlar belli, gölge yüzü kara değil */
     g.u_flag.translucency = 0.3f;  /* ters yüz arkadan ışıkla parlar */
     for (u32 k = 0; k < 3; k++) {
-        lit_defaults(&g.u_jelly[k], g.tex_grid, v3(0.35f, 0.95f, 0.45f));
+        lit_defaults(&g.u_jelly[k], g.tex_paint, v3(0.34f, 0.72f, 0.42f));
         g.u_jelly[k].wrap = 0.7f;
         g.u_jelly[k].translucency = 0.2f;
         g.u_jelly[k].rough = 0.25f;
@@ -1464,7 +1473,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
         g.u_jelly[k].field = g.jelly_field[k];
         g.u_jelly[k].field_scale = JELLY_FIELD_SCALE;
     }
-    lit_defaults(&g.u_water, g.tex_grid, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
+    lit_defaults(&g.u_water, g.tex_white, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
     g.flag_field = tex_create(&g.perm, FLAG_FIELD_N, FLAG_FIELD_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
     g.u_flag.field = g.flag_field;
     g.u_flag.field_scale = 1.0f / 3.0f;   /* uv metre: u ∈ [0, 3] */
@@ -1485,7 +1494,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.m_water.vert_params[2] = 1.0f;     /* hız çarpanı */
     g.m_water.vert_params[3] = 0.6f;     /* sivrilik */
     g.m_water.cull_margin = 1.5f;
-    lit_defaults(&g.u_sky, g.tex_grid, v3(0.32f, 0.52f, 0.86f));   /* tepe rengi (water.mtk gök yansımasıyla aynı) */
+    lit_defaults(&g.u_sky, g.tex_clouds, v3(0.32f, 0.52f, 0.86f));   /* tepe rengi (water.mtk gök yansımasıyla aynı) */
     material(&g.m_sky, &g.u_sky);
     g.m_sky.cull = CULL_NONE;
     material(&g.m_flag, &g.u_flag);
@@ -1605,13 +1614,14 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 
 static void set_frame_uniforms(Vec3 eye) {
     g.u_water.wrap = g.time;   /* water.mtk: wrap yerinde zaman */
+    g.u_sky.wrap = g.time;     /* sky.mtk: bulut rüzgârı */
     g.u_water.screen_ix = 1.0f / (f32)g.fb.w;
     g.u_water.screen_iy = 1.0f / (f32)g.fb.h;
     if (g_water && !g.capture) {
         g.u_water.tex = g.refl_active ? &g.refl_tex : refl_none();
         lit_uniforms_prepare(&g.u_water);
     }
-    LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
+    LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_floor, &g.u_pillar,
                            &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly[0], &g.u_jelly[1], &g.u_jelly[2], &g.u_water, &g.u_sky, &g.u_pole,
                            &g.u_arm, &g.u_tent };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
@@ -1634,7 +1644,7 @@ static void set_frame_uniforms(Vec3 eye) {
     g.u_water.field = g.wave_tex;
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
-    Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
+    Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_floor, &g.m_pillar,
                          &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly[0], &g.m_jelly[1], &g.m_jelly[2], &g.m_water, &g.m_ocean, &g.m_pole,
                          &g.m_arm, &g.m_tent };
     /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
@@ -1676,7 +1686,6 @@ static void draw_sky(void) {
 }
 
 static void render_scene1(void) {
-    draw(g.ground, &g.m_ground, mat4_identity());
     Mat4 spin = mat4_mul(mat4_rotate_y(g.time * 0.9f), mat4_rotate_x(g.time * 0.6f));
     draw(g.cube, &g.m_bricks, mat4_mul(mat4_translate(v3(0, 2.2f, 2.0f)), mat4_mul(spin, mat4_scale(v3(2.5f, 2.5f, 2.5f)))));
     for (u32 i = 0; i < GRID_COUNT; i++) draw(g.cube, &g.m_grid[i % 3], g.grid_models[i]);
@@ -1721,7 +1730,6 @@ static void render_scene5(void) {
 }
 
 static void render_scene6(void) {
-    draw(g.ground, &g.m_ground, mat4_identity());
     for (u32 i = 0; i < g.phys.count; i++) draw_body(&g.phys.bodies[i], i);
     draw(g.flag_mesh, &g.m_flag, mat4_identity());
     for (u32 k = 0; k < g.jelly_count; k++) draw(g.jelly_mesh[k], &g.m_jelly[k], mat4_identity());
@@ -1797,7 +1805,6 @@ static void soft_meshes_update(void) {
 }
 
 static void render_scene3(void) {
-    draw(g.ground, &g.m_ground, mat4_identity());
     for (u32 i = 0; i < g.phys.count; i++) {
         const Body* b = &g.phys.bodies[i];
         if (b->shape == SHAPE_BOX) {
@@ -1809,7 +1816,6 @@ static void render_scene3(void) {
 }
 
 static void render_scene4(void) {
-    draw(g.ground, &g.m_ground, mat4_identity());
     for (u32 i = 0; i < g.phys.count; i++) {
         const Body* b = &g.phys.bodies[i];
         if (i == g.car.body || b->shape == SHAPE_PLANE) continue;
@@ -1890,7 +1896,6 @@ static void wave_update(void) {
 }
 
 static void render_scene7(void) {
-    if (!g.refl_pass) draw(g.big_floor, &g.m_floor, mat4_identity());   /* zemin su düzleminin altında */
     if (!g.shadow_pass && !g.refl_pass) {   /* su gölge düşürmez, kendini yansıtmaz */
         if (g.ocean_on) draw(g.ocean_mesh, &g.m_ocean, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
         else draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
@@ -1913,7 +1918,6 @@ static void render_scene7(void) {
 /* Sahne 8: toplar kütleye göre renkli (1 kg mavi, 2 kg yeşil, 4 kg kırmızı). Her topun yanında iki çentik:
  * gri = bırakıldığı yükseklik, top rengi = sekmeden sonra ulaştığı en yüksek nokta (aradaki fark = kayıp). */
 static void render_scene8(void) {
-    draw(g.ground, &g.m_ground, mat4_identity());
     for (u32 c = 0; c < DROP_COLS; c++) {
         f32 x = drop_col_x(c);
         draw(g.cube, &g.m_pole, mat4_mul(mat4_translate(v3(x, 4.5f, -0.9f)), mat4_scale(v3(0.12f, 9.0f, 0.12f))));   /* cetvel */
@@ -1933,7 +1937,6 @@ static void render_scene8(void) {
 }
 
 static void render_scene2(void) {
-    draw(g.big_floor, &g.m_floor, mat4_identity());
     for (i32 k = 0; k < 12; k++) {
         f32 a = (f32)k * (M_TAU_F / 12.0f);
         Vec3 pos = v3(m_sinf(a) * 25.0f, 3.0f, -m_cosf(a) * 25.0f);
@@ -1951,6 +1954,8 @@ static void render_scene(void) {
     else if (g.scene == 8) render_scene8();
     else if (g.scene == 9) render_scene9();
     else render_scene5();
+    /* zemin nesnelerden sonra (D52): örttüğü yer derinlikte elenir, gölgelenmez. Sahne 5 arazi; yansımada zemin su düzleminin altında kalır */
+    if (g.scene != 5 && !g.refl_pass) draw(g.big_floor, &g.m_floor, mat4_identity());
 }
 
 /* harita (ilk kullanımda) + ışık izdüşümü; FALSE: bu karede gölge yok */
@@ -1966,8 +1971,8 @@ static b32 shadow_prepare(void) {
     }
     Mat4 view = camera_view(&g.cam);
     Vec3 fwd = v3(-view.m[2], -view.m[6], -view.m[10]);
-    shadow_fit(g.shadow, 0, g.u_ground.to_light, v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS * 0.6f)), SHADOW_RADIUS, 40.0f);
-    shadow_fit(g.shadow, 1, g.u_ground.to_light, v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS2 * 0.6f)), SHADOW_RADIUS2, 40.0f);
+    shadow_fit(g.shadow, 0, g.u_floor.to_light, v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS * 0.6f)), SHADOW_RADIUS, 40.0f);
+    shadow_fit(g.shadow, 1, g.u_floor.to_light, v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS2 * 0.6f)), SHADOW_RADIUS2, 40.0f);
     return TRUE;
 }
 
@@ -2355,8 +2360,8 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     if (gpu) pipe_set_gpu(&g.pipe, &g.gcmd);
-    draw_sky();
     render_scene();
+    draw_sky();   /* en son (D52): yalnız açıkta kalan gök pikselleri gölgelenir */
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
     if (g.ip_active) interp_restore();

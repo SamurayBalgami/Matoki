@@ -2,8 +2,9 @@
 // Kameraya ortalanmış büyük bir kürenin iç yüzüne çizilir (demo: draw_sky). Ufuk rengi = sis rengi →
 // sisle eriyen zemin gökle dikişsiz birleşir. Uniform'lar LitUniforms yerleşiminde:
 // fog_color = ufuk, tint = tepe, to_light = güneş yönü, light_color = güneş rengi.
+// Bulut (D52): tek bilinear okuma, doku başlangıçta üretilir (R yoğunluk, G güneş tarafı aydınlığı). Düz katman izdüşümü, ufukta söner; wrap yerinde zaman.
 
-uniform tex: texture2d;
+uniform tex: texture2d @bilinear;
 uniform to_light: vec3;
 uniform ambient: f32;
 uniform light_color: vec3;
@@ -13,7 +14,7 @@ uniform fog_end: f32;
 uniform eye: vec3;
 uniform use_mip: i32;
 uniform tint: vec3;
-uniform wrap: f32;
+uniform time: f32;
 uniform translucency: f32;
 
 varying wpos: vec3;
@@ -30,7 +31,12 @@ fn frag() -> vec4 {
     let h = 1.0 / (1.0 + 7.0 * up);
     let sky = mix(tint * (0.82 + 0.24 * rayleigh), fog_color, sqrt(h));
     // ufkun altı: sis rengi (zemin zaten sisle bu renge erir)
-    let base = select(dir.y >= 0.0, sky, fog_color);
+    let clear = select(dir.y >= 0.0, sky, fog_color);
+    // bulut katmanı: tepede yakın, ufka doğru uzak. Güneşe bakan kenar parlak, güneşin yanında ince gümüş astar
+    let layer = sample_level(tex, vec2(dir.x, dir.z) * (0.42 / (up + 0.28)) + vec2(0.0035, 0.0014) * time, 0);
+    let cov = smoothstep(0.5, 0.68, layer.r) * smoothstep(0.015, 0.2, dir.y);
+    let shade = mix(0.66, 1.0, layer.g) + c * c * 0.08;
+    let base = mix(clear, mix(vec3(0.72, 0.76, 0.84), vec3(1.0, 0.98, 0.95), shade), cov * 0.92);
     // Mie saçılması: Henyey-Greenstein evre fonksiyonu (g = 0,8), güneşin çevresinde geniş hale
     let q = 1.64 - 1.6 * c;
     let mie = 0.36 / (q * sqrt(q));
@@ -41,5 +47,5 @@ fn frag() -> vec4 {
     // geniş yumuşak geçişte 8 bit bantlaşmasın: ±½ basamak titreşim (Jimenez 2014, interleaved gradient noise)
     let fc = frag_coord();
     let ign = fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y)) - 0.5;
-    return vec4(base + light_color * (halo + disk + glow) + vec3(ign / 255.0), 1.0);
+    return vec4(base + light_color * (halo * (1.0 - cov * 0.5) + disk * (1.0 - cov) + glow) + vec3(ign / 255.0), 1.0);
 }

@@ -88,7 +88,8 @@ fn sample_aniso(p: vec2) -> vec4 {
     let frac = lodf - l0f;
     let l0 = clamp(i32(l0f), 0, 15);
     let l1 = min(l0 + 1, 15);          // son seviyenin ötesi sample_level'da kenetlenir
-    let ratio2 = select(foot2 > 0.0, major2 / max(foot2, 0.000001), 1.0);
+    // uzak seviyede (texel başına 8+ piksel ayak izi) doku zaten ortalama, ayrıca sisli: en çok 2 örnek yeter (D52)
+    let ratio2 = min(select(foot2 > 0.0, major2 / max(foot2, 0.000001), 1.0), select(l0 >= 3, 4.0, 1000000.0));
     // seviye geçişi yalnız kesrin orta bandında (donanımlardaki "brilinear"): uçlarda tek seviye yeter, örnek sayısı yarıya iner (D50)
     let w = clamp((frac - 0.2) * 1.6667, 0.0, 1.0);
     return select(w <= 0.0, axis_avg(p, axis, l0, ratio2),
@@ -245,7 +246,8 @@ fn frag() -> vec4 {
     let back = max(-nl, 0.0) * translucency * (1.0 + phys.x * 1.5);
     let vis = shadow_lit(wpos);
     // yarım küre ortam: tepe gök, dip zemin (doğrusal ışıma)
-    let hemi = mix(vec3(0.34, 0.29, 0.23), vec3(0.66, 0.76, 0.92), n.y * 0.5 + 0.5) * (ambient * 1.05 * (1.0 - phys.y * 0.75));
+    // gölge düşen yer gökyüzünün bir kısmını da görmez (D52): ek okuma yok, gölge çarpanı ortamı %22'ye kadar kısar
+    let hemi = mix(vec3(0.34, 0.29, 0.23), vec3(0.66, 0.76, 0.92), n.y * 0.5 + 0.5) * (ambient * 1.3 * (1.0 - phys.y * 0.75) * (0.78 + 0.22 * vis));
     let to_eye = eye - wpos;
     let d = length(to_eye);
     let v = to_eye * (1.0 / max(d, 0.0001));
