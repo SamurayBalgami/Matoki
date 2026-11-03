@@ -632,3 +632,11 @@ GPU: `GC_REFLECT` / `GC_REFLECT_END`, renk doku tamponuna kopyalanır. Geçişle
 
 Maliyet (göl görünümü 6, 1920×1080, yazılım, aynı motor açık / kapalı): gölge + MSAA 105,0 → 108,2 ms (×1,031), düz 59,0 → 59,7 ms (×1,012); gök ve zemin çizilmediği için geçiş ucuz. Yalnız sahne 7 öder.
 Kabul: `gpu_check` 60/60, görünüm 6 en kötü %0,036, 257/257 test. Sınır: tek düzlem; dalga yüksekliği düzleme yansımaz, yalnız normalle bükülür.
+
+## D48. Fizik tabanlı ışık: GGX, doğrusal uzay, tek saçılmalı gök
+`lit_hq` gama uzayında Blinn-Phong'du. Şimdi doğrusal uzayda (doku ve ışık sayıları kare alınarak) enerji korunumlu Lambert + GGX: Trowbridge-Reitz dağılımı, Smith görünürlüğü (Hammon), Schlick Fresnel; `LitUniforms.metal / rough`.
+Çevre yansıması analitik gökten, DFG için Karis 2014; ufuk çizgisi pürüz kadar bulanır. Çıkış ACES (Narkowicz) + gama 2. Sis görüntü uzayında: gök rengiyle dikişsiz kalsın diye tone'dan sonra; Beer-Lambert üsteli kanal başına (k, 1,5k, 2k): kısa dalga boyu daha çabuk saçılır.
+`rough ≥ 0,97` kolu çalıştırmaz (zemin ödemez). `sky.mtk`: Rayleigh evresi 3/4 (1 + cos²θ), hava kütlesiyle ufka geçiş, Mie için Henyey-Greenstein (g = 0,8), `pow` yok; bantlaşma için ±½ basamak titreşim. Ufuk tam `fog_color` kalır.
+Kapsam: `lit` kipi ve C shader'ları değişmez, ama `sky.mtk` her kipte çizilir: tüm kiplerin gök hash'leri değişti (bilinçli).
+
+Maliyet (A/B, 1920×1080, yazılım, 10 görünüm): gölge + MSAA 700 → 752 ms (×1,075; görünüm 2'nin A değeri o koşuda aykırı düşük, kalanlar ×0,99–×1,047), düz 395 → 416 ms (×1,052). Kabul: `gpu_check` 60/60 (HQ en kötü %0,019), 257/257 test.

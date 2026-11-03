@@ -5,10 +5,11 @@
 // (yumuşak başlar, ufukta gök rengine erir; sky.mtk ile aynı ufuk rengi).
 // Gölge (M13 faz 7): gfx3d/shadow.h haritası, f32 derinlik bitleri texel_fetch + bitcast_f32 ile, süzmeli karşılaştırma
 // (PCF); yalnız doğrudan ışığı keser. Kapalıyken 1×1 / derinlik 2 / shadow_mat = 0 → çarpan tam 1 (çıktı bit-bit aynı).
-// Kalite (D45): gölge 4×4 komşuda üçüncü derece B-spline (basamaksız, yumuşak kenar); ortam gök ↔ zemin rengi (gölgeler soğuk dolgu
-// alır); parlaklık: Blinn-Phong + Fresnel'li gök yansıması; kabartı: doku parlaklığı
-// yükseklik sayılır, normal ekran türevlerinden bozulur (Mikkelsen 2010). spec / bump 0 olan malzeme bu kolları çalıştırmaz (D43).
-// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, spec, gloss, bump, shadow_mat2, shadow_bias2).
+// Kalite (D45, D46): gölge 4×4 üçüncü derece B-spline, iki kademe, alıcı düzlemi; kabartı doku parlaklığından (Mikkelsen 2010).
+// Fizik tabanlı ışık (D48): doğrusal uzayda enerji korunumlu Lambert + GGX (Trowbridge-Reitz dağılımı, Smith görünürlüğü, Schlick Fresnel),
+// metal / pürüz iş akışı; çevre yansıması analitik gökten (Karis 2014 yaklaşımı); ACES ton eğrisi, sonra gama; sis görüntü uzayında Beer-Lambert,
+// kanal başına sönüm (kısa dalga boyu daha çabuk saçılır). rough ≥ 0,97 malzeme parlak kolu çalıştırmaz, bump 0 kabartı kolunu (D43).
+// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, metal, rough, bump, shadow_mat2, shadow_bias2).
 
 uniform tex: texture2d @mipmap @bilinear;
 uniform to_light: vec3;
@@ -25,8 +26,8 @@ uniform translucency: f32;
 uniform shadow: texture2d @clamp;
 uniform shadow_mat: mat4;
 uniform shadow_bias: f32;
-uniform spec: f32;
-uniform gloss: f32;
+uniform metal: f32;
+uniform rough: f32;
 uniform bump: f32;
 uniform shadow_mat2: mat4;
 uniform shadow_bias2: f32;
@@ -174,24 +175,47 @@ fn bump_normal(n: vec3, px: vec3, py: vec3, hx: f32, hy: f32) -> vec3 {
     return norm_safe(n * abs(det) - g * bump);
 }
 
-// parlaklık + gök yansıması; v göze doğru birim vektör, vis gölge çarpanı (yansıma gölgede de kalır, yalnız güneş kesilir)
-fn gloss_light(n: vec3, v: vec3, nl: f32, vis: f32) -> vec3 {
+// analitik gök (sky.mtk ile aynı renkler, doğrusal): pürüz yansımayı ortalama göğe bulandırır, ufuk altı zemin
+fn sky_linear(r: vec3, a: f32) -> vec3 {
+    let up = clamp(r.y, 0.0, 1.0);
+    let h = 1.0 / (1.0 + 7.0 * up);
+    let fc = fog_color * fog_color;
+    let sky = mix(vec3(0.102, 0.27, 0.74), fc, h * h);
+    let above = mix(sky, vec3(0.35, 0.47, 0.72), a);
+    // ufuk çizgisi pürüz kadar bulanır (dikey metal yüzeyde sert sınır olmasın)
+    let band = 0.04 + a * 0.5;
+    return mix(vec3(0.13, 0.11, 0.09), above, clamp((r.y + band) / (2.0 * band), 0.0, 1.0));
+}
+
+// GGX güneş yansıması + çevre yansıması. v göze doğru, nl = n·l, vis gölge çarpanı (çevre gölgede de kalır, yalnız güneş kesilir)
+fn specular(n: vec3, v: vec3, nl: f32, vis: f32, f0: vec3, sun: vec3) -> vec3 {
+    let a = max(rough * rough, 0.002);
+    let a2 = a * a;
     let h = norm_safe(v + to_light);
-    let ndh = max(dot(n, h), 0.0);
+    let ndh = clamp(dot(n, h), 0.0, 1.0);
+    let ndv = clamp(dot(n, v), 0.0001, 1.0);
+    let ndl = clamp(nl, 0.0, 1.0);
+    let q = ndh * ndh * (a2 - 1.0) + 1.0;
+    let d = a2 / max(3.14159265 * q * q, 0.000001);
+    // Smith, yüksekliğe bağlı (Hammon yaklaşımı): V = 0,5 / mix(2·nl·nv, nl + nv, a)
+    let vis_g = 0.5 / max(mix(2.0 * ndl * ndv, ndl + ndv, a), 0.0001);
     let m = 1.0 - clamp(dot(v, h), 0.0, 1.0);
     let m2 = m * m;
-    let schlick = 0.6 + 0.4 * m2 * m2 * m;
-    // ndh^gloss ≈ (1 - gloss (1 - ndh) / 16)^16: pow'un log2 + exp2 polinomları yerine dört kare (görünüm 2'de +%37 → ölçüm D45)
-    let q = max(1.0 - gloss * (1.0 - ndh) * 0.0625, 0.0);
-    let q2 = q * q;
-    let q4 = q2 * q2;
-    let q8 = q4 * q4;
-    let sun = light_color * (q8 * q8 * schlick * clamp(nl * 8.0, 0.0, 1.0) * vis);
-    let r = reflect(-v, n);
-    let mv = 1.0 - clamp(dot(n, v), 0.0, 1.0);
-    let mv2 = mv * mv;
-    let sky = mix(fog_color, vec3(0.32, 0.52, 0.86), clamp(r.y, 0.0, 1.0));
-    return (sun + sky * (0.5 * mv2 * mv2 * mv)) * spec;
+    let fr = f0 + (vec3(1.0) - f0) * (m2 * m2 * m);
+    let direct = fr * (d * vis_g * ndl * vis * 3.14159265);
+    // çevre: DFG integralinin analitik yaklaşımı (Karis 2014)
+    let c0 = rough * -1.0 + 1.0;
+    let c1 = rough * -0.0275 + 0.0425;
+    let c2 = rough * -0.572 + 1.04;
+    let c3 = rough * 0.022 - 0.04;
+    let a004 = min(c0 * c0, exp2(-9.28 * ndv)) * c0 + c1;
+    let env = f0 * (-1.04 * a004 + c2) + vec3(1.04 * a004 + c3);
+    return direct * sun + sky_linear(reflect(-v, n), rough) * env;
+}
+
+// ACES film eğrisi (Narkowicz 2015): parlak uçta yumuşak doyum
+fn tone(x: f32) -> f32 {
+    return sqrt(clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0));
 }
 
 fn frag() -> vec4 {
@@ -200,6 +224,10 @@ fn frag() -> vec4 {
     let height = dot(texel.rgb, vec3(0.3, 0.6, 0.1));
     let n = select(bump > 0.0, bump_normal(n0, dFdx(wpos), dFdy(wpos), dFdx(height), dFdy(height)), n0);
     let nl = dot(n, to_light);
+    // görüntü → doğrusal (gama 2): doku, renk ve ışık sayıları sRGB görünümünde verilir
+    let base = texel.rgb * tint;
+    let albedo = base * base;
+    let sun = light_color * light_color * 1.75;
     // yumuşak diffuse: Lambert ile half-Lambert² arası (wrap = 0 → Lambert, 1 → ((n·l)/2 + 1/2)²).
     // Kare, gölge tarafını kara basmadan kıvrımlardaki eğim farkını korur → kıvrımlar belli olur.
     let h = nl * 0.5 + 0.5;
@@ -207,15 +235,19 @@ fn frag() -> vec4 {
     // arkadan ışık (ters yüz aydınlanır), yumuşak
     let back = max(-nl, 0.0) * translucency;
     let vis = shadow_lit(wpos);
-    // tepe gök, dip zemin rengi; ortalamaları eski tek renkli ortama yakın (tepe 1.0, dip 0.5)
-    let hemi = mix(vec3(0.56, 0.5, 0.44), vec3(0.96, 1.0, 1.08), n.y * 0.5 + 0.5) * ambient;
-    let light = hemi + light_color * (diffuse * vis + back);
+    // yarım küre ortam: tepe gök, dip zemin (doğrusal ışıma)
+    let hemi = mix(vec3(0.34, 0.29, 0.23), vec3(0.66, 0.76, 0.92), n.y * 0.5 + 0.5) * (ambient * 1.05);
     let to_eye = eye - wpos;
     let d = length(to_eye);
     let v = to_eye * (1.0 / max(d, 0.0001));
-    let c = texel.rgb * tint * light + select(spec > 0.0, gloss_light(n, v, nl, vis), vec3(0.0));
+    let lit = albedo * (1.0 - metal) * (hemi + sun * (diffuse * vis + back));
+    let f0 = mix(vec3(0.04), albedo, metal);
+    let c = lit + select(rough < 0.97, specular(n, v, nl, vis, f0, sun), vec3(0.0));
+    // Beer-Lambert: e = 2^(-kx²) kırmızıda, yeşil ×1,5, mavi ×2 üstel; ufukta gök rengine erir
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
     let x = max(d - fog_start, 0.0) * fog_scale;
-    let f = 1.0 - exp2(-4.0 * x * x);
-    return vec4(mix(c, fog_color, f), 1.0);
+    let e = exp2(-2.5 * x * x);
+    let eg = e * sqrt(e);
+    let eb = e * e;
+    return vec4(mix(fog_color.x, tone(c.x), e), mix(fog_color.y, tone(c.y), eg), mix(fog_color.z, tone(c.z), eb), 1.0);
 }

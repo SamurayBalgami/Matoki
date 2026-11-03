@@ -270,8 +270,8 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->shadow = shadow_none();
     mem_zero(&u->shadow_mat, sizeof(u->shadow_mat));   /* 0 → harita koordinatı (0, 0, 0): her yer aydınlık */
     u->shadow_bias = 0.0f;
-    u->spec = 0.0f;
-    u->gloss = 32.0f;
+    u->metal = 0.0f;
+    u->rough = 1.0f;
     u->bump = 0.0f;
     mem_zero(&u->shadow_mat2, sizeof(u->shadow_mat2));
     u->shadow_bias2 = 0.0f;
@@ -335,7 +335,7 @@ static const LitField LIT_FIELDS[] = {
     LIT_FIELD(light_color, TB_FLOAT, 3), LIT_FIELD(fog_start, TB_FLOAT, 1), LIT_FIELD(fog_color, TB_FLOAT, 3),
     LIT_FIELD(fog_end, TB_FLOAT, 1), LIT_FIELD(eye, TB_FLOAT, 3), LIT_FIELD(use_mip, TB_INT, 1), LIT_FIELD(tint, TB_FLOAT, 3),
     LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
-    LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(spec, TB_FLOAT, 1), LIT_FIELD(gloss, TB_FLOAT, 1),
+    LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(metal, TB_FLOAT, 1), LIT_FIELD(rough, TB_FLOAT, 1),
     LIT_FIELD(bump, TB_FLOAT, 1), LIT_FIELD(shadow_mat2, TB_MAT, 4), LIT_FIELD(shadow_bias2, TB_FLOAT, 1),
     LIT_FIELD(screen_ix, TB_FLOAT, 1), LIT_FIELD(screen_iy, TB_FLOAT, 1),
     { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
@@ -1385,25 +1385,22 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_car, g.tex_grid, v3(0.95f, 0.18f, 0.12f));
     lit_defaults(&g.u_tire, g.tex_checker, v3(0.16f, 0.16f, 0.18f));
     lit_defaults(&g.u_char, g.tex_grid, v3(0.3f, 0.55f, 1.0f));
-    /* parlaklık / kabartı (D45): boya ve metal parlak, plastik orta, tuğla pürüzlü; zemin ve kumaş mat */
-    g.u_car.spec = 1.0f;
-    g.u_car.gloss = 90.0f;
-    g.u_char.spec = 0.45f;
-    g.u_tire.spec = 0.25f;
-    g.u_jelly.spec = 0.6f;
-    g.u_jelly.gloss = 48.0f;
-    g.u_pole.spec = 0.7f;
-    g.u_pole.gloss = 60.0f;
-    g.u_arm.spec = 0.35f;
-    g.u_tent.spec = 0.35f;
+    /* yüzey (D45, D48): boya ve metal parlak, plastik orta, tuğla pürüzlü; zemin ve kumaş tam mat */
+    g.u_car.rough = 0.22f;
+    g.u_char.rough = 0.5f;
+    g.u_tire.rough = 0.7f;
+    g.u_jelly.rough = 0.25f;
+    g.u_pole.metal = 1.0f;
+    g.u_pole.rough = 0.35f;
+    g.u_arm.rough = 0.5f;
+    g.u_tent.rough = 0.75f;
     for (u32 i = 0; i < 3; i++) {
-        g.u_grid[i].spec = 0.4f;
-        g.u_grid[i].gloss = 40.0f;
+        g.u_grid[i].rough = 0.4f;
         g.u_grid[i].bump = 0.012f;
     }
-    g.u_bricks.spec = 0.08f;
+    g.u_bricks.rough = 0.8f;
     g.u_bricks.bump = 0.03f;
-    g.u_pillar.spec = 0.08f;
+    g.u_pillar.rough = 0.8f;
     g.u_pillar.bump = 0.03f;
     material(&g.m_car, &g.u_car);
     material(&g.m_tire, &g.u_tire);

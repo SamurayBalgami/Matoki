@@ -41,9 +41,9 @@ typedef struct LitUniforms {
     const Texture* shadow;
     Mat4 shadow_mat;    /* dünya → (u, v, derinlik), u, v ∈ [0, 1] */
     f32  shadow_bias;   /* derinlik sapması (ışık uzayı, 0..1 ölçeğinde) */
-    /* yalnız lit_hq.mtk (D45): 0 → kol çalışmaz */
-    f32  spec;          /* parlaklık + gök yansıması gücü */
-    f32  gloss;         /* parlaklık üssü */
+    /* yalnız lit_hq.mtk (D45, D48) */
+    f32  metal;         /* 0 yalıtkan, 1 metal */
+    f32  rough;         /* pürüz: ≥ 0,97 → parlak kol çalışmaz */
     f32  bump;          /* doku parlaklığı → yükseklik (m) */
     Mat4 shadow_mat2;   /* uzak gölge kademesi (D46); shadow_mat yakın kademe */
     f32  shadow_bias2;
