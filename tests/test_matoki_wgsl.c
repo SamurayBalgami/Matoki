@@ -95,8 +95,8 @@ typedef struct WgslCase {
 TEST(wgsl_demo_shaders_structure) {
     const WgslCase CASES[] = {
         { "lit.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, wrap) },
-        { "lit_hq.mtk", MATOKI_STAGE_FRAG, 2, (u32)__builtin_offsetof(LitUniforms, lv_count) },
-        { "water.mtk", MATOKI_STAGE_FRAG, 0, (u32)__builtin_offsetof(LitUniforms, shadow) },
+        { "lit_hq.mtk", MATOKI_STAGE_FRAG, 2, (u32)__builtin_offsetof(LitUniforms, screen_ix) },
+        { "water.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, lv_count) },
         { "sky.mtk", MATOKI_STAGE_FRAG, 0, (u32)__builtin_offsetof(LitUniforms, shadow) },
         { "std_vert.mtk", MATOKI_STAGE_VERT, 0, 168 },
         { "wave_vert.mtk", MATOKI_STAGE_VERT, 0, 184 },

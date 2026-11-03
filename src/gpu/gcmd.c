@@ -9,8 +9,9 @@
 #define GCMD_SHADOW_WORDS 5u
 #define GCMD_SHADOWS_MAX 4u
 #define GCMD_OVERLAY_WORDS 6u
+#define GCMD_REFLECT_WORDS 4u
 #define GCMD_OVERLAYS_MAX 2u
-#define GCMD_FIXED_WORDS (GCMD_FRAME_WORDS + GCMD_SHADOWS_MAX * (GCMD_SHADOW_WORDS + 1u) + GCMD_OVERLAYS_MAX * GCMD_OVERLAY_WORDS)
+#define GCMD_FIXED_WORDS (GCMD_FRAME_WORDS + GCMD_SHADOWS_MAX * (GCMD_SHADOW_WORDS + 1u) + GCMD_REFLECT_WORDS + 1u + GCMD_OVERLAYS_MAX * GCMD_OVERLAY_WORDS)
 #define GCMD_MESH_WORDS 14u
 #define GCMD_DRAW_WORDS 11u
 #define GCMD_TEX_WORDS 4u
@@ -75,6 +76,21 @@ void gcmd_shadow_begin(GpuCmd* c, const Texture* tex, u32 size, u32 layer, u32 l
 
 void gcmd_shadow_end(GpuCmd* c) {
     if (c->cap) c->words[c->count++] = GC_SHADOW_END;
+}
+
+void gcmd_reflect_begin(GpuCmd* c, const Texture* tex, u32 w, u32 h) {
+    if (!c->cap) return;
+    u32 id = (u32)(uptr)tex;
+    seen_first(c, id);   /* içerik GPU'da: GC_TEX yazılmaz */
+    u32 r[GCMD_REFLECT_WORDS] = { GC_REFLECT, id, w, h };
+    mem_copy(c->words + c->count, r, sizeof(r));
+    c->count += GCMD_REFLECT_WORDS;
+}
+
+void gcmd_reflect_end(GpuCmd* c) {
+    if (!c->cap) return;
+    c->words[c->count++] = GC_REFLECT_END;
+    c->last_uniforms = NULL;   /* ana geçişte göz değişir: aynı malzeme aynı yuvayı paylaşmasın */
 }
 
 void gcmd_frame(GpuCmd* c, u32 w, u32 h, u32 clear_rgba, f32 clear_depth, u32 samples) {

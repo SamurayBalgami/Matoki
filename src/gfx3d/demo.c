@@ -49,6 +49,9 @@
 #define SHADOW_RADIUS2 42.0f   /* m: uzak kademe (texel ≈ 8 cm) */
 #define SHADOW_BIAS_M 0.04f    /* m: yakın kademe ≈ 2 texel; alıcı düzlemi eğimi ayrıca karşılar */
 #define SHADOW_BIAS2_M 0.14f   /* m: uzak kademe ≈ 2 texel */
+#define REFL_W 1024            /* su yansıma haritası (D47); Texture satır adımı 2'nin kuvveti ister */
+#define REFL_H 512
+#define WATER_Y 0.9f           /* m: göl düzlemi */
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -232,6 +235,12 @@ typedef struct Demo {
     u32 edit_ok, edit_fail;
     /* gölge haritası (M13 faz 7, B tuşu; sayfa açar, motor varsayılanı kapalı → ölçüm / hash araçları değişmez) */
     b32 shadow_on, shadow_active, shadow_pass;
+    /* su yansıması (D47): düzlemin altından sanal kamerayla sahnenin kendisi, gök hariç */
+    Arena refl_mem;
+    Framebuffer refl_fb;
+    Raster refl_raster;
+    Texture refl_tex;
+    b32 refl_ready, refl_on, refl_active, refl_pass;
     ShadowMap* shadow;
     Arena shadow_mem;
     /* GPU arka ucu (M13 faz 8a): JS WebGPU'yu kurunca engine_gpu_set(1); kare komut akışı g.gcmd'de */
@@ -328,6 +337,7 @@ static const LitField LIT_FIELDS[] = {
     LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
     LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(spec, TB_FLOAT, 1), LIT_FIELD(gloss, TB_FLOAT, 1),
     LIT_FIELD(bump, TB_FLOAT, 1), LIT_FIELD(shadow_mat2, TB_MAT, 4), LIT_FIELD(shadow_bias2, TB_FLOAT, 1),
+    LIT_FIELD(screen_ix, TB_FLOAT, 1), LIT_FIELD(screen_iy, TB_FLOAT, 1),
     { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
 };
 
@@ -1328,6 +1338,7 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
         ocean_init(&g.ocean, &g.perm, &od);
     }
     g.ocean_on = TRUE;
+    g.refl_on = TRUE;
     lit_defaults(&g.u_bricks, g.tex_bricks, v3(1, 1, 1));
     lit_defaults(&g.u_grid[0], g.tex_grid, v3(1.0f, 0.55f, 0.45f));
     lit_defaults(&g.u_grid[1], g.tex_grid, v3(0.45f, 0.85f, 0.55f));
@@ -1531,13 +1542,33 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
     pipe_draw(&g.pipe, &d);
 }
 
-static void set_frame_uniforms(void) {
+/* yansıma kapalıyken su: tek saydam texel, yansıyan her ışın gökten */
+static const Texture* refl_none(void) {
+    static u32 px[1];
+    static Texture t;
+    if (!t.px) {
+        t.w = t.h = 1;
+        t.flags = TEX_FLAG_CLAMP;
+        t.levels = 1;
+        tex_fill_level_offsets(&t);
+        t.px = px;
+    }
+    return &t;
+}
+
+static void set_frame_uniforms(Vec3 eye) {
     g.u_water.wrap = g.time;   /* water.mtk: wrap yerinde zaman */
+    g.u_water.screen_ix = 1.0f / (f32)g.fb.w;
+    g.u_water.screen_iy = 1.0f / (f32)g.fb.h;
+    if (g_water && !g.capture) {
+        g.u_water.tex = g.refl_active ? &g.refl_tex : refl_none();
+        lit_uniforms_prepare(&g.u_water);
+    }
     LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
                            &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky, &g.u_pole,
                            &g.u_arm, &g.u_tent };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
-        all[i]->eye = g.cam.pos;
+        all[i]->eye = eye;
         all[i]->use_mip = g.mip;
         if (g.shadow_active) {
             all[i]->shadow = &g.shadow->tex;
@@ -1706,8 +1737,8 @@ static void ocean_mesh_update(void) {
 }
 
 static void render_scene7(void) {
-    draw(g.big_floor, &g.m_floor, mat4_identity());
-    if (!g.shadow_pass) {   /* su gölge düşürmez */
+    if (!g.refl_pass) draw(g.big_floor, &g.m_floor, mat4_identity());   /* zemin su düzleminin altında */
+    if (!g.shadow_pass && !g.refl_pass) {   /* su gölge düşürmez, kendini yansıtmaz */
         if (g.ocean_on) draw(g.ocean_mesh, &g.m_ocean, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
         else draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
     }
@@ -1833,6 +1864,94 @@ static void shadow_pass_gpu(void) {
 }
 
 EXPORT(engine_set_shadow) void engine_set_shadow(i32 on) { g.shadow_on = on != 0; }
+
+/* Su yansıması (D47). Düzlem aynası R: p → (x, 2h − y, z); sanal görüş V·R, göz R(kamera). Ayna sarımı çevirir, izdüşümde x'i de çevirmek
+ * geri çevirir: malzemelerin ayıklaması değişmez, su haritayı 1 − u'dan okur. Düzlemin altı (Rp.y ≥ h) yakın düzlemi eğerek kırpılır (Lengyel 2005). */
+static b32 refl_prepare(void) {
+    if (g.scene != 7 || !g.refl_on || !g_water || g.flat || g.capture || g.cam.pos.y <= WATER_Y) return FALSE;
+    if (!g.refl_ready) {
+        usize n = (usize)REFL_W * REFL_H;
+        if (!arena_init_sys(&g.refl_mem, n * 8u + (64u << 10))) {
+            g.refl_on = FALSE;
+            return FALSE;
+        }
+        g.refl_fb.w = REFL_W;
+        g.refl_fb.h = REFL_H;
+        g.refl_fb.samples = 1;
+        g.refl_fb.color = ARENA_ARRAY(&g.refl_mem, u32, n);
+        g.refl_fb.depth = ARENA_ARRAY(&g.refl_mem, f32, n);
+        raster_init(&g.refl_raster, &g.refl_fb);
+        g.refl_tex.px = g.refl_fb.color;
+        g.refl_tex.w = REFL_W;
+        g.refl_tex.h = REFL_H;
+        g.refl_tex.w_mask = REFL_W - 1u;
+        g.refl_tex.h_mask = REFL_H - 1u;
+        g.refl_tex.log2_w = (u32)__builtin_ctz(REFL_W);
+        g.refl_tex.flags = TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR;
+        g.refl_tex.levels = 1;
+        tex_fill_level_offsets(&g.refl_tex);
+        g.refl_ready = TRUE;
+    }
+    return TRUE;
+}
+
+static void refl_camera(Mat4* view, Mat4* proj, Vec3* eye) {
+    Mat4 v = camera_view(&g.cam), r = mat4_identity();
+    r.m[5] = -1.0f;
+    r.m[13] = 2.0f * WATER_Y;
+    *view = mat4_mul(v, r);
+    *eye = v3(g.cam.pos.x, 2.0f * WATER_Y - g.cam.pos.y, g.cam.pos.z);
+    /* kırpma düzlemi görüş uzayında: tutulan taraf Rp.y < h, normal (0, -1, 0) */
+    Vec3 n = v3(-v.m[4], -v.m[5], -v.m[6]);
+    Vec4 o = mat4_mul_v4(&v, v4(0.0f, WATER_Y, 0.0f, 1.0f));
+    Vec4 c = v4(n.x, n.y, n.z, -(n.x * o.x + n.y * o.y + n.z * o.z));
+    Mat4 p = camera_proj(&g.cam), pi = mat4_inverse(p);
+    Vec4 q = mat4_mul_v4(&pi, v4(c.x >= 0.0f ? 1.0f : -1.0f, c.y >= 0.0f ? 1.0f : -1.0f, 1.0f, 1.0f));
+    f32 k = 1.0f / (c.x * q.x + c.y * q.y + c.z * q.z + c.w * q.w);
+    p.m[2] = c.x * k;
+    p.m[6] = c.y * k;
+    p.m[10] = c.z * k;
+    p.m[14] = c.w * k;
+    p.m[0] = -p.m[0];
+    p.m[4] = -p.m[4];
+    p.m[8] = -p.m[8];
+    p.m[12] = -p.m[12];
+    *proj = p;
+}
+
+static void refl_pass(GpuCmd* gc) {
+    g.refl_active = FALSE;
+    if (!refl_prepare()) return;
+    Mat4 view, proj;
+    Vec3 eye;
+    refl_camera(&view, &proj, &eye);
+    set_frame_uniforms(eye);
+    if (gc) {
+        gcmd_reflect_begin(gc, &g.refl_tex, REFL_W, REFL_H);
+        pipe_begin(&g.pipe, &g.refl_raster, &g.frame, view, proj, eye);
+        pipe_set_time(&g.pipe, g.time);
+        pipe_set_gpu(&g.pipe, gc);
+    } else {
+        usize n = (usize)REFL_W * REFL_H;
+        mem_zero(g.refl_fb.color, n * 4u);
+        for (usize i = 0; i < n; i++) g.refl_fb.depth[i] = 1.0f;
+        arena_reset(&g.frame, 0);
+        arena_reset(&g.bins, 0);
+        raster_begin(&g.refl_raster, &g.bins);
+        raster_set_depth(&g.refl_raster, TRUE, TRUE, DEPTH_LESS);
+        raster_set_blend(&g.refl_raster, BLEND_NONE);
+        pipe_begin(&g.pipe, &g.refl_raster, &g.frame, view, proj, eye);
+        pipe_set_time(&g.pipe, g.time);
+    }
+    g.refl_pass = TRUE;
+    render_scene();
+    g.refl_pass = FALSE;
+    pipe_end(&g.pipe);
+    if (gc) gcmd_reflect_end(gc);
+    g.refl_active = TRUE;
+}
+
+EXPORT(engine_set_reflect) void engine_set_reflect(i32 on) { g.refl_on = on != 0; }
 
 /* ---- GPU arka ucu (M13 faz 8a, D38): JS (web/gpu.mjs) WebGPU kurulursa açar; yoksa yazılım render kalır ---- */
 EXPORT(engine_gpu_set) void engine_gpu_set(i32 on) { g.gpu_on = on != 0; }
@@ -2037,7 +2156,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     if (g.scene == 9) anim_scene_update();
     if (g.scene == 6) soft_meshes_update();
     if (g.scene == 7 && g.ocean_on) ocean_mesh_update();
-    if (!g.gpu_on) shadow_pass();
+    if (!g.gpu_on) {
+        shadow_pass();
+        refl_pass(NULL);
+    }
     f64 t0 = sys_now_ms();
     if (!g.gpu_on) fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);
     f64 t_clear = sys_now_ms();
@@ -2050,11 +2172,13 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     b32 gpu = g.gpu_on && gcmd_begin(&g.gcmd, &g.frame, PIPE_MAX_DRAWS, gpu_prog(GPROG_STD_VERT));
     if (gpu) {
         shadow_pass_gpu();
+        refl_pass(&g.gcmd);
         gcmd_frame(&g.gcmd, (u32)g.fb.w, (u32)g.fb.h, color_pack(158, 184, 217, 255), 1.0f, g.fb.samples == RASTER_MSAA ? 4u : 1u);
     } else if (g.gpu_on) {
         g.shadow_active = FALSE;
+        g.refl_active = FALSE;
     }
-    set_frame_uniforms();
+    set_frame_uniforms(g.cam.pos);
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     if (gpu) pipe_set_gpu(&g.pipe, &g.gcmd);

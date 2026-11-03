@@ -4,8 +4,9 @@
 // tint = derin su rengi, fog_color = ufuk / gök rengi (sis de aynı renge kaçar). Doku kullanılmaz.
 // Kırışıklık (D45): ağın taşıyamadığı küçük dalgalar yalnız normalde, üç yönlü sinüs eğimi; uzakta söner (örtüşmesin).
 // time, LitUniforms'ta wrap'ın yeri (su wrap okumaz; demo set_frame_uniforms yazar).
+// Yansıma (D47): tex = düzlem yansıma haritası (x'i aynalı, önceden çarpılmış); kırışıklık kadar saptırılır, alfası kadar nesne, kalanı gök.
 
-uniform tex: texture2d;
+uniform tex: texture2d @bilinear @clamp;
 uniform to_light: vec3;
 uniform ambient: f32;
 uniform light_color: vec3;
@@ -17,6 +18,16 @@ uniform use_mip: i32;
 uniform tint: vec3;
 uniform time: f32;
 uniform translucency: f32;
+uniform shadow: texture2d @clamp;
+uniform shadow_mat: mat4;
+uniform shadow_bias: f32;
+uniform spec: f32;
+uniform gloss: f32;
+uniform bump: f32;
+uniform shadow_mat2: mat4;
+uniform shadow_bias2: f32;
+uniform screen_ix: f32;
+uniform screen_iy: f32;
 
 varying wpos: vec3;
 varying nrm: vec3;
@@ -43,11 +54,17 @@ fn frag() -> vec4 {
     let r = reflect(-v, n);
     let up = clamp(r.y, 0.0, 1.0);
     let sky = mix(fog_color, vec3(0.32, 0.52, 0.86), up * 0.8);
+    // ekran konumu + normalin yatay payı: yakında çok, uzakta az saptırır; harita x'i aynalı
+    let fc = frag_coord();
+    let bend = 0.09 / (1.0 + d * 0.06);
+    let m_uv = vec2(1.0 - fc.x * screen_ix - n.x * bend, fc.y * screen_iy + n.z * bend);
+    let mirror = sample_level(tex, m_uv, 0);
+    let refl = mirror.rgb + sky * (1.0 - mirror.a);
     // derin su: ortam + yumuşak diffuse
     let nl = dot(n, to_light);
     let body = tint * (ambient * (0.6 + 0.4 * n.y) + light_color * max(nl * 0.5 + 0.5, 0.0) * 0.45);
-    let spec = pow(max(dot(r, to_light), 0.0), 96.0) * 2.5;
-    let c = mix(body, sky, fresnel) + light_color * spec;
+    let glint = pow(max(dot(r, to_light), 0.0), 96.0) * 2.5;
+    let c = mix(body, refl, fresnel) + light_color * glint;
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
     let x = max(d - fog_start, 0.0) * fog_scale;
     let f = 1.0 - exp2(-4.0 * x * x);      // lit_hq.mtk ile aynı üstel sis

@@ -231,3 +231,45 @@ TEST(gcmd_overlay_extract_matches_blend) {
     CHECK(bad_a == 0u);
     CHECK(worst <= 2u);
 }
+
+/* yansıma: doku GC_TEX yazılmaz, sonrasında aynı malzeme yeni yuva alır (göz geçişler arasında değişir) */
+TEST(gcmd_reflect_stream) {
+    Arena* a = test_arena();
+    Mesh* cube = mesh_cube(a);
+    Texture* refl = tex_create(a, 4, 4, TEX_FLAG_CLAMP);
+    LitUniforms lit;
+    mem_zero(&lit, sizeof(lit));
+    lit.tex = refl;
+    GpuProgram vert, frag;
+    mem_zero(&vert, sizeof(vert));
+    mem_zero(&frag, sizeof(frag));
+    vert.id = 2;
+    frag.id = 5;
+    frag.wgsl.uniform_size = 160;
+    frag.wgsl.tex_count = 1;
+    frag.wgsl.tex_ofs[0] = (u32)__builtin_offsetof(LitUniforms, tex);
+    GpuCmd c;
+    CHECK(gcmd_begin(&c, a, 4, &vert));
+    VertUniforms v = vu_make(v3(0, 0, 0), 0.0f);
+    gcmd_reflect_begin(&c, refl, 4, 4);
+    gcmd_draw(&c, cube, &v, NULL, &frag, &lit, CULL_BACK, TRUE, TRUE, FALSE);
+    gcmd_reflect_end(&c);
+    gcmd_frame(&c, 64, 64, 0, 1.0f, 1);
+    gcmd_draw(&c, cube, &v, NULL, &frag, &lit, CULL_BACK, TRUE, TRUE, FALSE);
+    gcmd_end(&c);
+    const u32* w = c.words;
+    u32 i = 6;
+    CHECK(w[i] == GC_REFLECT && w[i + 1] == (u32)(uptr)refl && w[i + 2] == 4u && w[i + 3] == 4u);
+    i += 4;
+    CHECK(w[i] == GC_MESH);
+    i += 14;
+    CHECK(w[i] == GC_DRAW);
+    u32 slot0 = w[i + 3];
+    i += 11;
+    CHECK(w[i] == GC_REFLECT_END);
+    i += 1;
+    CHECK(w[i] == GC_FRAME);
+    i += 6;
+    CHECK(w[i] == GC_DRAW);
+    CHECK(w[i + 3] != slot0);
+}

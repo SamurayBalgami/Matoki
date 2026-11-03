@@ -623,3 +623,12 @@ türev sıçramaz. Sahne 7 (göl) artık gölgeli (su gölge düşürmez; okyanu
 
 Maliyet (A/B, 1920×1080, gölge + MSAA, 10 görünüm toplamı): yazılım 707 → 736 ms (×1,041; görünüm başına ×1,018 – ×1,067). Hemen hemen tamamı ikinci derinlik geçişi;
 yakın kademe frustum elemesiyle ucuz. GPU A/B yapılamadı (eski motor yeni akış sürümüyle kurulmaz), son ölçüm D49'da. Kabul: `gpu_check` 60/60, 256/256 test.
+
+## D47. Suda düzlem yansıması
+Su artık sahnenin kendisini yansıtır. Ayna R: p → (x, 2h − y, z), sanal görüş V·R, göz R(kamera), 1024×512 ayrı hedef (satır adımı 2'nin kuvveti ister). Ayna sarımı çevirir; izdüşümde x de çevrilince iki çevirme
+birbirini götürür, malzeme ayıklaması ve boru hattı değişmez, su haritayı 1 − u'dan okur. Düzlemin altı eğik yakın düzlemle kırpılır (Lengyel 2005): sütunların su altı parçası kameraya binmez, ayrı kırpma kodu yok.
+Gök haritaya çizilmez: temizleme alfası 0, su `mirror.rgb + gök · (1 − a)` ile her piksel için analitik gök hesaplar (çift doğrusal süzme önceden çarpılmış olduğu için kenarda koyu hale yok). Harita normalle saptırılır, uzakta az.
+GPU: `GC_REFLECT` / `GC_REFLECT_END`, renk doku tamponuna kopyalanır. Geçişler arasında göz değişir: `gcmd_reflect_end` aynı malzemenin yuva paylaşımını keser (test `gcmd_reflect_stream`). Akış sürümü 5.
+
+Maliyet (göl görünümü 6, 1920×1080, yazılım, aynı motor açık / kapalı): gölge + MSAA 105,0 → 108,2 ms (×1,031), düz 59,0 → 59,7 ms (×1,012); gök ve zemin çizilmediği için geçiş ucuz. Yalnız sahne 7 öder.
+Kabul: `gpu_check` 60/60, görünüm 6 en kötü %0,036, 257/257 test. Sınır: tek düzlem; dalga yüksekliği düzleme yansımaz, yalnız normalle bükülür.
