@@ -13,6 +13,7 @@
 #include "phys/phys.h"
 #include "phys/character.h"
 #include "phys/shapes.h"
+#include "phys/wave.h"
 #include "phys/vehicle.h"
 #include "phys/soft.h"
 #include "phys/ocean.h"
@@ -52,6 +53,12 @@
 #define REFL_W 1024            /* su yansıma haritası (D47); Texture satır adımı 2'nin kuvveti ister */
 #define REFL_H 512
 #define WATER_Y 0.9f           /* m: göl düzlemi */
+#define WATER_Z -8.0f          /* m: göl merkezi */
+#define WAVE_N 256             /* dalga denklemi ızgarası (D49); water.mtk WAVE_SIZE ile eşleşir */
+#define WAVE_SIZE 40.0f
+#define FLAG_FIELD_N 64        /* bayrak gerinim dokusu (D49) */
+#define FLAG_NU 24u            /* bayrak parçacık ızgarası */
+#define FLAG_NV 16u
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -241,6 +248,14 @@ typedef struct Demo {
     Raster refl_raster;
     Texture refl_tex;
     b32 refl_ready, refl_on, refl_active, refl_pass;
+    /* fizik alanları (D49): dalga denklemi → su, kumaş gerinimi → bayrak */
+    WaveField wave;
+    Texture* wave_tex;
+    f32 wave_t;
+    f32 crate_depth[4];
+    Texture* flag_field;
+    f32* flag_tension;
+    f32* flag_fold;
     ShadowMap* shadow;
     Arena shadow_mem;
     /* GPU arka ucu (M13 faz 8a): JS WebGPU'yu kurunca engine_gpu_set(1); kare komut akışı g.gcmd'de */
@@ -250,6 +265,20 @@ typedef struct Demo {
 } Demo;
 
 static Demo g;
+
+/* yansıma kapalıyken su ve alanı olmayan malzeme: tek sıfır texel (yansıyan her ışın gökten, alan kolu çalışmaz) */
+static const Texture* refl_none(void) {
+    static u32 px[1];
+    static Texture t;
+    if (!t.px) {
+        t.w = t.h = 1;
+        t.flags = TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR;
+        t.levels = 1;
+        tex_fill_level_offsets(&t);
+        t.px = px;
+    }
+    return &t;
+}
 
 static b32 editor_setup(void);
 static void editor_draw(void);
@@ -275,6 +304,8 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->bump = 0.0f;
     mem_zero(&u->shadow_mat2, sizeof(u->shadow_mat2));
     u->shadow_bias2 = 0.0f;
+    u->field = refl_none();
+    u->field_scale = 0.0f;
     lit_uniforms_prepare(u);
 }
 
@@ -337,7 +368,8 @@ static const LitField LIT_FIELDS[] = {
     LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
     LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(metal, TB_FLOAT, 1), LIT_FIELD(rough, TB_FLOAT, 1),
     LIT_FIELD(bump, TB_FLOAT, 1), LIT_FIELD(shadow_mat2, TB_MAT, 4), LIT_FIELD(shadow_bias2, TB_FLOAT, 1),
-    LIT_FIELD(screen_ix, TB_FLOAT, 1), LIT_FIELD(screen_iy, TB_FLOAT, 1),
+    LIT_FIELD(screen_ix, TB_FLOAT, 1), LIT_FIELD(screen_iy, TB_FLOAT, 1), LIT_FIELD(field, TB_TEX, 1), LIT_FIELD(field_scale, TB_FLOAT, 1),
+    { "wave", (u32)__builtin_offsetof(LitUniforms, shadow), TB_TEX, 1 },   /* water.mtk: shadow yerinde dalga alanı */
     { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
 };
 
@@ -922,12 +954,14 @@ static void soft_scene_build(void) {
     /* bayrak direği + 3×2 m bayrak (24×16 parçacık, sol sütun direğe iğneli, uzun menzilli bağlar) */
     BodyDesc pole = phys_desc_box(v3(-6.0f, 3.5f, -4.0f), v3(0.08f, 3.5f, 0.08f), 0.0f);
     phys_add_body(w, &pole);
-    const u32 nu = 24, nv = 16;
+    const u32 nu = FLAG_NU, nv = FLAG_NV;
     g.flag = soft_cloth(a, v3(-5.9f, 6.8f, -4.0f), v3(3.0f, 0, 0), v3(0, -2.0f, 0), nu, nv, 0.9f, 0.0f, 1e-4f, 0.05f);
     for (u32 j = 0; j < nv; j++) soft_pin(g.flag, j * nu);
     soft_add_tethers(a, g.flag);
     soft_world_add(&g.soft, g.flag);
     g.flag_mesh = soft_mesh_alloc(a, g.flag, TRUE);
+    g.flag_tension = ARENA_ARRAY(a, f32, g.flag->count);
+    g.flag_fold = ARENA_ARRAY(a, f32, g.flag->count);
     for (u32 j = 0; j < nv; j++) {
         for (u32 i = 0; i < nu; i++) {
             g.flag_mesh->u[j * nu + i] = (f32)i / (f32)(nu - 1) * 3.0f;
@@ -1165,6 +1199,7 @@ static void anim_scene_update(void) {
 }
 
 static void draw(const Mesh* mesh, const Material* mat, Mat4 model);
+static void pillar_pos(i32 k, f32* x, f32* z);
 
 static void render_scene9(void) {
     draw(g.ground, &g.m_ground, mat4_identity());
@@ -1411,6 +1446,17 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_jelly, g.tex_grid, v3(0.35f, 0.95f, 0.45f));
     g.u_jelly.wrap = 0.7f;
     lit_defaults(&g.u_water, g.tex_grid, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
+    g.flag_field = tex_create(&g.perm, FLAG_FIELD_N, FLAG_FIELD_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
+    g.u_flag.field = g.flag_field;
+    g.u_flag.field_scale = 1.0f / 3.0f;   /* uv metre: u ∈ [0, 3] */
+    wave_init(&g.wave, &g.perm, WAVE_N, WAVE_SIZE, 3.0f, 0.3f);   /* c = √(g·0,9 m) */
+    for (i32 k = 0; k < 7; k++) {
+        f32 px, pz;
+        pillar_pos(k, &px, &pz);
+        wave_block(&g.wave, px, pz - WATER_Z, 0.6f, 0.6f);
+    }
+    g.wave_tex = tex_create(&g.perm, WAVE_N, WAVE_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
+    wave_bake(&g.wave, g.wave_tex->px);
     material(&g.m_water, &g.u_water);
     material(&g.m_ocean, &g.u_water);
     g.m_ocean.cull = CULL_NONE;
@@ -1539,20 +1585,6 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
     pipe_draw(&g.pipe, &d);
 }
 
-/* yansıma kapalıyken su: tek saydam texel, yansıyan her ışın gökten */
-static const Texture* refl_none(void) {
-    static u32 px[1];
-    static Texture t;
-    if (!t.px) {
-        t.w = t.h = 1;
-        t.flags = TEX_FLAG_CLAMP;
-        t.levels = 1;
-        tex_fill_level_offsets(&t);
-        t.px = px;
-    }
-    return &t;
-}
-
 static void set_frame_uniforms(Vec3 eye) {
     g.u_water.wrap = g.time;   /* water.mtk: wrap yerinde zaman */
     g.u_water.screen_ix = 1.0f / (f32)g.fb.w;
@@ -1581,6 +1613,7 @@ static void set_frame_uniforms(Vec3 eye) {
             all[i]->shadow_bias2 = 0.0f;
         }
     }
+    g.u_water.shadow = g.wave_tex;   /* water.mtk: shadow yerinde dalga alanı */
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
     Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
@@ -1679,6 +1712,25 @@ static void render_scene6(void) {
 /* yumuşak cisim mesh'leri (bayrak + jöleler): karede bir kez, gölge ve ana geçişten önce */
 static void soft_meshes_update(void) {
     soft_mesh_update(g.flag_mesh, g.flag, TRUE, 0.0f);
+    /* gerinim → doku (D49): dokunun u'su bayrağın eni (3 m), v'si boyu 2/3'üne kadar; ölçek görünür aralığa, shader 1 = tam gerili / katlı */
+    soft_strain_field(g.flag, g.flag_tension, g.flag_fold);
+    u32* fpx = g.flag_field->px;
+    for (u32 y = 0; y < FLAG_FIELD_N; y++) {
+        f32 fv = (f32)y / (f32)(FLAG_FIELD_N - 1) * 1.5f * (f32)(FLAG_NV - 1);
+        u32 j = fv >= (f32)(FLAG_NV - 1) ? FLAG_NV - 2u : (u32)fv;
+        f32 av = m_minf(fv - (f32)j, 1.0f);
+        for (u32 x = 0; x < FLAG_FIELD_N; x++) {
+            f32 fu = (f32)x / (f32)(FLAG_FIELD_N - 1) * (f32)(FLAG_NU - 1);
+            u32 i = fu >= (f32)(FLAG_NU - 1) ? FLAG_NU - 2u : (u32)fu;
+            f32 au = fu - (f32)i;
+            u32 c = j * FLAG_NU + i;
+            f32 te = (g.flag_tension[c] * (1.0f - au) + g.flag_tension[c + 1] * au) * (1.0f - av) + (g.flag_tension[c + FLAG_NU] * (1.0f - au) + g.flag_tension[c + FLAG_NU + 1] * au) * av;
+            f32 fo = (g.flag_fold[c] * (1.0f - au) + g.flag_fold[c + 1] * au) * (1.0f - av) + (g.flag_fold[c + FLAG_NU] * (1.0f - au) + g.flag_fold[c + FLAG_NU + 1] * au) * av;
+            u32 r = (u32)(m_minf(te * 25.0f, 1.0f) * 255.0f), gr = (u32)(m_minf(fo * 6.0f, 1.0f) * 255.0f);
+            fpx[y * FLAG_FIELD_N + x] = r | (gr << 8) | 0xFF000000u;
+        }
+    }
+    g.flag_field->gen++;
     for (u32 k = 0; k < g.jelly_count; k++) soft_mesh_update(g.jelly_mesh[k], g.jelly[k], FALSE, g.jelly[k]->radius);
 }
 
@@ -1725,12 +1777,54 @@ static void ocean_mesh_update(void) {
         Vec3 off, n;
         ocean_sample(&g.ocean, g.ocean_bx[i], g.ocean_bz[i], &off, &n);
         m->px[i] = g.ocean_bx[i] + off.x;
-        m->py[i] = off.y;
+        m->py[i] = off.y + wave_height(&g.wave, m->px[i], m->pz[i]);   /* lokal z: göl merkezine göre */
         m->pz[i] = g.ocean_bz[i] + off.z;
         m->nx[i] = n.x; m->ny[i] = n.y; m->nz[i] = n.z;
     }
     mesh_compute_bounds(m);
     g.ocean_ms = sys_now_ms() - t0;
+}
+
+/* sandık k'nın pozu; okyanusta yüzey yüksekliğinde yüzer, yüzey normaline yatar */
+static void crate_pose(i32 k, Vec3* pos_out, Mat4* rot_out) {
+    f32 t = g.time * 0.8f + (f32)k * 1.6f;
+    Vec3 pos = v3(-6.0f + (f32)k * 4.0f, 1.2f + 0.25f * m_sinf(t * 1.3f), -6.0f + 2.0f * m_cosf((f32)k));
+    Mat4 rot = mat4_mul(mat4_rotate_z(0.15f * m_sinf(t)), mat4_rotate_x(0.12f * m_cosf(t * 0.9f)));
+    if (g.ocean_on) {
+        Vec3 off, n;
+        ocean_sample(&g.ocean, pos.x, pos.z + 8.0f, &off, &n);
+        pos.y = 0.9f + off.y + 0.25f;
+        rot = mat4_mul(mat4_rotate_z(-n.x), mat4_rotate_x(n.z));
+    }
+    *pos_out = pos;
+    *rot_out = rot;
+}
+
+static void pillar_pos(i32 k, f32* x, f32* z) {
+    f32 a = (f32)k * (M_TAU_F / 7.0f) + 0.4f;
+    *x = m_sinf(a) * 11.0f;
+    *z = -8.0f - m_cosf(a) * 11.0f;
+}
+
+/* Dalga denklemi (D49): sandığın batan hacmi değişince su yer değiştirir (kaynak), sütunlar yansıtır. Kare başında bir kez */
+static void wave_update(void) {
+    f32 dt = g.time - g.wave_t;
+    g.wave_t = g.time;
+    if (dt <= 0.0f) return;
+    if (dt > 0.1f) dt = 0.1f;
+    for (i32 k = 0; k < 4; k++) {
+        Vec3 pos;
+        Mat4 rot;
+        crate_pose(k, &pos, &rot);
+        f32 depth = m_clampf(WATER_Y + 0.7f - pos.y, 0.0f, 1.4f);
+        f32 dd = m_clampf(depth - g.crate_depth[k], -0.05f, 0.05f);
+        g.crate_depth[k] = depth;
+        /* hacim korunumu: taban alanı 1,96 m² · dd = Gauss hacmi 2π·σ²·tepe */
+        wave_add(&g.wave, pos.x, pos.z - WATER_Z, 0.7f, -dd * 0.64f);
+    }
+    wave_step(&g.wave, dt);
+    wave_bake(&g.wave, g.wave_tex->px);
+    g.wave_tex->gen++;
 }
 
 static void render_scene7(void) {
@@ -1740,21 +1834,16 @@ static void render_scene7(void) {
         else draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
     }
     for (i32 k = 0; k < 7; k++) {
-        f32 a = (f32)k * (M_TAU_F / 7.0f) + 0.4f;
-        Vec3 pos = v3(m_sinf(a) * 11.0f, 2.0f, -8.0f - m_cosf(a) * 11.0f);
+        f32 px, pz;
+        pillar_pos(k, &px, &pz);
+        Vec3 pos = v3(px, 2.0f, pz);
         draw(g.cube, &g.m_pillar, mat4_mul(mat4_translate(pos), mat4_scale(v3(1.2f, 4.0f + (f32)(k % 3), 1.2f))));
     }
     /* su üstünde sallanan sandıklar */
     for (i32 k = 0; k < 4; k++) {
-        f32 t = g.time * 0.8f + (f32)k * 1.6f;
-        Vec3 pos = v3(-6.0f + (f32)k * 4.0f, 1.2f + 0.25f * m_sinf(t * 1.3f), -6.0f + 2.0f * m_cosf((f32)k));
-        Mat4 rot = mat4_mul(mat4_rotate_z(0.15f * m_sinf(t)), mat4_rotate_x(0.12f * m_cosf(t * 0.9f)));
-        if (g.ocean_on) {   /* okyanusta: yüzey yüksekliğinde yüzer, yüzey normaline yatar */
-            Vec3 off, n;
-            ocean_sample(&g.ocean, pos.x, pos.z + 8.0f, &off, &n);
-            pos.y = 0.9f + off.y + 0.25f;
-            rot = mat4_mul(mat4_rotate_z(-n.x), mat4_rotate_x(n.z));
-        }
+        Vec3 pos;
+        Mat4 rot;
+        crate_pose(k, &pos, &rot);
         draw(g.cube, &g.m_bricks, mat4_mul(mat4_translate(pos), mat4_mul(rot, mat4_scale(v3(1.4f, 1.4f, 1.4f)))));
     }
 }
@@ -1949,6 +2038,17 @@ static void refl_pass(GpuCmd* gc) {
 }
 
 EXPORT(engine_set_reflect) void engine_set_reflect(i32 on) { g.refl_on = on != 0; }
+/* fizik alanları (D49) tanı: dalga enerjisi, bayrak dokusunun en büyük kanalı (0..255) */
+EXPORT(engine_wave_energy) f32 engine_wave_energy(void) { return wave_energy(&g.wave); }
+EXPORT(engine_flag_field_max) u32 engine_flag_field_max(void) {
+    u32 m = 0;
+    for (u32 i = 0; i < FLAG_FIELD_N * FLAG_FIELD_N; i++) {
+        u32 p = g.flag_field->px[i], r = p & 0xFFu, c = (p >> 8) & 0xFFu;
+        if (r > m) m = r;
+        if (c > m) m = c;
+    }
+    return m;
+}
 
 /* ---- GPU arka ucu (M13 faz 8a, D38): JS (web/gpu.mjs) WebGPU kurulursa açar; yoksa yazılım render kalır ---- */
 EXPORT(engine_gpu_set) void engine_gpu_set(i32 on) { g.gpu_on = on != 0; }
@@ -2152,7 +2252,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     /* CPU'da üretilen geometri karede bir kez, iki geçişten (gölge + ana) önce: gölge aynı pozdan */
     if (g.scene == 9) anim_scene_update();
     if (g.scene == 6) soft_meshes_update();
-    if (g.scene == 7 && g.ocean_on) ocean_mesh_update();
+    if (g.scene == 7) {
+        wave_update();
+        if (g.ocean_on) ocean_mesh_update();
+    }
     if (!g.gpu_on) {
         shadow_pass();
         refl_pass(NULL);

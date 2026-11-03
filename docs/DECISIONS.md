@@ -640,3 +640,25 @@ Kabul: `gpu_check` 60/60, görünüm 6 en kötü %0,036, 257/257 test. Sınır: 
 Kapsam: `lit` kipi ve C shader'ları değişmez, ama `sky.mtk` her kipte çizilir: tüm kiplerin gök hash'leri değişti (bilinçli).
 
 Maliyet (A/B, 1920×1080, yazılım, 10 görünüm): gölge + MSAA 700 → 752 ms (×1,075; görünüm 2'nin A değeri o koşuda aykırı düşük, kalanlar ×0,99–×1,047), düz 395 → 416 ms (×1,052). Kabul: `gpu_check` 60/60 (HQ en kötü %0,019), 257/257 test.
+
+## D49. Fizik alanları: shader fiziğe göre şekil alır
+Temel fizik mimarisi değişmedi; yeni denklemler üstüne eklenir ve shader'a tek bir yoldan ulaşır: **fizik modülü alanı hesaplar, dokuya yazar (`Texture.gen++`), malzeme okur.** Fizik ↔ shader arasında tek sözleşme doku kanallarıdır; yeni bir denklem için shader dili ya da boru hattı değişmez, GPU kopyası `gen` değişince kendiliğinden yenilenir (Texture ABI 356 bayt, `GC_TEX` `gen` taşır, parça başına 3 doku, akış sürümü 6).
+
+- **Dalga denklemi** (`phys/wave`, göl): h_tt = c²∇²h − k·h_t, 256² ızgara, leapfrog, r² = 0,25, c = √(g·0,9 m) ≈ 3 m/s. Sandıkların batan derinliği değişince su yer değiştirir (kaynak), sütunlar sabit uçlu engel: halka dalgalar yansır ve kırınır. Çıktı eğim dokusu (`water.mtk` normali) + okyanus ağı yüksekliği. Testler: cephe c·t'de (beklenen 18 m, ölçülen 18), ayrık enerji sönümsüz korunur, sönümle azalır, engel arkası gölgede ve önüne yansır.
+- **Kumaş gerinimi** (`soft_strain_field`, bayrak; çekirdeğe yazmaz): gerilme kısıtlarından uzama, büküm kısıtlarından katlanma. `lit_hq`: gerilme lifi açar (renk açılır, arkadan ışık artar), katlanma ortam ışığını keser. Alan yoksa (`field_scale = 0`) kol hiç çalışmaz.
+
+Maliyet (A/B, 1920×1080, gölge + MSAA, yazılım): fizik adımı çalışmayan karede toplam 742 → 742 ms (×1,001); göl görünümü, adımlı kare 48,1 → 50,2 ms (≈ 2 ms: 256² adım + doku). Kabul: `gpu_check` artık bayrak ve gölü 20 kare ilerletip karşılaştırır, 60/60; `gen` yüklemesi ve kademe ofseti bilerek bozulunca yakalanır. `check_demo`: sandıklar dalga üretir, bayrak alanı dolar. 263/263 test.
+Sınır: dalga yalnız göl düzleminde, jöle gövdeleri henüz alan yazmıyor; bayrak alanının görsel etkisi ince. Gerçek ekranda FPS ölçülemedi, tek adaptör.
+
+## D49. Fizik alanları: shader fiziğe göre şekil alır
+Temel fizik mimarisi değişmedi; yeni denklemler üstüne eklenir ve shader'a tek yoldan ulaşır: **fizik modülü alanı hesaplar, dokuya yazar (`Texture.gen++`), malzeme okur.** Sözleşme doku kanallarıdır: yeni denklem için shader dili ya da boru hattı değişmez, GPU kopyası `gen` değişince yenilenir (Texture ABI 356 bayt, `GC_TEX` `gen` taşır, parça başına 3 doku, akış sürümü 6).
+
+- **Dalga denklemi** (`phys/wave`, göl): h_tt = c²∇²h − k·h_t, 256² ızgara, leapfrog, r² = 0,25, c = √(g·0,9 m) ≈ 3 m/s. Sandığın batan hacmi değişince su yer değiştirir (hacim korunumlu kaynak), sütunlar sabit uçlu engel: halkalar yansır ve kırınır. Çıktı eğim dokusu (`water.mtk` normali, görünür eğim ×5: ızgaranın taşımadığı kısa dalgaların yerine) + okyanus ağı yüksekliği. Testler: cephe c·t'de (beklenen 18 m, ölçülen 18), ayrık enerji sönümsüz korunur, sönümle azalır, engel arkası gölgede ve önüne yansır.
+- **Kumaş gerinimi** (`soft_strain_field`, bayrak; çekirdeğe yazmaz): gerilme kısıtlarından uzama, büküm kısıtlarından katlanma. `lit_hq`: gerilme rengi açar ve arkadan ışığı artırır, katlanma ortam ışığını keser. Alan yoksa (`field_scale = 0`) kol çalışmaz.
+
+Maliyet (1920×1080, gölge + MSAA, yazılım): fizik adımı çalışmayan karede 10 görünüm 742 → 742 ms (×1,001), göl adımlı kare 49,3 → 51,2 ms (≈ 2 ms: 256² adım + doku).
+
+**D46–D49 sonrası GPU** (zaman damgası, Intel Gen12LP, 1080p; D45'te toplam 217 / 172 ms): gölge + MSAA 10 görünüm 240 ms (19,3 – 33,8), düz 170 ms (12,9 – 26,4); motor CPU'su 0,2 – 2,6 ms. Bu tümleşik GPU'da 1080p varsayılan ayar 60 FPS tutmaz (D45 öncesi de en iyi 14 ms, en kötü 27 ms'ydi); gölge + MSAA kapalıyken görünümlerin yarısından çoğu sınırın altında kalmaz, 13 – 26 ms.
+
+Kabul: `gpu_check` artık bayrak ve gölü 20 kare ilerletip karşılaştırır, 60/60. Bozma denemeleri: `gen` yüklemesi kapatılınca görünüm 6 %0,31–0,43 ile düşer (ilk denemede yakalanmıyordu: etki çok zayıftı, kaynak ve eğim düzeltildi), kademe ofseti bozulunca hq+gölge tüm görünümlerde %11–34 ile düşer. `check_demo`: sandıklar dalga üretir, bayrak alanı dolar. 263/263 test.
+Sınır: dalga yalnız göl düzleminde, jöle gövdeleri henüz alan yazmıyor, bayrak alanının görsel etkisi ince. Gerçek ekranda FPS ölçülmedi, tek adaptör.

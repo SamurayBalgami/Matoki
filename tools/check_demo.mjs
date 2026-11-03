@@ -108,5 +108,14 @@ check(recompile(afterTint('uniform wrap: vec4;')) === 0 && ex.engine_gpu_prog_ge
 const jsVersion = +fs.readFileSync(new URL('../web/gpu.mjs', import.meta.url), 'utf8').match(/STREAM_VERSION = (\d+)/)[1];
 check(jsVersion === ex.engine_gpu_stream_version(), `GPU akış sürümü: gpu.mjs ${jsVersion}, motor ${ex.engine_gpu_stream_version()}`);
 
+// fizik alanları (D49): sandıklar dalga denklemini besler, bayrak gerinim dokusunu doldurur
+ex.engine_set_shader_mode(4);
+ex.engine_bench_view(6);
+for (let i = 0; i < 90; i++) ex.engine_frame(1000 / 60);
+check(ex.engine_wave_energy() > 0, `sandıklar suda dalga üretir (enerji ${ex.engine_wave_energy().toExponential(2)})`);
+ex.engine_bench_view(5);
+for (let i = 0; i < 90; i++) ex.engine_frame(1000 / 60);
+check(ex.engine_flag_field_max() > 0, `bayrak gerinim alanı dolu (en büyük ${ex.engine_flag_field_max()})`);
+
 console.log(fails ? `${fails} denetim başarısız` : 'tüm demo denetimleri geçti');
 process.exit(fails ? 1 : 0);

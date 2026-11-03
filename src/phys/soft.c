@@ -42,6 +42,25 @@ static void add_dist(SoftBody* b, u32 i, u32 j, f32 compliance, u32 kind) {
     d->kind = kind;
 }
 
+void soft_strain_field(const SoftBody* b, f32* tension, f32* fold) {
+    mem_zero(tension, b->count * sizeof(f32));
+    mem_zero(fold, b->count * sizeof(f32));
+    /* ortalama yerine tepe: komşu sayımı gerekmez, kenar parçacıkları düşmez */
+    for (u32 i = 0; i < b->dist_count; i++) {
+        const SoftDist* d = &b->dist[i];
+        if (d->rest <= 0.0f) continue;
+        f32 e = (v3_len(v3_sub(b->x[d->a], b->x[d->b])) - d->rest) / d->rest;
+        if (d->kind == SOFT_STRETCH && e > 0.0f) {
+            tension[d->a] = m_maxf(tension[d->a], e);
+            tension[d->b] = m_maxf(tension[d->b], e);
+        } else if (d->kind == SOFT_BEND && e < 0.0f) {
+            /* katı komşu iki uç taşır (orta parçacığın indeksi yapıya bağlı) */
+            fold[d->a] = m_maxf(fold[d->a], -e);
+            fold[d->b] = m_maxf(fold[d->b], -e);
+        }
+    }
+}
+
 SoftBody* soft_cloth(Arena* a, Vec3 origin, Vec3 du, Vec3 dv, u32 nu, u32 nv, f32 mass,
                      f32 stretch_compliance, f32 shear_compliance, f32 bend_compliance) {
     if (nu < 2 || nv < 2) sys_panic("soft_cloth: en az 2×2");

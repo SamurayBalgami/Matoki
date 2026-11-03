@@ -13,8 +13,8 @@
 #define GCMD_OVERLAYS_MAX 2u
 #define GCMD_FIXED_WORDS (GCMD_FRAME_WORDS + GCMD_SHADOWS_MAX * (GCMD_SHADOW_WORDS + 1u) + GCMD_REFLECT_WORDS + 1u + GCMD_OVERLAYS_MAX * GCMD_OVERLAY_WORDS)
 #define GCMD_MESH_WORDS 14u
-#define GCMD_DRAW_WORDS 11u
-#define GCMD_TEX_WORDS 4u
+#define GCMD_DRAW_WORDS 12u
+#define GCMD_TEX_WORDS 5u
 #define GCMD_DRAW_MAX (GCMD_MESH_WORDS + GCMD_DRAW_WORDS + WGSL_MAX_TEX * GCMD_TEX_WORDS)   /* çizim başına en çok */
 
 b32 gcmd_begin(GpuCmd* c, Arena* frame, u32 max_draws, const GpuProgram* std_vert) {
@@ -25,7 +25,7 @@ b32 gcmd_begin(GpuCmd* c, Arena* frame, u32 max_draws, const GpuProgram* std_ver
     c->max_slots = max_draws * 2u;   /* köşe + parça */
     c->uniforms = (u8*)arena_try_nozero(frame, (usize)c->max_slots * GCMD_SLOT, GCMD_SLOT);
     c->seen_cap = 1;
-    while (c->seen_cap < max_draws * 4u) c->seen_cap <<= 1;   /* çizim başına mesh + 2 doku: en çok %75 dolu */
+    while (c->seen_cap < max_draws * 6u) c->seen_cap <<= 1;   /* çizim başına mesh + 3 doku: en çok %75 dolu */
     c->seen = ARENA_TRY_ARRAY(frame, u32, c->seen_cap);
     if (!c->words || !c->uniforms || !c->seen) {
         c->cap = 0;
@@ -58,7 +58,7 @@ static u32 tex_px_words(const Texture* t) {
 static u32 tex_record(GpuCmd* c, const Texture* t) {
     u32 id = (u32)(uptr)t;
     if (t && seen_first(c, id)) {
-        u32 r[GCMD_TEX_WORDS] = { GC_TEX, id, (u32)(uptr)t->px, tex_px_words(t) };
+        u32 r[GCMD_TEX_WORDS] = { GC_TEX, id, (u32)(uptr)t->px, tex_px_words(t), t->gen };
         mem_copy(c->words + c->count, r, sizeof(r));
         c->count += GCMD_TEX_WORDS;
     }
@@ -132,7 +132,7 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
     if (!c->cap || !m->vertex_count || !m->index_count) return;
     if (!vert) vert = c->std_vert;
     if (!vert || c->draws >= c->max_draws || c->slots + 2u > c->max_slots || c->count + GCMD_DRAW_MAX + 1u > c->cap ||
-        c->seen_count + 3u > c->seen_cap - c->seen_cap / 4u) {
+        c->seen_count + 4u > c->seen_cap - c->seen_cap / 4u) {
         c->overflow++;
         return;
     }
@@ -144,7 +144,7 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
         mem_copy(c->words + c->count, r, sizeof(r));
         c->count += GCMD_MESH_WORDS;
     }
-    u32 tex[WGSL_MAX_TEX] = { 0, 0 };
+    u32 tex[WGSL_MAX_TEX] = { 0, 0, 0 };
     if (!depth_only && frag && uniforms) {
         for (u32 k = 0; k < frag->wgsl.tex_count; k++) {
             const Texture* t;
@@ -164,7 +164,7 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
         c->last_frag = frag;
         c->last_slot = fslot;
     }
-    u32 d[GCMD_DRAW_WORDS] = { GC_DRAW, id, vslot, fslot, vert->id, depth_only ? GPROG_NONE : frag ? frag->id : GPROG_FLAT, tex[0], tex[1], (u32)cull,
+    u32 d[GCMD_DRAW_WORDS] = { GC_DRAW, id, vslot, fslot, vert->id, depth_only ? GPROG_NONE : frag ? frag->id : GPROG_FLAT, tex[0], tex[1], tex[2], (u32)cull,
                                depth_test ? 1u : 0u, depth_write ? 1u : 0u };
     mem_copy(c->words + c->count, d, sizeof(d));
     c->count += GCMD_DRAW_WORDS;

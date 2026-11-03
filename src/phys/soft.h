@@ -87,6 +87,9 @@ void soft_world_step(SoftWorld* sw, PhysWorld* rigid, f32 dt);
 /* Kumaş: origin köşesinden du (nu parçacık) ve dv (nv parçacık) kenarları boyunca ızgara.
  * Kısıtlar: yapısal (komşu), kesme (köşegen), bükülme (iki ötedeki). Öz-çarpışma ve rijit-üçgen teması açık;
  * öz-çarpışma için parçacık alt adımda yarıçaptan fazla ilerleyemez (hız sınırı r/h). */
+/* gerinim alanı (D49, salt okunur): parçacık başına en büyük. tension = uzama (|e| − L₀) / L₀ gerilme kısıtlarından, fold = kısalma büküm
+ * kısıtlarından (katlanma, kırışma). Çıktılar count uzunluğunda; shader'a doku olarak gider */
+void soft_strain_field(const SoftBody* b, f32* tension, f32* fold);
 SoftBody* soft_cloth(Arena* a, Vec3 origin, Vec3 du, Vec3 dv, u32 nu, u32 nv, f32 mass,
                      f32 stretch_compliance, f32 shear_compliance, f32 bend_compliance);
 /* Jöle küp: dış boyut size (parçacık kafesi size·cells/(cells+1), yarıçap kafes adımının yarısı → parçacık

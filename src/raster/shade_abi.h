@@ -70,6 +70,7 @@ typedef struct Texture {
     u32  lv_h[TEX_MAX_LEVELS];
     f32  lv_fw[TEX_MAX_LEVELS];   /* (f32)wk, (f32)hk */
     f32  lv_fh[TEX_MAX_LEVELS];
+    u32 gen;   /* içerik değişince artar: GPU kopyası yenilenir (px ve boyut aynı kalsa da); ABI sonuna eklendi */
 } Texture;
 
 #define TEX_OFF_PX     0
@@ -92,7 +93,7 @@ typedef struct Texture {
 #define TEX_FLAG_MIPMAP   4u
 
 #if defined(__wasm32__)
-_Static_assert(sizeof(Texture) == 352, "Texture ABI boyutu 352 bayt olmalı");
+_Static_assert(sizeof(Texture) == 356, "Texture ABI boyutu 356 bayt olmalı");
 _Static_assert(__builtin_offsetof(Texture, lv_fh) == TEX_WORD_LVFH * 4, "Texture seviye tablosu ofsetleri");
 #endif
 

@@ -4,8 +4,8 @@
 // WGSL metni motordan gelir (Matoki → WGSL, matoki/wgsl.c; id 0 gömülü düz shader). WebGPU yoksa createGpu null döner →
 // sayfa yazılım render'da kalır.
 
-const GC_END = 0, GC_FRAME = 1, GC_MESH = 2, GC_DRAW = 3, GC_TEX = 4, GC_SHADOW = 5, GC_SHADOW_END = 6, GC_OVERLAY = 7, GC_REFLECT = 8, GC_REFLECT_END = 9, GPROG_OVERLAY = 1, GPROG_NONE = 0xFFFFFFFF, MAGIC = 0x5550474d, SLOT = 256, TEX_HEADER = 352;
-const STREAM_VERSION = 5;   // gpu/gcmd.h GCMD_VERSION
+const GC_END = 0, GC_FRAME = 1, GC_MESH = 2, GC_DRAW = 3, GC_TEX = 4, GC_SHADOW = 5, GC_SHADOW_END = 6, GC_OVERLAY = 7, GC_REFLECT = 8, GC_REFLECT_END = 9, GPROG_OVERLAY = 1, GPROG_NONE = 0xFFFFFFFF, MAGIC = 0x5550474d, SLOT = 256, TEX_HEADER = 356;
+const STREAM_VERSION = 6;   // gpu/gcmd.h GCMD_VERSION
 const CULL = ['none', 'back', 'front'];   // raster.h CullMode sırası; ön yüz NDC'de CCW (D3)
 
 export async function createGpu(ex, memory, colorFormat) {
@@ -20,7 +20,7 @@ export async function createGpu(ex, memory, colorFormat) {
   const uniformEntry = (binding, visibility) => ({ binding, visibility,
     buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: SLOT } });
   const bglU = device.createBindGroupLayout({ entries: [uniformEntry(0, GPUShaderStage.VERTEX), uniformEntry(1, GPUShaderStage.FRAGMENT)] });
-  const bglT = device.createBindGroupLayout({ entries: [0, 1].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT,
+  const bglT = device.createBindGroupLayout({ entries: [0, 1, 2].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT,
     buffer: { type: 'read-only-storage' } })) });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bglU, bglT] });
   const vbufs = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ arrayStride: 4, attributes: [{ shaderLocation: i, offset: 0, format: 'float32' }] }));
@@ -66,7 +66,7 @@ export async function createGpu(ex, memory, colorFormat) {
   };
   const meshes = new Map();   // kimlik → { gen, vc, ic, bufs[8], ibuf, seen }
   const textures = new Map();   // kimlik → { px, words, buf }
-  const texBinds = new Map();   // "doku0|doku1" → bind group
+  const texBinds = new Map();   // "doku0|doku1|doku2" → bind group
   const noTex = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE });   // okunmayan doku yuvası
   let ubuf = null, bindU = null, depth = null, frameNo = 0, keepDepth = false, msaaColor = null, lastSamples = 1;
   let shadowDepth = null;   // gölge derinliği; içerik her gölge geçişinde doku tamponuna kopyalanır
@@ -119,23 +119,29 @@ export async function createGpu(ex, memory, colorFormat) {
 
   // doku tamponu = Texture başlığı + px (matoki/wgsl.h); WGSL motorun kendi aritmetiğiyle süzer
   function uploadTex(w, i) {
-    const [id, px, words] = [w[i + 1], w[i + 2], w[i + 3]];
+    const [id, px, words, gen] = [w[i + 1], w[i + 2], w[i + 3], w[i + 4]];
     const t = textures.get(id);
-    if (t && t.px === px && t.words === words) return;
+    if (t && t.px === px && t.words === words) {
+      if (t.gen !== gen) {   // fizik alanı gibi her kare değişen doku: tampon kalır, yalnız içerik
+        device.queue.writeBuffer(t.buf, TEX_HEADER, memory.buffer, px, words * 4);
+        t.gen = gen;
+      }
+      return;
+    }
     if (t) t.buf.destroy();
     texBinds.clear();
     const buf = device.createBuffer({ size: TEX_HEADER + words * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(buf, 0, memory.buffer, id, TEX_HEADER);
     device.queue.writeBuffer(buf, TEX_HEADER, memory.buffer, px, words * 4);
-    textures.set(id, { px, words, buf });
+    textures.set(id, { px, words, buf, gen });
   }
 
-  function texBind(a, b) {
-    const key = `${a}|${b}`;
+  function texBind(a, b, c) {
+    const key = `${a}|${b}|${c}`;
     let g = texBinds.get(key);
     if (!g) {
       const res = (id) => ({ buffer: id ? textures.get(id).buf : noTex });
-      g = device.createBindGroup({ layout: bglT, entries: [{ binding: 0, resource: res(a) }, { binding: 1, resource: res(b) }] });
+      g = device.createBindGroup({ layout: bglT, entries: [{ binding: 0, resource: res(a) }, { binding: 1, resource: res(b) }, { binding: 2, resource: res(c) }] });
       texBinds.set(key, g);
     }
     return g;
@@ -241,17 +247,17 @@ export async function createGpu(ex, memory, colorFormat) {
         i += 14;
       } else if (op === GC_TEX) {
         uploadTex(w, i);
-        i += 4;
+        i += 5;
       } else if (op === GC_DRAW) {
         const m = meshes.get(w[i + 1]);
-        pass.setPipeline(pipeline(w[i + 4], w[i + 5], w[i + 8], w[i + 9], w[i + 10], passFmt, samples));
+        pass.setPipeline(pipeline(w[i + 4], w[i + 5], w[i + 9], w[i + 10], w[i + 11], passFmt, samples));
         pass.setBindGroup(0, bindU, [w[i + 2] * SLOT, w[i + 3] * SLOT]);
-        pass.setBindGroup(1, texBind(w[i + 6], w[i + 7]));
+        pass.setBindGroup(1, texBind(w[i + 6], w[i + 7], w[i + 8]));
         m.bufs.forEach((b, k) => pass.setVertexBuffer(k, b));
         pass.setIndexBuffer(m.ibuf, 'uint32');
         pass.drawIndexed(m.ic);
         draws++;
-        i += 11;
+        i += 12;
       } else if (op === GC_OVERLAY) {
         const [x, y, ow, oh, px] = [w[i + 1], w[i + 2], w[i + 3], w[i + 4], w[i + 5]];
         if (!inOverlay) {

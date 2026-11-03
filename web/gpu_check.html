@@ -58,6 +58,8 @@ try {
     for (let v = 1; v <= ex.engine_bench_view_count(); v++) {
       ex.engine_gpu_set(0);
       ex.engine_bench_view(v);
+      // fizik alanları (D49, her kare değişen dokular): bayrak ve göl biraz ilerler, sonra aynı kare iki yolda karşılaştırılır
+      if (v === 5 || v === 6) for (let k = 0; k < 20; k++) ex.engine_frame(1000 / 60);
       ex.engine_frame(0);
       const sw = new Uint8Array(mem.buffer, ex.engine_framebuffer(), W * H * 4).slice();
       const swz = new Float32Array(mem.buffer, ex.engine_depthbuffer(), W * H).slice();

@@ -9,7 +9,7 @@
 // Fizik tabanlı ışık (D48): doğrusal uzayda enerji korunumlu Lambert + GGX (Trowbridge-Reitz dağılımı, Smith görünürlüğü, Schlick Fresnel),
 // metal / pürüz iş akışı; çevre yansıması analitik gökten (Karis 2014 yaklaşımı); ACES ton eğrisi, sonra gama; sis görüntü uzayında Beer-Lambert,
 // kanal başına sönüm (kısa dalga boyu daha çabuk saçılır). rough ≥ 0,97 malzeme parlak kolu çalıştırmaz, bump 0 kabartı kolunu (D43).
-// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, metal, rough, bump, shadow_mat2, shadow_bias2).
+// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, metal, rough, bump, shadow_mat2, shadow_bias2, screen_ix, screen_iy, field, field_scale).
 
 uniform tex: texture2d @mipmap @bilinear;
 uniform to_light: vec3;
@@ -31,6 +31,10 @@ uniform rough: f32;
 uniform bump: f32;
 uniform shadow_mat2: mat4;
 uniform shadow_bias2: f32;
+uniform screen_ix: f32;
+uniform screen_iy: f32;
+uniform field: texture2d @bilinear @clamp;
+uniform field_scale: f32;
 
 varying wpos: vec3;
 varying nrm: vec3;
@@ -224,8 +228,11 @@ fn frag() -> vec4 {
     let height = dot(texel.rgb, vec3(0.3, 0.6, 0.1));
     let n = select(bump > 0.0, bump_normal(n0, dFdx(wpos), dFdy(wpos), dFdx(height), dFdy(height)), n0);
     let nl = dot(n, to_light);
+    // fizik alanı (D49): fizik modülü yazar, malzeme tepki verir. R gerilme: lif açılır, renk açılır ve ışık daha çok geçer. G katlanma: kat içine
+    // ortam ışığı girmez (boşluk gölgesi)
+    let phys = select(field_scale > 0.0, sample_level(field, uv * field_scale, 0), vec4(0.0));
     // görüntü → doğrusal (gama 2): doku, renk ve ışık sayıları sRGB görünümünde verilir
-    let base = texel.rgb * tint;
+    let base = mix(texel.rgb * tint, vec3(1.0), phys.x * 0.18);
     let albedo = base * base;
     let sun = light_color * light_color * 1.75;
     // yumuşak diffuse: Lambert ile half-Lambert² arası (wrap = 0 → Lambert, 1 → ((n·l)/2 + 1/2)²).
@@ -233,21 +240,22 @@ fn frag() -> vec4 {
     let h = nl * 0.5 + 0.5;
     let diffuse = mix(max(nl, 0.0), h * h, wrap);
     // arkadan ışık (ters yüz aydınlanır), yumuşak
-    let back = max(-nl, 0.0) * translucency;
+    let back = max(-nl, 0.0) * translucency * (1.0 + phys.x * 1.5);
     let vis = shadow_lit(wpos);
     // yarım küre ortam: tepe gök, dip zemin (doğrusal ışıma)
-    let hemi = mix(vec3(0.34, 0.29, 0.23), vec3(0.66, 0.76, 0.92), n.y * 0.5 + 0.5) * (ambient * 1.05);
+    let hemi = mix(vec3(0.34, 0.29, 0.23), vec3(0.66, 0.76, 0.92), n.y * 0.5 + 0.5) * (ambient * 1.05 * (1.0 - phys.y * 0.75));
     let to_eye = eye - wpos;
     let d = length(to_eye);
     let v = to_eye * (1.0 / max(d, 0.0001));
     let lit = albedo * (1.0 - metal) * (hemi + sun * (diffuse * vis + back));
     let f0 = mix(vec3(0.04), albedo, metal);
     let c = lit + select(rough < 0.97, specular(n, v, nl, vis, f0, sun), vec3(0.0));
-    // Beer-Lambert: e = 2^(-kx²) kırmızıda, yeşil ×1,5, mavi ×2 üstel; ufukta gök rengine erir
+    // Beer-Lambert: e = 2^(-kx²) kırmızıda, yeşil ×1,25, mavi ×1,5 üstel; ufukta gök rengine erir
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
     let x = max(d - fog_start, 0.0) * fog_scale;
     let e = exp2(-2.5 * x * x);
-    let eg = e * sqrt(e);
-    let eb = e * e;
+    let s4 = sqrt(sqrt(e));
+    let eg = e * s4;
+    let eb = e * s4 * s4;
     return vec4(mix(fog_color.x, tone(c.x), e), mix(fog_color.y, tone(c.y), eg), mix(fog_color.z, tone(c.z), eb), 1.0);
 }

@@ -260,6 +260,7 @@ TEST(guard_lit_hq_matches_oracle) {
     mem_zero(&u, sizeof(u));
     u.tex = tex;
     u.shadow = sh;
+    u.field = tex;
     u.rough = 1.0f;
     u.to_light = v3(0.3f, 0.8f, 0.5f);
     u.ambient = 0.3f;
@@ -289,6 +290,9 @@ TEST(guard_lit_hq_matches_oracle) {
     u.rough = 1.0f;
     u.bump = 0.03f;
     CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 300, 75) > 100u);
+    /* fizik alanı kolu (D49) */
+    u.field_scale = 0.1f;
+    CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 300, 76) > 100u);
 }
 
 /* gölge çarpanı [0, 1]'den çıkmaz (D45): beş noktalı ön bakış quad'da sabit değilken q anlamsız, kenar dalına gitmeli; gitmezse çarpan
@@ -308,6 +312,7 @@ TEST(lit_hq_shadow_factor_in_range) {
     mem_zero(&u, sizeof(u));
     u.tex = tex;
     u.shadow = sh;
+    u.field = tex;
     u.rough = 1.0f;
     u.to_light = v3(0.0f, 1.0f, 0.0f);
     u.light_color = v3(0.4f, 0.4f, 0.4f);

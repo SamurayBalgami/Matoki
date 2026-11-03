@@ -18,7 +18,7 @@ uniform use_mip: i32;
 uniform tint: vec3;
 uniform time: f32;
 uniform translucency: f32;
-uniform shadow: texture2d @clamp;
+uniform wave: texture2d @bilinear @clamp;
 uniform shadow_mat: mat4;
 uniform shadow_bias: f32;
 uniform metal: f32;
@@ -43,7 +43,11 @@ fn frag() -> vec4 {
     let d = length(to_eye);
     let g = ripple(vec2(0.8, 0.6), 3.7, 0.05, 2.3) + ripple(vec2(-0.5, 0.87), 7.1, 0.035, 3.2) + ripple(vec2(0.28, -0.96), 12.3, 0.025, 4.3);
     let fade = 1.0 / (1.0 + d * d * 0.0012);
-    let n = normalize(nrm - vec3(g.x, 0.0, g.y) * fade);
+    // dalga denklemi alanı (D49, phys/wave): R, G = 128 + 510 · eğim; alan 40 m, merkez (0, -8), demo.c WAVE_SIZE
+    let f = sample_level(wave, vec2(wpos.x * 0.025 + 0.5, (wpos.z + 8.0) * 0.025 + 0.5), 0);
+    // görünür eğim ×5: 256² ızgara ağın altındaki kısa dalgaları taşımaz, kısa dalganın eğimi ana dalgadan büyüktür
+    let wg = (vec2(f.x, f.y) * 0.5 - vec2(0.2510, 0.2510)) * 5.0;
+    let n = normalize(nrm - vec3(g.x * fade + wg.x, 0.0, g.y * fade + wg.y));
     let v = to_eye * (1.0 / max(d, 0.0001));
     let ndv = clamp(dot(n, v), 0.0, 1.0);
     // Schlick: F0 = 0.02 (su)

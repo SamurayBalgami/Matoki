@@ -9,15 +9,15 @@
 #include "matoki/wgsl.h"
 
 #define GCMD_MAGIC   0x5550474Du   /* "MGPU" */
-#define GCMD_VERSION 5u
+#define GCMD_VERSION 6u
 #define GCMD_SLOT    256u          /* uniform yuvası (bayt) */
 
 enum {
     GC_END = 0,
     GC_FRAME = 1,   /* w, h, clear_rgba, clear_depth (f32 bitleri), örnek sayısı (1 / 4): ana geçiş başlar */
     GC_MESH = 2,    /* id, gen, vcount, icount, px, py, pz, nx, ny, nz, u, v, indices */
-    GC_DRAW = 3,    /* mesh_id, vert yuvası, frag yuvası, vert prog, frag prog, doku 0, doku 1, cull, depth_test, depth_write */
-    GC_TEX = 4,     /* id (Texture adresi), px, px sözcük sayısı */
+    GC_DRAW = 3,    /* mesh_id, vert yuvası, frag yuvası, vert prog, frag prog, doku 0, doku 1, doku 2, cull, depth_test, depth_write */
+    GC_TEX = 4,     /* id (Texture adresi), px, px sözcük sayısı, gen (değişince içerik yeniden yüklenir) */
     GC_SHADOW = 5,      /* doku id, boyut, kademe, kademe sayısı: yalnız derinlik geçişi başlar; id GPU'da doldurulur (px yüklenmez) */
     GC_SHADOW_END = 6,  /* geçiş biter, derinlik doku tamponunda kademenin satırlarına kopyalanır */
     GC_OVERLAY = 7,     /* x, y, w, h, px (önceden çarpılmış RGBA, sıkışık): ana geçişin üstüne karıştırılır */

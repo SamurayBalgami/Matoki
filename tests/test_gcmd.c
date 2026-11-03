@@ -71,11 +71,11 @@ TEST(gcmd_stream_layout_and_dedup) {
             CHECK(w[i + 5] == (u32)(uptr)m->px && w[i + 11] == (u32)(uptr)m->u && w[i + 12] == (u32)(uptr)m->v && w[i + 13] == (u32)(uptr)m->indices);
             i += 14;
         } else if (op == GC_TEX) {
-            CHECK(w[i + 1] == (u32)(uptr)tex && w[i + 2] == (u32)(uptr)tex->px && w[i + 3] == 16u);
-            i += 4;
+            CHECK(w[i + 1] == (u32)(uptr)tex && w[i + 2] == (u32)(uptr)tex->px && w[i + 3] == 16u && w[i + 4] == tex->gen);
+            i += 5;
         } else if (op == GC_DRAW) {
             if (nd < 3) draws[nd++] = &w[i];
-            i += 11;
+            i += 12;
         } else {
             break;
         }
@@ -86,9 +86,9 @@ TEST(gcmd_stream_layout_and_dedup) {
     const u32* d = draws[0];
     CHECK(d[1] == (u32)(uptr)cube && d[2] == 0u && d[3] == 1u && d[4] == 1u && d[5] == 3u && d[6] == (u32)(uptr)tex && d[7] == 0u);
     d = draws[1];
-    CHECK(d[2] == 2u && d[3] == 1u && d[8] == CULL_NONE && d[9] == 1u && d[10] == 0u);
+    CHECK(d[2] == 2u && d[3] == 1u && d[9] == CULL_NONE && d[10] == 1u && d[11] == 0u);
     d = draws[2];
-    CHECK(d[1] == (u32)(uptr)plane && d[2] == 3u && d[3] == 4u && d[5] == GPROG_FLAT && d[6] == 0u && d[8] == CULL_FRONT && d[9] == 0u);
+    CHECK(d[1] == (u32)(uptr)plane && d[2] == 3u && d[3] == 4u && d[5] == GPROG_FLAT && d[6] == 0u && d[9] == CULL_FRONT && d[10] == 0u);
     /* uniform içerikleri: köşe = VertUniforms ham, parça = programın boyu kadar, kalanı sıfır */
     CHECK(mem_equal(c.uniforms + 2u * GCMD_SLOT, &v2, sizeof(v2)));
     const u8* f0 = c.uniforms + GCMD_SLOT;
@@ -191,16 +191,16 @@ TEST(gcmd_shadow_and_overlay_stream) {
     i += 5;
     CHECK(w[i] == GC_MESH);
     i += 14;
-    CHECK(w[i] == GC_DRAW && w[i + 5] == GPROG_NONE && w[i + 6] == 0u && w[i + 8] == CULL_FRONT);
-    i += 11;
+    CHECK(w[i] == GC_DRAW && w[i + 5] == GPROG_NONE && w[i + 6] == 0u && w[i + 9] == CULL_FRONT);
+    i += 12;
     CHECK(w[i] == GC_SHADOW_END);
     i += 1;
     CHECK(w[i] == GC_FRAME);
     i += 6;
     CHECK(w[i] == GC_TEX && w[i + 1] == (u32)(uptr)tex);   /* yalnız renk dokusu */
-    i += 4;
+    i += 5;
     CHECK(w[i] == GC_DRAW && w[i + 5] == 5u && w[i + 6] == (u32)(uptr)tex && w[i + 7] == (u32)(uptr)shadow);
-    i += 11;
+    i += 12;
     CHECK(w[i] == GC_OVERLAY && w[i + 1] == 8u && w[i + 2] == 9u && w[i + 3] == 3u && w[i + 4] == 2u && w[i + 5] == (u32)(uptr)ovpx);
     i += 6;
     CHECK(w[i] == GC_END && i + 1 == c.count);
@@ -265,7 +265,7 @@ TEST(gcmd_reflect_stream) {
     i += 14;
     CHECK(w[i] == GC_DRAW);
     u32 slot0 = w[i + 3];
-    i += 11;
+    i += 12;
     CHECK(w[i] == GC_REFLECT_END);
     i += 1;
     CHECK(w[i] == GC_FRAME);
