@@ -254,8 +254,8 @@ TEST(guard_lit_hq_matches_oracle) {
     Rng r = rng_make(7);
     for (u32 i = 0; i < 64u * 64u; i++) tex->px[i] = rng_u32(&r) | 0xFF000000u;
     tex_build_mips(tex);
-    Texture* sh = tex_create(a, 4, 4, TEX_FLAG_CLAMP);
-    for (u32 i = 0; i < 16u; i++) sh->px[i] = m_f32_bits(0.4f + 0.04f * (f32)i);
+    Texture* sh = tex_create(a, 32, 64, TEX_FLAG_CLAMP);
+    for (u32 i = 0; i < 32u * 64u; i++) sh->px[i] = m_f32_bits(0.3f + 0.4f * rng_f32(&r));
     LitUniforms u;
     mem_zero(&u, sizeof(u));
     u.tex = tex;
@@ -270,8 +270,10 @@ TEST(guard_lit_hq_matches_oracle) {
     u.tint = v3(1.0f, 0.9f, 0.8f);
     u.wrap = 0.5f;
     u.translucency = 0.2f;
-    u.shadow_mat = mat4_identity();
+    u.shadow_mat = mat4_mul(mat4_translate(v3(0.5f, 0.5f, 0.5f)), mat4_scale(v3(0.25f, 0.25f, 0.25f)));   /* ±2 yakın kademede */
     u.shadow_bias = 0.001f;
+    u.shadow_mat2 = mat4_mul(mat4_translate(v3(0.5f, 0.5f, 0.5f)), mat4_scale(v3(0.125f, 0.125f, 0.125f)));
+    u.shadow_bias2 = 0.002f;
     CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 1000, 71) > 500u);
     u.use_mip = FALSE;
     CHECK(guard_compare(t_, &p, &u, VAR3D_COUNT, 300, 72) > 100u);
@@ -298,9 +300,9 @@ TEST(lit_hq_shadow_factor_in_range) {
     if (!guard_compile(t_, (const char*)ef->data, ef->len, &p)) return;
     Texture* tex = tex_create(a, 2, 2, TEX_FLAG_BILINEAR);
     for (u32 i = 0; i < 4u; i++) tex->px[i] = 0xFFFFFFFFu;
-    Texture* sh = tex_create(a, 16, 16, TEX_FLAG_CLAMP);
+    Texture* sh = tex_create(a, 32, 64, TEX_FLAG_CLAMP);
     Rng r = rng_make(91);
-    for (u32 i = 0; i < 256u; i++) sh->px[i] = m_f32_bits(rng_range(&r, 0.0f, 1.0f));
+    for (u32 i = 0; i < 32u * 64u; i++) sh->px[i] = m_f32_bits(rng_range(&r, 0.0f, 1.0f));
     LitUniforms u;
     mem_zero(&u, sizeof(u));
     u.tex = tex;
@@ -310,7 +312,8 @@ TEST(lit_hq_shadow_factor_in_range) {
     u.fog_start = 1000.0f;
     u.fog_end = 2000.0f;
     u.tint = v3(1.0f, 1.0f, 1.0f);
-    u.shadow_mat = mat4_mul(mat4_translate(v3(0.5f, 0.5f, 0.5f)), mat4_scale(v3(1.0f / 6.0f, 1.0f / 6.0f, 1.0f / 6.0f)));
+    u.shadow_mat = mat4_mul(mat4_translate(v3(0.5f, 0.5f, 0.5f)), mat4_scale(v3(0.25f, 0.25f, 0.25f)));
+    u.shadow_mat2 = mat4_mul(mat4_translate(v3(0.5f, 0.5f, 0.5f)), mat4_scale(v3(0.125f, 0.125f, 0.125f)));
     if (p.prelude) p.prelude(&u);
     u32 top = 0;
     for (u32 k = 0; k < 4000u; k++) {

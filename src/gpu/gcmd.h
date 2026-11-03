@@ -9,7 +9,7 @@
 #include "matoki/wgsl.h"
 
 #define GCMD_MAGIC   0x5550474Du   /* "MGPU" */
-#define GCMD_VERSION 3u
+#define GCMD_VERSION 4u
 #define GCMD_SLOT    256u          /* uniform yuvası (bayt) */
 
 enum {
@@ -18,8 +18,8 @@ enum {
     GC_MESH = 2,    /* id, gen, vcount, icount, px, py, pz, nx, ny, nz, u, v, indices */
     GC_DRAW = 3,    /* mesh_id, vert yuvası, frag yuvası, vert prog, frag prog, doku 0, doku 1, cull, depth_test, depth_write */
     GC_TEX = 4,     /* id (Texture adresi), px, px sözcük sayısı */
-    GC_SHADOW = 5,      /* doku id, boyut: yalnız derinlik geçişi başlar; id GPU'da doldurulur (px yüklenmez) */
-    GC_SHADOW_END = 6,  /* geçiş biter, derinlik doku tamponuna kopyalanır */
+    GC_SHADOW = 5,      /* doku id, boyut, kademe, kademe sayısı: yalnız derinlik geçişi başlar; id GPU'da doldurulur (px yüklenmez) */
+    GC_SHADOW_END = 6,  /* geçiş biter, derinlik doku tamponunda kademenin satırlarına kopyalanır */
     GC_OVERLAY = 7,     /* x, y, w, h, px (önceden çarpılmış RGBA, sıkışık): ana geçişin üstüne karıştırılır */
 };
 
@@ -52,7 +52,7 @@ typedef struct GpuCmd {
 
 /* kare başı: arenadan akış + uniform bloğu (kare arenası; kare sonunda geri sarılır). Sıra: [gölge geçişi], gcmd_frame, çizimler, bindirmeler */
 b32  gcmd_begin(GpuCmd* c, Arena* frame, u32 max_draws, const GpuProgram* std_vert);
-void gcmd_shadow_begin(GpuCmd* c, const Texture* tex, u32 size);
+void gcmd_shadow_begin(GpuCmd* c, const Texture* tex, u32 size, u32 layer, u32 layers);
 void gcmd_shadow_end(GpuCmd* c);
 void gcmd_frame(GpuCmd* c, u32 w, u32 h, u32 clear_rgba, f32 clear_depth, u32 samples);
 /* vu köşe uniform'u; frag NULL → düz shader; depth_only → parça aşaması yok. Dokular uniform bloğundaki işaretçilerden */

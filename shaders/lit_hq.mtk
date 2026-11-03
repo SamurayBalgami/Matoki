@@ -8,7 +8,7 @@
 // Kalite (D45): gölge 4×4 komşuda üçüncü derece B-spline (basamaksız, yumuşak kenar); ortam gök ↔ zemin rengi (gölgeler soğuk dolgu
 // alır); parlaklık: Blinn-Phong + Fresnel'li gök yansıması; kabartı: doku parlaklığı
 // yükseklik sayılır, normal ekran türevlerinden bozulur (Mikkelsen 2010). spec / bump 0 olan malzeme bu kolları çalıştırmaz (D43).
-// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, spec, gloss, bump).
+// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, spec, gloss, bump, shadow_mat2, shadow_bias2).
 
 uniform tex: texture2d @mipmap @bilinear;
 uniform to_light: vec3;
@@ -28,6 +28,8 @@ uniform shadow_bias: f32;
 uniform spec: f32;
 uniform gloss: f32;
 uniform bump: f32;
+uniform shadow_mat2: mat4;
+uniform shadow_bias2: f32;
 
 varying wpos: vec3;
 varying nrm: vec3;
@@ -108,27 +110,36 @@ fn shadow_row(ix: i32, iy: i32, z: f32, zu: f32, cx: f32, w: vec4) -> f32 {
 // ışık görüşünden görünür mü: 1 = aydınlık, 0 = gölgede; 4×4 komşunun sonucu B-spline ağırlıklarıyla karışır. Her komşu alıcı
 // düzleminin o noktadaki derinliğiyle karşılaştırılır: yoksa geniş çekirdek eğik yüzeyin kendisini gölge sayar
 fn shadow_lit(p: vec3) -> f32 {
-    let s = shadow_mat * vec4(p, 1.0);
-    let ts = tex_size(shadow);
-    let x = s.x * ts.x - 0.5;
-    let y = s.y * ts.y - 0.5;
+    // iki kademe (D46): çekirdek yakın haritaya sığıyorsa o (keskin), yoksa uzak; seçim lane başına, türevler kademe başına
+    let s0 = shadow_mat * vec4(p, 1.0);
+    let s1 = shadow_mat2 * vec4(p, 1.0);
+    let size = tex_size(shadow).x;
+    let lo = 6.0 / size;
+    let hi = 1.0 - lo;
+    let near = s0.x > lo && s0.x < hi && s0.y > lo && s0.y < hi && s0.z <= 1.0;
+    let sx = select(near, s0.x, s1.x);
+    let sy = select(near, s0.y, s1.y);
+    let sz = select(near, s0.z, s1.z);
+    let x = sx * size - 0.5;
+    let y = sy * size - 0.5;
     let fx = floor(x);
     let fy = floor(y);
     let wx = spline(x - fx);
     let wy = spline(y - fy);
     let ix = i32(fx);
-    let iy = i32(fy);
-    let z = s.z - shadow_bias;
+    let iy = i32(fy) + select(near, 0, i32(size));
+    let bias = select(near, shadow_bias, shadow_bias2);
+    let z = sz - bias;
     // derinliğin texel başına eğimi: ekran türevlerinden (2×2 sistemin çözümü), sıçrama olan quad'da taşmasın diye kenetli
-    let xdx = dFdx(x);
-    let xdy = dFdy(x);
-    let ydx = dFdx(y);
-    let ydy = dFdy(y);
-    let zdx = dFdx(s.z);
-    let zdy = dFdy(s.z);
+    let xdx = select(near, dFdx(s0.x), dFdx(s1.x)) * size;
+    let xdy = select(near, dFdy(s0.x), dFdy(s1.x)) * size;
+    let ydx = select(near, dFdx(s0.y), dFdx(s1.y)) * size;
+    let ydy = select(near, dFdy(s0.y), dFdy(s1.y)) * size;
+    let zdx = select(near, dFdx(s0.z), dFdx(s1.z));
+    let zdy = select(near, dFdy(s0.z), dFdy(s1.z));
     let det = xdx * ydy - ydx * xdy;
     let inv = select(abs(det) > 0.000001, 1.0 / det, 0.0);
-    let lim = shadow_bias * 2.0;
+    let lim = bias * 2.0;
     let zu = clamp((ydy * zdx - ydx * zdy) * inv, -lim, lim);
     let zv = clamp((xdx * zdy - xdy * zdx) * inv, -lim, lim);
     let cx = fx - x;
@@ -148,9 +159,8 @@ fn shadow_lit(p: vec3) -> f32 {
     let full = shadow_row(ix, iy - 1, z + zv * (cy - 1.0), zu, cx, wx) * wy.x + shadow_row(ix, iy, z + zv * cy, zu, cx, wx) * wy.y +
                shadow_row(ix, iy + 1, z + zv * (cy + 1.0), zu, cx, wx) * wy.z + shadow_row(ix, iy + 2, z + zv * (cy + 2.0), zu, cx, wx) * wy.w;
     let lit = select(edge, full, q * 0.2);
-    // haritanın dışı (kapsanmayan bölge) aydınlık; 0'ın kendisi de dışarıda: kapalı harita (shadow_mat = 0) ağırlık toplamının
-    // yuvarlamasına girmeden tam 1 verir
-    let inside = s.x > 0.0 && s.x <= 1.0 && s.y > 0.0 && s.y <= 1.0 && s.z <= 1.0;
+    // iki haritanın da dışı aydınlık; kapalı harita (matrisler 0) ağırlık toplamının yuvarlamasına girmeden tam 1 verir
+    let inside = near || (sx > lo && sx < hi && sy > lo && sy < hi && sz <= 1.0);
     return select(inside, lit, 1.0);
 }
 

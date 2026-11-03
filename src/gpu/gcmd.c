@@ -6,10 +6,11 @@
 
 #define GCMD_HEADER 6u
 #define GCMD_FRAME_WORDS 6u
-#define GCMD_SHADOW_WORDS 3u
+#define GCMD_SHADOW_WORDS 5u
+#define GCMD_SHADOWS_MAX 4u
 #define GCMD_OVERLAY_WORDS 6u
 #define GCMD_OVERLAYS_MAX 2u
-#define GCMD_FIXED_WORDS (GCMD_FRAME_WORDS + GCMD_SHADOW_WORDS + 1u + GCMD_OVERLAYS_MAX * GCMD_OVERLAY_WORDS)
+#define GCMD_FIXED_WORDS (GCMD_FRAME_WORDS + GCMD_SHADOWS_MAX * (GCMD_SHADOW_WORDS + 1u) + GCMD_OVERLAYS_MAX * GCMD_OVERLAY_WORDS)
 #define GCMD_MESH_WORDS 14u
 #define GCMD_DRAW_WORDS 11u
 #define GCMD_TEX_WORDS 4u
@@ -63,11 +64,11 @@ static u32 tex_record(GpuCmd* c, const Texture* t) {
     return id;
 }
 
-void gcmd_shadow_begin(GpuCmd* c, const Texture* tex, u32 size) {
+void gcmd_shadow_begin(GpuCmd* c, const Texture* tex, u32 size, u32 layer, u32 layers) {
     if (!c->cap) return;
     u32 id = (u32)(uptr)tex;
     seen_first(c, id);   /* içerik GPU'da: GC_TEX yazılmaz */
-    u32 r[GCMD_SHADOW_WORDS] = { GC_SHADOW, id, size };
+    u32 r[GCMD_SHADOW_WORDS] = { GC_SHADOW, id, size, layer, layers };
     mem_copy(c->words + c->count, r, sizeof(r));
     c->count += GCMD_SHADOW_WORDS;
 }

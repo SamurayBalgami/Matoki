@@ -177,7 +177,7 @@ TEST(gcmd_shadow_and_overlay_stream) {
     GpuCmd c;
     CHECK(gcmd_begin(&c, a, 4, &vert));
     VertUniforms v = vu_make(v3(0, 0, 0), 0.0f);
-    gcmd_shadow_begin(&c, shadow, 1024);
+    gcmd_shadow_begin(&c, shadow, 1024, 0, 2);
     gcmd_draw(&c, cube, &v, NULL, NULL, NULL, CULL_FRONT, TRUE, TRUE, TRUE);
     gcmd_shadow_end(&c);
     gcmd_frame(&c, 64, 64, 0, 1.0f, 1);
@@ -187,8 +187,8 @@ TEST(gcmd_shadow_and_overlay_stream) {
     gcmd_end(&c);
     const u32* w = c.words;
     u32 i = 6;
-    CHECK(w[i] == GC_SHADOW && w[i + 1] == (u32)(uptr)shadow && w[i + 2] == 1024u);
-    i += 3;
+    CHECK(w[i] == GC_SHADOW && w[i + 1] == (u32)(uptr)shadow && w[i + 2] == 1024u && w[i + 3] == 0u && w[i + 4] == 2u);
+    i += 5;
     CHECK(w[i] == GC_MESH);
     i += 14;
     CHECK(w[i] == GC_DRAW && w[i + 5] == GPROG_NONE && w[i + 6] == 0u && w[i + 8] == CULL_FRONT);

@@ -614,3 +614,12 @@ yakalar. Gözle bulunan iki hata testten önce buradaydı: `q`'nun lane'in kendi
 
 Bilerek yapılmadı: suda düzlem yansıması (ek geçiş), harita çözünürlüğünü artırmak (basamak boyu 1024 texel'den geliyor; bellek ×4), güneş diski dışında gökyüzü
 detayı. Sınır: tek adaptör, gerçek ekranda FPS ölçülmedi (D44).
+
+## D46. Gölge kademeleri: yakın keskin, uzak geniş
+Basamak boyu çekirdekten değil haritadan geliyordu: 22 m yarıçapa 1024 texel = 4,3 cm, arabada ekranda 15 piksellik basamak. İki kademe,
+tek doku: `size × 2·size` atlas (bellek ×2), yakın 9 m (1,8 cm), uzak 42 m (8,2 cm; eskiden 40 m ötesinde gölge yoktu). Tek doku çünkü GPU yolunda doku yuvası
+sınırlı ve depolama tamponunda kademe yalnız satır ofseti. Kademe seçimi lane başına, türevler kademe başına: quad'ın iki kademeye düştüğü dikişte
+türev sıçramaz. Sahne 7 (göl) artık gölgeli (su gölge düşürmez; okyanus ağı kare başında bir kez güncellenir). Akış sürümü 4 (`GC_SHADOW` kademe bilgisi taşır).
+
+Maliyet (A/B, 1920×1080, gölge + MSAA, 10 görünüm toplamı): yazılım 707 → 736 ms (×1,041; görünüm başına ×1,018 – ×1,067). Hemen hemen tamamı ikinci derinlik geçişi;
+yakın kademe frustum elemesiyle ucuz. GPU A/B yapılamadı (eski motor yeni akış sürümüyle kurulmaz), son ölçüm D49'da. Kabul: `gpu_check` 60/60, 256/256 test.

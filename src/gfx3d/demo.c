@@ -45,8 +45,10 @@
 #define KEY_I 73
 
 #define SHADOW_SIZE   1024
-#define SHADOW_RADIUS 22.0f   /* m: kameranın önünde gölge alan küre */
-#define SHADOW_BIAS_M 0.08f   /* m: ≈ 2 texel */
+#define SHADOW_RADIUS 9.0f     /* m: yakın kademe, kameranın önünde gölge alan küre (texel ≈ 1,8 cm) */
+#define SHADOW_RADIUS2 42.0f   /* m: uzak kademe (texel ≈ 8 cm) */
+#define SHADOW_BIAS_M 0.04f    /* m: yakın kademe ≈ 2 texel; alıcı düzlemi eğimi ayrıca karşılar */
+#define SHADOW_BIAS2_M 0.14f   /* m: uzak kademe ≈ 2 texel */
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -262,6 +264,8 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->spec = 0.0f;
     u->gloss = 32.0f;
     u->bump = 0.0f;
+    mem_zero(&u->shadow_mat2, sizeof(u->shadow_mat2));
+    u->shadow_bias2 = 0.0f;
     lit_uniforms_prepare(u);
 }
 
@@ -323,7 +327,7 @@ static const LitField LIT_FIELDS[] = {
     LIT_FIELD(fog_end, TB_FLOAT, 1), LIT_FIELD(eye, TB_FLOAT, 3), LIT_FIELD(use_mip, TB_INT, 1), LIT_FIELD(tint, TB_FLOAT, 3),
     LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
     LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(spec, TB_FLOAT, 1), LIT_FIELD(gloss, TB_FLOAT, 1),
-    LIT_FIELD(bump, TB_FLOAT, 1),
+    LIT_FIELD(bump, TB_FLOAT, 1), LIT_FIELD(shadow_mat2, TB_MAT, 4), LIT_FIELD(shadow_bias2, TB_FLOAT, 1),
     { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
 };
 
@@ -1537,12 +1541,16 @@ static void set_frame_uniforms(void) {
         all[i]->use_mip = g.mip;
         if (g.shadow_active) {
             all[i]->shadow = &g.shadow->tex;
-            all[i]->shadow_mat = g.shadow->world_to_tex;
-            all[i]->shadow_bias = shadow_bias_for(g.shadow, SHADOW_BIAS_M);
+            all[i]->shadow_mat = g.shadow->c[0].world_to_tex;
+            all[i]->shadow_bias = shadow_bias_for(g.shadow, 0, SHADOW_BIAS_M);
+            all[i]->shadow_mat2 = g.shadow->c[1].world_to_tex;
+            all[i]->shadow_bias2 = shadow_bias_for(g.shadow, 1, SHADOW_BIAS2_M);
         } else {
             all[i]->shadow = shadow_none();
             mem_zero(&all[i]->shadow_mat, sizeof(all[i]->shadow_mat));
             all[i]->shadow_bias = 0.0f;
+            mem_zero(&all[i]->shadow_mat2, sizeof(all[i]->shadow_mat2));
+            all[i]->shadow_bias2 = 0.0f;
         }
     }
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
@@ -1699,11 +1707,9 @@ static void ocean_mesh_update(void) {
 
 static void render_scene7(void) {
     draw(g.big_floor, &g.m_floor, mat4_identity());
-    if (g.ocean_on) {
-        ocean_mesh_update();
-        draw(g.ocean_mesh, &g.m_ocean, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
-    } else {
-        draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
+    if (!g.shadow_pass) {   /* su gölge düşürmez */
+        if (g.ocean_on) draw(g.ocean_mesh, &g.m_ocean, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
+        else draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
     }
     for (i32 k = 0; k < 7; k++) {
         f32 a = (f32)k * (M_TAU_F / 7.0f) + 0.4f;
@@ -1770,9 +1776,9 @@ static void render_scene(void) {
 
 /* harita (ilk kullanımda) + ışık izdüşümü; FALSE: bu karede gölge yok */
 static b32 shadow_prepare(void) {
-    if (!g.shadow_on || g.scene == 7 || g.flat || g.capture) return FALSE;
+    if (!g.shadow_on || g.flat || g.capture) return FALSE;
     if (!g.shadow) {
-        if (!arena_init_sys(&g.shadow_mem, (usize)SHADOW_SIZE * SHADOW_SIZE * 4u + (64u << 10))) {
+        if (!arena_init_sys(&g.shadow_mem, (usize)SHADOW_SIZE * SHADOW_SIZE * SHADOW_CASCADES * 4u + (64u << 10))) {
             g.shadow_on = FALSE;
             return FALSE;
         }
@@ -1781,25 +1787,27 @@ static b32 shadow_prepare(void) {
     }
     Mat4 view = camera_view(&g.cam);
     Vec3 fwd = v3(-view.m[2], -view.m[6], -view.m[10]);
-    Vec3 center = v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS * 0.6f));
-    shadow_fit(g.shadow, g.u_ground.to_light, center, SHADOW_RADIUS, 40.0f);
+    shadow_fit(g.shadow, 0, g.u_ground.to_light, v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS * 0.6f)), SHADOW_RADIUS, 40.0f);
+    shadow_fit(g.shadow, 1, g.u_ground.to_light, v3_add(g.cam.pos, v3_scale(fwd, SHADOW_RADIUS2 * 0.6f)), SHADOW_RADIUS2, 40.0f);
     return TRUE;
 }
 
-/* Gölge geçişi (M13 faz 7): kameranın önündeki küreye oturan ışık izdüşümünde sahneyi yalnız derinlik çizer
- * (draw → shadow_caster). Okyanus (sahne 7: köşeleri dalga shader'ı oynatır) ve ölçüm kipleri gölgesiz. */
+/* Gölge geçişi (M13 faz 7, D46): her kademe kameranın önündeki kendi küresine oturan ışık izdüşümünde sahneyi yalnız derinlik
+ * çizer (draw → shadow_caster). Su gölge düşürmez, ölçüm kipleri gölgesiz. */
 static void shadow_pass(void) {
     g.shadow_active = FALSE;
     g.stats[ST_SHADOW_US] = 0;
     if (!shadow_prepare()) return;
     f64 t0 = sys_now_ms();
-    arena_reset(&g.frame, 0);
-    arena_reset(&g.bins, 0);
-    shadow_begin(g.shadow, &g.pipe, &g.frame, &g.bins);
     g.shadow_pass = TRUE;
-    render_scene();
+    for (u32 k = 0; k < SHADOW_CASCADES; k++) {
+        arena_reset(&g.frame, 0);
+        arena_reset(&g.bins, 0);
+        shadow_begin(g.shadow, k, &g.pipe, &g.frame, &g.bins);
+        render_scene();
+        shadow_end(&g.pipe);
+    }
     g.shadow_pass = FALSE;
-    shadow_end(g.shadow, &g.pipe);
     g.shadow_active = TRUE;
     g.stats[ST_SHADOW_US] = (u32)((sys_now_ms() - t0) * 1000.0);
 }
@@ -1810,14 +1818,16 @@ static void shadow_pass_gpu(void) {
     g.stats[ST_SHADOW_US] = 0;
     if (!shadow_prepare()) return;
     f64 t0 = sys_now_ms();
-    gcmd_shadow_begin(&g.gcmd, &g.shadow->tex, SHADOW_SIZE);
-    pipe_begin(&g.pipe, &g.raster, &g.frame, g.shadow->view, g.shadow->proj, v3(0.0f, 0.0f, 0.0f));
-    pipe_set_gpu(&g.pipe, &g.gcmd);
     g.shadow_pass = TRUE;
-    render_scene();
+    for (u32 k = 0; k < SHADOW_CASCADES; k++) {
+        gcmd_shadow_begin(&g.gcmd, &g.shadow->tex, SHADOW_SIZE, k, SHADOW_CASCADES);
+        pipe_begin(&g.pipe, &g.raster, &g.frame, g.shadow->c[k].view, g.shadow->c[k].proj, v3(0.0f, 0.0f, 0.0f));
+        pipe_set_gpu(&g.pipe, &g.gcmd);
+        render_scene();
+        pipe_end(&g.pipe);
+        gcmd_shadow_end(&g.gcmd);
+    }
     g.shadow_pass = FALSE;
-    pipe_end(&g.pipe);
-    gcmd_shadow_end(&g.gcmd);
     g.shadow_active = TRUE;
     g.stats[ST_SHADOW_US] = (u32)((sys_now_ms() - t0) * 1000.0);
 }
@@ -2026,6 +2036,7 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     /* CPU'da üretilen geometri karede bir kez, iki geçişten (gölge + ana) önce: gölge aynı pozdan */
     if (g.scene == 9) anim_scene_update();
     if (g.scene == 6) soft_meshes_update();
+    if (g.scene == 7 && g.ocean_on) ocean_mesh_update();
     if (!g.gpu_on) shadow_pass();
     f64 t0 = sys_now_ms();
     if (!g.gpu_on) fb_clear(&g.fb, color_pack(158, 184, 217, 255), 1.0f);

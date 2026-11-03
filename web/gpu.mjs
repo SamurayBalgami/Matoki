@@ -5,7 +5,7 @@
 // sayfa yazılım render'da kalır.
 
 const GC_END = 0, GC_FRAME = 1, GC_MESH = 2, GC_DRAW = 3, GC_TEX = 4, GC_SHADOW = 5, GC_SHADOW_END = 6, GC_OVERLAY = 7, GPROG_OVERLAY = 1, GPROG_NONE = 0xFFFFFFFF, MAGIC = 0x5550474d, SLOT = 256, TEX_HEADER = 352;
-const STREAM_VERSION = 3;   // gpu/gcmd.h GCMD_VERSION
+const STREAM_VERSION = 4;   // gpu/gcmd.h GCMD_VERSION
 const CULL = ['none', 'back', 'front'];   // raster.h CullMode sırası; ön yüz NDC'de CCW (D3)
 
 export async function createGpu(ex, memory, colorFormat) {
@@ -157,34 +157,35 @@ export async function createGpu(ex, memory, colorFormat) {
     }
     if (ubytes) device.queue.writeBuffer(ubuf, 0, memory.buffer, hdr[4], ubytes);
     const enc = device.createCommandEncoder();
-    let pass = null, draws = 0, samples = 1, shadowTex = 0, tsShadow = false, inOverlay = false;
+    let pass = null, draws = 0, samples = 1, shadowTex = 0, shadowLayer = 0, tsShadow = false, inOverlay = false;
     const stamp = (begin, end) => (hasTs ? { timestampWrites: { querySet, beginningOfPassWriteIndex: begin, endOfPassWriteIndex: end } } : {});
     for (let i = 6; i < w.length;) {
       const op = w[i];
       if (op === GC_END) break;
       if (op === GC_SHADOW) {
-        const [id, size] = [w[i + 1], w[i + 2]];
+        const [id, size, layer, layers] = [w[i + 1], w[i + 2], w[i + 3], w[i + 4]];
         if (!shadowDepth || shadowDepth.width !== size) {
           shadowDepth?.destroy();
           shadowDepth = device.createTexture({ size: [size, size], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
         }
         if (!textures.has(id)) {
-          const buf = device.createBuffer({ size: TEX_HEADER + size * size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+          const buf = device.createBuffer({ size: TEX_HEADER + size * size * layers * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
           device.queue.writeBuffer(buf, 0, memory.buffer, id, TEX_HEADER);
-          textures.set(id, { px: 0, words: size * size, buf });
+          textures.set(id, { px: 0, words: size * size * layers, buf });
           texBinds.clear();
         }
         shadowTex = id;
+        shadowLayer = layer;
         samples = 1;
         tsShadow = true;
-        pass = enc.beginRenderPass({ colorAttachments: [], ...stamp(0, 1),
+        pass = enc.beginRenderPass({ colorAttachments: [], ...stamp(layer === 0 ? 0 : undefined, layer === layers - 1 ? 1 : undefined),
           depthStencilAttachment: { view: shadowDepth.createView(), depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store' } });
-        i += 3;
+        i += 5;
       } else if (op === GC_SHADOW_END) {
         pass.end();
         pass = null;
         const size = shadowDepth.width;
-        enc.copyTextureToBuffer({ texture: shadowDepth, aspect: 'depth-only' }, { buffer: textures.get(shadowTex).buf, offset: TEX_HEADER, bytesPerRow: size * 4 }, [size, size]);
+        enc.copyTextureToBuffer({ texture: shadowDepth, aspect: 'depth-only' }, { buffer: textures.get(shadowTex).buf, offset: TEX_HEADER + shadowLayer * size * size * 4, bytesPerRow: size * 4 }, [size, size]);
         i += 1;
       } else if (op === GC_FRAME) {
         const [fw, fh, rgba, zb] = [w[i + 1], w[i + 2], w[i + 3], w[i + 4]];

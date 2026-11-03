@@ -10,19 +10,19 @@ static Pipeline g_pipe;
 static void draw_cube_shadow(ShadowMap* sm, Arena* frame, Arena* bins) {
     Mesh* cube = mesh_cube(test_arena());
     mesh_compute_bounds(cube);
-    shadow_begin(sm, &g_pipe, frame, bins);
+    shadow_begin(sm, 0, &g_pipe, frame, bins);
     DrawItem d = { .mesh = cube, .mat = shadow_caster(), .model = mat4_translate(v3(0.0f, 1.5f, 0.0f)) };
     pipe_draw(&g_pipe, &d);
-    shadow_end(sm, &g_pipe);
+    shadow_end(&g_pipe);
 }
 
 /* dünya noktası → harita: (u, v, derinlik) ve o texel'deki kayıtlı derinlik */
 static f32 lookup(const ShadowMap* sm, Vec3 p, f32* own) {
-    Vec4 s = mat4_mul_v4(&sm->world_to_tex, v4(p.x, p.y, p.z, 1.0f));
+    Vec4 s = mat4_mul_v4(&sm->c[0].world_to_tex, v4(p.x, p.y, p.z, 1.0f));
     *own = s.z;
     i32 x = (i32)m_floorf(s.x * (f32)sm->size), y = (i32)m_floorf(s.y * (f32)sm->size);
     if (x < 0 || y < 0 || x >= (i32)sm->size || y >= (i32)sm->size) return -1.0f;
-    return sm->fb.depth[y * (i32)sm->size + x];
+    return sm->c[0].fb.depth[y * (i32)sm->size + x];
 }
 
 TEST(shadow_map_cube_over_ground) {
@@ -32,11 +32,11 @@ TEST(shadow_map_cube_over_ground) {
     arena_init(&bins, arena_alloc(a, 8 << 20, 16), 8 << 20);
     ShadowMap* sm = ARENA_NEW(a, ShadowMap);
     shadow_init(sm, a, 256);
-    shadow_fit(sm, v3_norm(v3(0.2f, 1.0f, 0.1f)), v3(0, 0, 0), 5.0f, 10.0f);
+    shadow_fit(sm, 0, v3_norm(v3(0.2f, 1.0f, 0.1f)), v3(0, 0, 0), 5.0f, 10.0f);
     draw_cube_shadow(sm, &frame, &bins);
 
     u32 written = 0;
-    for (u32 i = 0; i < 256u * 256u; i++) written += sm->fb.depth[i] < 1.0f;
+    for (u32 i = 0; i < 256u * 256u; i++) written += sm->c[0].fb.depth[i] < 1.0f;
     CHECK(written > 100u);
     test_note("küp izi (texel)", (f64)written, 0);
 
@@ -51,12 +51,12 @@ TEST(shadow_map_cube_over_ground) {
 
     /* yalnız derinlik yolu: skaler ve SIMD raster bit-bit aynı derinlik yazar (renk tamponu yok: yazılsaydı çökerdi) */
     f32* simd = ARENA_ARRAY(a, f32, 256u * 256u);
-    mem_copy(simd, sm->fb.depth, sizeof(f32) * 256u * 256u);
-    raster_set_mode(&sm->raster, RASTER_MODE_SCALAR);
+    mem_copy(simd, sm->c[0].fb.depth, sizeof(f32) * 256u * 256u);
+    raster_set_mode(&sm->c[0].raster, RASTER_MODE_SCALAR);
     arena_reset(&frame, 0);
     arena_reset(&bins, 0);
     draw_cube_shadow(sm, &frame, &bins);
-    CHECK(mem_equal(simd, sm->fb.depth, sizeof(f32) * 256u * 256u));
+    CHECK(mem_equal(simd, sm->c[0].fb.depth, sizeof(f32) * 256u * 256u));
 }
 
 /* ayna / eksen hatası yakalayıcı: küp merkezde değil (x = 2, z = 1, y ∈ [1, 2]), demo güneşi eğik (0,4, 0,8, 0,35).
@@ -84,13 +84,13 @@ TEST(shadow_map_offcenter_matches_analytic) {
     ShadowMap* sm = ARENA_NEW(a, ShadowMap);
     shadow_init(sm, a, 256);
     Vec3 sun = v3_norm(v3(0.4f, 0.8f, 0.35f));
-    shadow_fit(sm, sun, v3(0, 0, 0), 6.0f, 10.0f);
+    shadow_fit(sm, 0, sun, v3(0, 0, 0), 6.0f, 10.0f);
     Mesh* cube = mesh_cube(test_arena());
     mesh_compute_bounds(cube);
-    shadow_begin(sm, &g_pipe, &frame, &bins);
+    shadow_begin(sm, 0, &g_pipe, &frame, &bins);
     DrawItem d = { .mesh = cube, .mat = shadow_caster(), .model = mat4_translate(v3(2.0f, 1.5f, 1.0f)) };
     pipe_draw(&g_pipe, &d);
-    shadow_end(sm, &g_pipe);
+    shadow_end(&g_pipe);
     f32 kx = sun.x / sun.y, kz = sun.z / sun.y;
     f32 lo, hi;
     scan(sm, TRUE, 1.23f, &lo, &hi);
@@ -99,4 +99,35 @@ TEST(shadow_map_offcenter_matches_analytic) {
     scan(sm, FALSE, 0.33f, &lo, &hi);
     CHECK_NEAR(lo, 1.5f - 2.0f * kx, 0.1);
     CHECK_NEAR(hi, 2.5f - 1.0f * kx, 0.1);
+}
+
+/* kademeler atlasın ayrı satırlarında: ikinci kademeye çizim birinciye dokunmaz, doku ikisini art arda görür */
+TEST(shadow_cascades_are_separate_rows) {
+    Arena* a = test_arena();
+    ShadowMap* sm = ARENA_NEW(a, ShadowMap);
+    shadow_init(sm, a, 64);
+    CHECK(sm->tex.w == 64u && sm->tex.h == 128u);
+    CHECK(sm->c[1].fb.depth == sm->c[0].fb.depth + 64u * 64u);
+    CHECK((f32*)sm->tex.px == sm->c[0].fb.depth);
+    Vec3 sun = v3_norm(v3(0.2f, 1.0f, 0.1f));
+    shadow_fit(sm, 0, sun, v3(0, 0, 0), 5.0f, 10.0f);
+    shadow_fit(sm, 1, sun, v3(0, 0, 0), 5.0f, 10.0f);
+    Arena frame, bins;
+    CHECK(arena_init_sys(&frame, 16u << 20) && arena_init_sys(&bins, 16u << 20));
+    Mesh* cube = mesh_cube(a);
+    shadow_begin(sm, 0, &g_pipe, &frame, &bins);
+    shadow_end(&g_pipe);
+    arena_reset(&frame, 0);
+    arena_reset(&bins, 0);
+    shadow_begin(sm, 1, &g_pipe, &frame, &bins);
+    DrawItem d = { .mesh = cube, .mat = shadow_caster(), .model = mat4_scale(v3(3.0f, 3.0f, 3.0f)) };
+    pipe_draw(&g_pipe, &d);
+    shadow_end(&g_pipe);
+    u32 touched0 = 0, touched1 = 0;
+    for (u32 i = 0; i < 64u * 64u; i++) {
+        touched0 += sm->c[0].fb.depth[i] < 1.0f;
+        touched1 += sm->c[1].fb.depth[i] < 1.0f;
+    }
+    CHECK(touched0 == 0u);
+    CHECK(touched1 > 100u);
 }
