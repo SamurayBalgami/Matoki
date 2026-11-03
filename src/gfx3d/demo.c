@@ -57,6 +57,8 @@
 #define WAVE_N 256             /* dalga denklemi ızgarası (D49); water.mtk WAVE_SIZE ile eşleşir */
 #define WAVE_SIZE 40.0f
 #define FLAG_FIELD_N 64        /* bayrak gerinim dokusu (D49) */
+#define JELLY_FIELD_N 32       /* jöle gerinim dokusu (D51) */
+#define JELLY_FIELD_SCALE 0.125f   /* uv → doku: jölenin uv açıklığı (x + z, y) · 1,5 ≈ 8 */
 #define FLAG_NU 24u            /* bayrak parçacık ızgarası */
 #define FLAG_NV 16u
 
@@ -179,8 +181,8 @@ typedef struct Demo {
     SoftBody* jelly[3];
     Mesh* jelly_mesh[3];
     u32 jelly_count;
-    LitUniforms u_flag, u_jelly;
-    Material m_flag, m_jelly;
+    LitUniforms u_flag, u_jelly[3];
+    Material m_flag, m_jelly[3];
     f64 soft_ms;
     f32 soft_time;       /* simülasyon zamanı (rüzgâr) */
     b32 flat;           /* ölçüm: tüm materyaller shade_flat */
@@ -254,6 +256,10 @@ typedef struct Demo {
     f32 wave_t;
     f32 crate_depth[4];
     Texture* flag_field;
+    Texture* jelly_field[3];
+    f32* jelly_tension;
+    f32* jelly_fold;
+    f32* jelly_field_w;
     f32* flag_tension;
     f32* flag_fold;
     ShadowMap* shadow;
@@ -371,7 +377,7 @@ static const LitField LIT_FIELDS[] = {
     LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(metal, TB_FLOAT, 1), LIT_FIELD(rough, TB_FLOAT, 1),
     LIT_FIELD(bump, TB_FLOAT, 1), LIT_FIELD(shadow_mat2, TB_MAT, 4), LIT_FIELD(shadow_bias2, TB_FLOAT, 1),
     LIT_FIELD(screen_ix, TB_FLOAT, 1), LIT_FIELD(screen_iy, TB_FLOAT, 1), LIT_FIELD(field, TB_TEX, 1), LIT_FIELD(field_scale, TB_FLOAT, 1),
-    { "wave", (u32)__builtin_offsetof(LitUniforms, shadow), TB_TEX, 1 },   /* water.mtk: shadow yerinde dalga alanı */
+    { "wave", (u32)__builtin_offsetof(LitUniforms, field), TB_TEX, 1 },   /* water.mtk: alan yuvasında dalga denklemi */
     { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
 };
 
@@ -979,9 +985,11 @@ static void soft_scene_build(void) {
     const f32 js[3] = { 1.4f, 1.0f, 1.0f };
     const u32 jn[3] = { 4, 3, 3 };
     g.jelly_count = 3;
+    u32 jelly_max = 0;
     for (u32 k = 0; k < 3; k++) {
         g.jelly[k] = soft_jelly(a, jc[k], js[k], jn[k], 4.0f * js[k] * js[k] * js[k], 3e-4f, 0.0f);
         soft_world_add(&g.soft, g.jelly[k]);
+        if (g.jelly[k]->count > jelly_max) jelly_max = g.jelly[k]->count;
         g.jelly_mesh[k] = soft_mesh_alloc(a, g.jelly[k], FALSE);
         for (u32 i = 0; i < g.jelly[k]->count; i++) {
             Vec3 p = g.jelly[k]->x[i];
@@ -989,6 +997,9 @@ static void soft_scene_build(void) {
             g.jelly_mesh[k]->v[i] = p.y * 1.5f;
         }
     }
+    g.jelly_tension = ARENA_ARRAY(a, f32, jelly_max);
+    g.jelly_fold = ARENA_ARRAY(a, f32, jelly_max);
+    g.jelly_field_w = ARENA_ARRAY(a, f32, (usize)JELLY_FIELD_N * JELLY_FIELD_N);
     u32 particles = 0;
     for (u32 k = 0; k < g.soft.count; k++) particles += g.soft.bodies[k]->count;
     phys_interp_pts_init(&g.ip_soft, &g.soft_arena, particles);
@@ -1426,7 +1437,6 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.u_car.rough = 0.22f;
     g.u_char.rough = 0.5f;
     g.u_tire.rough = 0.7f;
-    g.u_jelly.rough = 0.25f;
     g.u_pole.metal = 1.0f;
     g.u_pole.rough = 0.35f;
     g.u_arm.rough = 0.5f;
@@ -1445,8 +1455,15 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_flag, g.tex_checker, v3(0.95f, 0.22f, 0.18f));
     g.u_flag.wrap = 1.0f;          /* half-Lambert²: kıvrımlar belli, gölge yüzü kara değil */
     g.u_flag.translucency = 0.3f;  /* ters yüz arkadan ışıkla parlar */
-    lit_defaults(&g.u_jelly, g.tex_grid, v3(0.35f, 0.95f, 0.45f));
-    g.u_jelly.wrap = 0.7f;
+    for (u32 k = 0; k < 3; k++) {
+        lit_defaults(&g.u_jelly[k], g.tex_grid, v3(0.35f, 0.95f, 0.45f));
+        g.u_jelly[k].wrap = 0.7f;
+        g.u_jelly[k].translucency = 0.2f;
+        g.u_jelly[k].rough = 0.25f;
+        g.jelly_field[k] = tex_create(&g.perm, JELLY_FIELD_N, JELLY_FIELD_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
+        g.u_jelly[k].field = g.jelly_field[k];
+        g.u_jelly[k].field_scale = JELLY_FIELD_SCALE;
+    }
     lit_defaults(&g.u_water, g.tex_grid, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
     g.flag_field = tex_create(&g.perm, FLAG_FIELD_N, FLAG_FIELD_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
     g.u_flag.field = g.flag_field;
@@ -1471,9 +1488,8 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_sky, g.tex_grid, v3(0.32f, 0.52f, 0.86f));   /* tepe rengi (water.mtk gök yansımasıyla aynı) */
     material(&g.m_sky, &g.u_sky);
     g.m_sky.cull = CULL_NONE;
-    g.u_jelly.translucency = 0.2f;
     material(&g.m_flag, &g.u_flag);
-    material(&g.m_jelly, &g.u_jelly);
+    for (u32 k = 0; k < 3; k++) material(&g.m_jelly[k], &g.u_jelly[k]);
     phys_world_init(&g.phys, &g.perm, 1024, 8192);
     phys_interp_init(&g.ip, &g.perm, 1024);   /* = gövde kapasitesi */
     phys_interp_pts_init(&g.ip_chr, &g.perm, 1);
@@ -1596,7 +1612,7 @@ static void set_frame_uniforms(Vec3 eye) {
         lit_uniforms_prepare(&g.u_water);
     }
     LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ground, &g.u_floor, &g.u_pillar,
-                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly, &g.u_water, &g.u_sky, &g.u_pole,
+                           &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly[0], &g.u_jelly[1], &g.u_jelly[2], &g.u_water, &g.u_sky, &g.u_pole,
                            &g.u_arm, &g.u_tent };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = eye;
@@ -1615,11 +1631,11 @@ static void set_frame_uniforms(Vec3 eye) {
             all[i]->shadow_bias2 = 0.0f;
         }
     }
-    g.u_water.shadow = g.wave_tex;   /* water.mtk: shadow yerinde dalga alanı */
+    g.u_water.field = g.wave_tex;
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
     Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ground, &g.m_floor, &g.m_pillar,
-                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly, &g.m_water, &g.m_ocean, &g.m_pole,
+                         &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly[0], &g.m_jelly[1], &g.m_jelly[2], &g.m_water, &g.m_ocean, &g.m_pole,
                          &g.m_arm, &g.m_tent };
     /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
     VertexFn vf = g.vert_mode ? g_std_vert : NULL;
@@ -1708,7 +1724,50 @@ static void render_scene6(void) {
     draw(g.ground, &g.m_ground, mat4_identity());
     for (u32 i = 0; i < g.phys.count; i++) draw_body(&g.phys.bodies[i], i);
     draw(g.flag_mesh, &g.m_flag, mat4_identity());
-    for (u32 k = 0; k < g.jelly_count; k++) draw(g.jelly_mesh[k], &g.m_jelly, mat4_identity());
+    for (u32 k = 0; k < g.jelly_count; k++) draw(g.jelly_mesh[k], &g.m_jelly[k], mat4_identity());
+}
+
+/* jöle gerinimi → doku (D51): parçacıklar mesh uv'sine yazılır, boş texel'ler komşudan dolar (parçacık sayısı < texel sayısı) */
+static void jelly_field_bake(u32 k) {
+    const SoftBody* b = g.jelly[k];
+    const Mesh* m = g.jelly_mesh[k];
+    u32* px = g.jelly_field[k]->px;
+    f32* wgt = g.jelly_field_w;
+    usize nt = (usize)JELLY_FIELD_N * JELLY_FIELD_N;
+    soft_strain_field(b, g.jelly_tension, g.jelly_fold);
+    mem_zero(px, nt * 4u);
+    mem_zero(wgt, nt * 4u);
+    for (u32 i = 0; i < b->count; i++) {
+        /* shader: fract(uv · field_scale) */
+        f32 fu = m->u[i] * JELLY_FIELD_SCALE, fv = m->v[i] * JELLY_FIELD_SCALE;
+        i32 x = (i32)m_clampf((fu - m_floorf(fu)) * (f32)JELLY_FIELD_N, 0.0f, (f32)(JELLY_FIELD_N - 1));
+        i32 y = (i32)m_clampf((fv - m_floorf(fv)) * (f32)JELLY_FIELD_N, 0.0f, (f32)(JELLY_FIELD_N - 1));
+        usize c = (usize)y * JELLY_FIELD_N + (usize)x;
+        u32 r = (u32)(m_minf(g.jelly_tension[i] * 15.0f, 1.0f) * 255.0f), gr = (u32)(m_minf(g.jelly_fold[i] * 15.0f, 1.0f) * 255.0f);
+        u32 pr = px[c] & 0xFFu, pg = (px[c] >> 8) & 0xFFu;
+        px[c] = MAX(r, pr) | (MAX(gr, pg) << 8) | 0xFF000000u;
+        wgt[c] = 1.0f;
+    }
+    /* üç geçiş: dolu texel boş komşusuna yayılır */
+    for (u32 it = 0; it < 3; it++) {
+        for (i32 y = 0; y < JELLY_FIELD_N; y++) {
+            for (i32 x = 0; x < JELLY_FIELD_N; x++) {
+                usize c = (usize)y * JELLY_FIELD_N + (usize)x;
+                if (wgt[c] != 0.0f) continue;
+                u32 p = 0;
+                if (x > 0 && wgt[c - 1] == 1.0f) p = px[c - 1];
+                else if (x + 1 < JELLY_FIELD_N && wgt[c + 1] == 1.0f) p = px[c + 1];
+                else if (y > 0 && wgt[c - JELLY_FIELD_N] == 1.0f) p = px[c - JELLY_FIELD_N];
+                else if (y + 1 < JELLY_FIELD_N && wgt[c + JELLY_FIELD_N] == 1.0f) p = px[c + JELLY_FIELD_N];
+                if (p) {
+                    px[c] = p;
+                    wgt[c] = 2.0f;   /* bu geçişte doldu: aynı geçişte yayılmaz */
+                }
+            }
+        }
+        for (usize c = 0; c < nt; c++) if (wgt[c] == 2.0f) wgt[c] = 1.0f;
+    }
+    g.jelly_field[k]->gen++;
 }
 
 /* yumuşak cisim mesh'leri (bayrak + jöleler): karede bir kez, gölge ve ana geçişten önce */
@@ -1733,6 +1792,7 @@ static void soft_meshes_update(void) {
         }
     }
     g.flag_field->gen++;
+    for (u32 k = 0; k < g.jelly_count; k++) jelly_field_bake(k);
     for (u32 k = 0; k < g.jelly_count; k++) soft_mesh_update(g.jelly_mesh[k], g.jelly[k], FALSE, g.jelly[k]->radius);
 }
 
@@ -2042,6 +2102,17 @@ static void refl_pass(GpuCmd* gc) {
 EXPORT(engine_set_reflect) void engine_set_reflect(i32 on) { g.refl_on = on != 0; }
 /* fizik alanları (D49) tanı: dalga enerjisi, bayrak dokusunun en büyük kanalı (0..255) */
 EXPORT(engine_wave_energy) f32 engine_wave_energy(void) { return wave_energy(&g.wave); }
+EXPORT(engine_jelly_field_max) u32 engine_jelly_field_max(void) {
+    u32 m = 0;
+    for (u32 k = 0; k < g.jelly_count; k++) {
+        for (u32 i = 0; i < JELLY_FIELD_N * JELLY_FIELD_N; i++) {
+            u32 p = g.jelly_field[k]->px[i], r = p & 0xFFu, c = (p >> 8) & 0xFFu;
+            if (r > m) m = r;
+            if (c > m) m = c;
+        }
+    }
+    return m;
+}
 EXPORT(engine_flag_field_max) u32 engine_flag_field_max(void) {
     u32 m = 0;
     for (u32 i = 0; i < FLAG_FIELD_N * FLAG_FIELD_N; i++) {
@@ -2413,6 +2484,7 @@ static const BenchView BENCH_VIEWS[] = {
     { 3, 0.0f, 5.0f, 16.0f, 0.0f, -0.2f },     /* 8: fizik yığınları (--frames ile devrilir) */
     { 4, 0.0f, 4.0f, 9.0f, 0.0f, -0.1f },      /* 9: araba sahnesi (takip kamerası) */
     { 5, 0.0f, 9.0f, 24.0f, 0.0f, -0.28f },    /* 10: eklemler + şekiller */
+    { 6, 0.0f, 3.2f, 8.0f, 0.0f, -0.12f },     /* 11: jöleler (fizik alanı, --frames ile ezilir) */
 };
 
 EXPORT(engine_bench_view_count) i32 engine_bench_view_count(void) { return (i32)ARRAY_COUNT(BENCH_VIEWS); }

@@ -9,7 +9,7 @@
 #include "matoki/wgsl.h"
 
 #define GCMD_MAGIC   0x5550474Du   /* "MGPU" */
-#define GCMD_VERSION 6u
+#define GCMD_VERSION 7u   /* akış ya da WGSL bağlama düzeni değişince artar: eski gpu.mjs + yeni motor kurulmaz */
 #define GCMD_SLOT    256u          /* uniform yuvası (bayt) */
 
 enum {

@@ -18,7 +18,7 @@ uniform use_mip: i32;
 uniform tint: vec3;
 uniform time: f32;
 uniform translucency: f32;
-uniform wave: texture2d @bilinear @clamp;
+uniform shadow: texture2d @clamp;
 uniform shadow_mat: mat4;
 uniform shadow_bias: f32;
 uniform metal: f32;
@@ -28,6 +28,7 @@ uniform shadow_mat2: mat4;
 uniform shadow_bias2: f32;
 uniform screen_ix: f32;
 uniform screen_iy: f32;
+uniform wave: texture2d @bilinear @clamp;
 
 varying wpos: vec3;
 varying nrm: vec3;
@@ -36,6 +37,32 @@ varying uv: vec2;
 // (x, z) eğimi: yön · dalga sayısı · genlik · cos(faz)
 fn ripple(d: vec2, k: f32, a: f32, w: f32) -> vec2 {
     return d * (a * cos((wpos.x * d.x + wpos.z * d.y) * k + time * w));
+}
+
+// sütun ve sandık gölgesi (D51): güneş parıltısı ve gövde ışığı kesilir, gök yansıması kalır. Dalgalı yüzeye tek bilinear karşılaştırma yeter
+fn sun_vis(p: vec3) -> f32 {
+    let s0 = shadow_mat * vec4(p, 1.0);
+    let s1 = shadow_mat2 * vec4(p, 1.0);
+    let size = tex_size(shadow).x;
+    let lo = 2.0 / size;
+    let hi = 1.0 - lo;
+    let near = s0.x > lo && s0.x < hi && s0.y > lo && s0.y < hi && s0.z <= 1.0;
+    let sx = select(near, s0.x, s1.x);
+    let sy = select(near, s0.y, s1.y);
+    let z = select(near, s0.z - shadow_bias * 3.0, s1.z - shadow_bias2 * 3.0);
+    let x = sx * size - 0.5;
+    let y = sy * size - 0.5;
+    let fx = floor(x);
+    let fy = floor(y);
+    let ix = i32(fx);
+    let iy = i32(fy) + select(near, 0, i32(size));
+    let a = select(z > bitcast_f32(texel_fetch(shadow, ix, iy)), 0.0, 1.0);
+    let b = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy)), 0.0, 1.0);
+    let c = select(z > bitcast_f32(texel_fetch(shadow, ix, iy + 1)), 0.0, 1.0);
+    let e = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy + 1)), 0.0, 1.0);
+    let lit = mix(mix(a, b, x - fx), mix(c, e, x - fx), y - fy);
+    let inside = near || (sx > lo && sx < hi && sy > lo && sy < hi && s1.z <= 1.0);
+    return select(inside, lit, 1.0);
 }
 
 fn frag() -> vec4 {
@@ -66,8 +93,9 @@ fn frag() -> vec4 {
     let refl = mirror.rgb + sky * (1.0 - mirror.a);
     // derin su: ortam + yumuşak diffuse
     let nl = dot(n, to_light);
-    let body = tint * (ambient * (0.6 + 0.4 * n.y) + light_color * max(nl * 0.5 + 0.5, 0.0) * 0.45);
-    let glint = pow(max(dot(r, to_light), 0.0), 96.0) * 2.5;
+    let vis = sun_vis(wpos);
+    let body = tint * (ambient * (0.6 + 0.4 * n.y) + light_color * max(nl * 0.5 + 0.5, 0.0) * 0.45 * (0.35 + 0.65 * vis));
+    let glint = pow(max(dot(r, to_light), 0.0), 96.0) * 2.5 * vis;
     let c = mix(body, refl, fresnel) + light_color * glint;
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
     let x = max(d - fog_start, 0.0) * fog_scale;

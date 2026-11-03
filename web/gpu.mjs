@@ -5,7 +5,7 @@
 // sayfa yazılım render'da kalır.
 
 const GC_END = 0, GC_FRAME = 1, GC_MESH = 2, GC_DRAW = 3, GC_TEX = 4, GC_SHADOW = 5, GC_SHADOW_END = 6, GC_OVERLAY = 7, GC_REFLECT = 8, GC_REFLECT_END = 9, GPROG_OVERLAY = 1, GPROG_NONE = 0xFFFFFFFF, MAGIC = 0x5550474d, SLOT = 256, TEX_HEADER = 356;
-const STREAM_VERSION = 6;   // gpu/gcmd.h GCMD_VERSION
+const STREAM_VERSION = 7;   // gpu/gcmd.h GCMD_VERSION; doku bağlama düzeni değişince de artar (D50)
 const CULL = ['none', 'back', 'front'];   // raster.h CullMode sırası; ön yüz NDC'de CCW (D3)
 
 export async function createGpu(ex, memory, colorFormat) {

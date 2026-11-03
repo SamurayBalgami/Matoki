@@ -193,9 +193,10 @@ fn sky_linear(r: vec3, a: f32) -> vec3 {
 }
 
 // GGX güneş yansıması + çevre yansıması. v göze doğru, nl = n·l, vis gölge çarpanı (çevre gölgede de kalır, yalnız güneş kesilir)
-fn specular(n: vec3, v: vec3, nl: f32, vis: f32, f0: vec3, sun: vec3) -> vec3 {
+fn specular(n: vec3, v: vec3, nl: f32, vis: f32, f0: vec3, sun: vec3, nvar: f32) -> vec3 {
+    // geometrik yumuşatma (Kaplanyan 2016): piksel içinde normal ne kadar değişiyorsa lob o kadar geniş; parlak nokta kırpışmaz
     let a = max(rough * rough, 0.002);
-    let a2 = a * a;
+    let a2 = a * a + min(nvar, 0.18);
     let h = norm_safe(v + to_light);
     let ndh = clamp(dot(n, h), 0.0, 1.0);
     let ndv = clamp(dot(n, v), 0.0001, 1.0);
@@ -231,7 +232,7 @@ fn frag() -> vec4 {
     let nl = dot(n, to_light);
     // fizik alanı (D49): fizik modülü yazar, malzeme tepki verir. R gerilme: lif açılır, renk açılır ve ışık daha çok geçer. G katlanma: kat içine
     // ortam ışığı girmez (boşluk gölgesi)
-    let phys = select(field_scale > 0.0, sample_level(field, uv * field_scale, 0), vec4(0.0));
+    let phys = select(field_scale > 0.0, sample_level(field, fract(uv * field_scale), 0), vec4(0.0));
     // görüntü → doğrusal (gama 2): doku, renk ve ışık sayıları sRGB görünümünde verilir
     let base = mix(texel.rgb * tint, vec3(1.0), phys.x * 0.18);
     let albedo = base * base;
@@ -250,7 +251,10 @@ fn frag() -> vec4 {
     let v = to_eye * (1.0 / max(d, 0.0001));
     let lit = albedo * (1.0 - metal) * (hemi + sun * (diffuse * vis + back));
     let f0 = mix(vec3(0.04), albedo, metal);
-    let c = lit + select(rough < 0.97, specular(n, v, nl, vis, f0, sun), vec3(0.0));
+    let dnx = dFdx(n);
+    let dny = dFdy(n);
+    let nvar = dot(dnx, dnx) + dot(dny, dny);
+    let c = lit + select(rough < 0.97, specular(n, v, nl, vis, f0, sun, nvar), vec3(0.0));
     // Beer-Lambert: e = 2^(-kx²) kırmızıda, yeşil ×1,25, mavi ×1,5 üstel; ufukta gök rengine erir
     let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
     let x = max(d - fog_start, 0.0) * fog_scale;

@@ -120,6 +120,7 @@ for (let i = 0; i < 90; i++) ex.engine_frame(1000 / 60);
 check(ex.engine_wave_energy() > 0, `sandıklar suda dalga üretir (enerji ${ex.engine_wave_energy().toExponential(2)})`);
 ex.engine_bench_view(5);
 for (let i = 0; i < 90; i++) ex.engine_frame(1000 / 60);
+check(ex.engine_jelly_field_max() > 0, `jöle gerinim alanı dolu (en büyük ${ex.engine_jelly_field_max()})`);
 check(ex.engine_flag_field_max() > 0, `bayrak gerinim alanı dolu (en büyük ${ex.engine_flag_field_max()})`);
 
 console.log(fails ? `${fails} denetim başarısız` : 'tüm demo denetimleri geçti');

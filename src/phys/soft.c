@@ -50,10 +50,10 @@ void soft_strain_field(const SoftBody* b, f32* tension, f32* fold) {
         const SoftDist* d = &b->dist[i];
         if (d->rest <= 0.0f) continue;
         f32 e = (v3_len(v3_sub(b->x[d->a], b->x[d->b])) - d->rest) / d->rest;
-        if (d->kind == SOFT_STRETCH && e > 0.0f) {
+        if ((d->kind == SOFT_STRETCH || d->kind == SOFT_EDGE) && e > 0.0f) {
             tension[d->a] = m_maxf(tension[d->a], e);
             tension[d->b] = m_maxf(tension[d->b], e);
-        } else if (d->kind == SOFT_BEND && e < 0.0f) {
+        } else if ((d->kind == SOFT_BEND || d->kind == SOFT_EDGE) && e < 0.0f) {
             /* katı komşu iki uç taşır (orta parçacığın indeksi yapıya bağlı) */
             fold[d->a] = m_maxf(fold[d->a], -e);
             fold[d->b] = m_maxf(fold[d->b], -e);

@@ -675,3 +675,12 @@ Varsayılan ayarda 10 görünümün 9'u 16,6 ms altında (görünüm 2, ekranı 
 
 Ek: `lit_hq`'da "brilinear": seviye geçişi kesrin orta bandında, uçlarda tek seviye. Yazılım toplam ×0,972 (gölge + MSAA) / ×0,984 (düz), görüntü farkı en kötü 636 / 2 073 600 piksel > 8. Canlı derleme (`engine_matoki_recompile`) kalıcı arenayı büyütüyordu; editörle aynı iki arenaya alındı, `check_demo` 400 derlemeyi art arda sınar.
 Sınır: tek adaptör, sekme zaman damgası ölçümü; gerçek ekranda FPS ölçülmedi.
+
+## D51. Suda gölge, parlaklık yumuşatma, jöle alanı
+- **Su gölgesi:** `water.mtk` gölge haritasını okur: gök yansıması kalır, güneş parıltısı ve gövde ışığı kesilir. Dalga alanı `field` yuvasına taşındı (parça başına 3 doku).
+- **Geometrik parlaklık yumuşatma** (Kaplanyan 2016): normalin piksel içi değişimi kadar GGX lobu genişler; eğri yüzeyde ve kabartıda parlak nokta kırpışmaz. Türevler kolun dışında.
+- **Jöle** artık bayrakla aynı sözleşmede: `soft_strain_field` kenar kısıtlarından uzama / ezilme verir, gövde başına doku (uv'ye yazılır, boş texel komşudan). Üç jöle ayrı uniform taşır. Yeni görünüm 11: `gpu_check` jölelerle birlikte 66 karşılaştırma.
+- Akış sürümü 7: D50 doku bağlama düzenini değiştirdi; eski `gpu.mjs` + yeni motor bozuk çizmek yerine kurulmaz.
+
+Maliyet (A/B, 1920×1080, yazılım, 10 görünüm): gölge + MSAA 554 → 554 ms (×1,001), düz 310 → 309 ms (×0,999). GPU (zaman damgası, tek motor): gölge + MSAA 10 görünüm 138 ms (10,4 – 18,4 ms; 2 ve 6 sınırın üstünde), düz 91 ms (6,8 – 15,7 ms; hepsi 16,6 ms altında). D50'ye göre artış (124 → 138, 76 → 91) esas olarak bu turun GPU'da dallanamayan türevleri ve suyun ek okumaları; ayrı ölçülmedi.
+Kabul: `gpu_check` 66/66 (en kötü %0,056), 263/263 test. Sınır: jöle alanı dinlenmede neredeyse boş, yalnız ezilmede görünür.
