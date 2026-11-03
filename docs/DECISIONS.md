@@ -658,7 +658,7 @@ Temel fizik mimarisi değişmedi; yeni denklemler üstüne eklenir ve shader'a t
 
 Maliyet (1920×1080, gölge + MSAA, yazılım): fizik adımı çalışmayan karede 10 görünüm 742 → 742 ms (×1,001), göl adımlı kare 49,3 → 51,2 ms (≈ 2 ms: 256² adım + doku).
 
-**D46–D49 sonrası GPU** (zaman damgası, Intel Gen12LP, 1080p; D45'te toplam 217 / 172 ms): gölge + MSAA 10 görünüm 240 ms (19,3 – 33,8), düz 170 ms (12,9 – 26,4); motor CPU'su 0,2 – 2,6 ms. Bu tümleşik GPU'da 1080p varsayılan ayar 60 FPS tutmaz (D45 öncesi de en iyi 14 ms, en kötü 27 ms'ydi); gölge + MSAA kapalıyken görünümlerin yarısından çoğu sınırın altında kalmaz, 13 – 26 ms.
+**D46–D49 sonrası GPU** (zaman damgası, Intel Gen12LP, 1080p; D45'te toplam 217 / 172 ms): gölge + MSAA 10 görünüm 240 ms (19,3 – 33,8), düz 170 ms (12,9 – 26,4); motor CPU'su 0,2 – 2,6 ms. Bu tümleşik GPU'da 1080p varsayılan ayar 60 FPS tutmaz (D45 öncesi de en iyi 14 ms, en kötü 27 ms'ydi); gölge + MSAA kapalıyken 10 görünümün 7'si 16,6 ms'nin altında.
 
 Kabul: `gpu_check` artık bayrak ve gölü 20 kare ilerletip karşılaştırır, 60/60. Bozma denemeleri: `gen` yüklemesi kapatılınca görünüm 6 %0,31–0,43 ile düşer (ilk denemede yakalanmıyordu: etki çok zayıftı, kaynak ve eğim düzeltildi), kademe ofseti bozulunca hq+gölge tüm görünümlerde %11–34 ile düşer. `check_demo`: sandıklar dalga üretir, bayrak alanı dolar. 263/263 test.
 Sınır: dalga yalnız göl düzleminde, jöle gövdeleri henüz alan yazmıyor, bayrak alanının görsel etkisi ince. Gerçek ekranda FPS ölçülmedi, tek adaptör.
