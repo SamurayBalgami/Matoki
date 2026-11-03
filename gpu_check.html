@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MATOKI GPU denetimi</title>
+<script src="coi.js"></script>
+<style>
+  :root { --bg: #101216; --text: #d7dbe2; --muted: #8a92a0; --ok: #7fd18b; --bad: #ff8a80; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  #out { white-space: pre; overflow-x: auto; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>MATOKI — yazılım ↔ WebGPU piksel karşılaştırması (faz 8a-8c)</h1>
+<div id="out">yükleniyor…</div>
+<script type="module">
+// Her ölçüm görünümü × shader × gölge × MSAA. Düz kip (shade_flat ↔ gpu_flat.wgsl, renk = 2×2 dörtlü konumu):
+// iki arka uç yalnız kaplamada ayrışabilir, her piksel birebir beklenir. Matoki shader'ları (JIT ↔ WGSL, aynı IR): kanal
+// farkı kenar yuvarlaması + interpolasyon gürültüsüdür, eşik farklı piksel oranı (fark > TOL). Derinlik iki tamponda yerel
+// eğime göre ölçeklenen toleransla (CPU düzlem denklemi ↔ GPU interpolasyonu). Sonuç window.__gpuCheck'te.
+import { loadEngine } from './mt.mjs';
+import { createGpu } from './gpu.mjs';
+const out = document.getElementById('out');
+const qs = new URLSearchParams(location.search);
+const [W, H] = (qs.get('res') || '640x360').split('x').map(Number);
+const FLAT_LIMIT = 0.005;     // düz kip: farklı piksel oranı eşiği (kenar yuvarlaması)
+const SHADER_LIMIT = 0.001;   // Matoki shader'ları: fark > TOL olan piksel oranı eşiği (lit'te 1 piksellik kenar kaymaları: en çok %0,055)
+const SHADOW_LIMIT = 0.001;   // gölge kenarı: harita iki yolda ayrı rasterize edilir (ölçülen en kötü %0,029)
+const MSAA_LIMIT = 0.001;     // kenar pikselleri (ölçülen en kötü %0,056)
+const TOL = 8;                // kanal farkı (0..255)
+const MODES = [
+  { name: 'düz', flat: 1, shader: 3, shadow: 0, msaa: 0, limit: FLAT_LIMIT, tol: 0 },
+  { name: 'lit', flat: 0, shader: 3, shadow: 0, msaa: 0, limit: SHADER_LIMIT, tol: TOL },   // demo.c SHADER_MATOKI
+  { name: 'lit_hq', flat: 0, shader: 4, shadow: 0, msaa: 0, limit: SHADER_LIMIT, tol: TOL },   // demo.c SHADER_HQ
+  { name: 'hq+gölge', flat: 0, shader: 4, shadow: 1, msaa: 0, limit: SHADOW_LIMIT, tol: TOL },
+  { name: 'lit+msaa', flat: 0, shader: 3, shadow: 0, msaa: 1, limit: MSAA_LIMIT, tol: TOL },
+  { name: 'hq+g+msaa', flat: 0, shader: 4, shadow: 1, msaa: 1, limit: MSAA_LIMIT, tol: TOL },
+];
+try {
+  const { state, ex } = await loadEngine(await WebAssembly.compileStreaming(fetch('engine.wasm')), () => {});
+  ex.engine_init(W, H);
+  const mem = state.memory;
+  const gpu = await createGpu(ex, mem, 'rgba8unorm');
+  if (!gpu) throw new Error('WebGPU yok');
+  const rows = [];
+  const only = qs.get('mode');
+  let lines = `adaptör: ${gpu.adapter.info?.vendor || '?'} ${gpu.adapter.info?.architecture || ''}   ${W}×${H}\n\n` +
+    '   shader | görünüm | çizim | fark>tol | oran     | ort. fark | en büyük | derinlik>tol | en büyük z farkı | sonuç\n';
+  for (const mode of MODES) {
+    if (only && only !== mode.name) continue;
+    ex.engine_set_flat(mode.flat);
+    ex.engine_set_shader_mode(mode.shader);
+    ex.engine_set_shadow(mode.shadow);
+    ex.engine_set_msaa(mode.msaa);
+    for (let v = 1; v <= ex.engine_bench_view_count(); v++) {
+      ex.engine_gpu_set(0);
+      ex.engine_bench_view(v);
+      // fizik alanları (D49, her kare değişen dokular): bayrak ve göl biraz ilerler, sonra aynı kare iki yolda karşılaştırılır
+      if (v === 5 || v === 6 || v === 11) for (let k = 0; k < 20; k++) ex.engine_frame(1000 / 60);
+      ex.engine_frame(0);
+      const sw = new Uint8Array(mem.buffer, ex.engine_framebuffer(), W * H * 4).slice();
+      const swz = new Float32Array(mem.buffer, ex.engine_depthbuffer(), W * H).slice();
+      ex.engine_gpu_set(1);
+      ex.engine_frame(0);
+      const { pixels, depth, draws } = await gpu.readback(W, H);
+      let diff = 0, maxd = 0, sum = 0;
+      for (let i = 0; i < W * H; i++) {
+        let d = 0;
+        for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(sw[i * 4 + c] - pixels[i * 4 + c]));
+        if (d > mode.tol) diff++;
+        if (d > maxd) maxd = d;
+        sum += d;
+      }
+      // tolerans: taban 2e-5 + yerel eğim / 128 (GPU köşeleri 1/256 piksele yuvarlar, CPU düzlem denklemi yuvarlamaz).
+      // Taban ölçümle: 4 km'lik tek dörtgen zeminde (sahne 2 / 7) f32 derinlik iki yolda da f64 analitikten sapıyor —
+      // görünüm 6, kameraya yakın: CPU −1,4e-5 … −1,9e-5, GPU −4e-6 … −7e-6 (CPU büyük üçgeni kendisi kırptığı için).
+      // Amaç sıra doğrulaması (renkler ayrıca); daha sıkı denetim için zemin bölünmeli (ayrı iş).
+      let zbad = 0, zmax = 0;
+      for (let y = 0; depth && y < H - 1; y++) {
+        for (let x = 0; x < W - 1; x++) {
+          const i = y * W + x;
+          const dz = Math.abs(swz[i] - depth[i]);
+          const tol = 2e-5 + (Math.abs(swz[i + 1] - swz[i]) + Math.abs(swz[i + W] - swz[i])) / 128;
+          if (dz > tol) zbad++;
+          if (dz > zmax) zmax = dz;
+        }
+      }
+      const ratio = diff / (W * H), mean = sum / (W * H), ok = ratio < mode.limit && zbad / (W * H) < mode.limit;
+      rows.push({ mode: mode.name, view: v, draws, diff, ratio, mean, maxd, zbad, zmax, ok });
+      lines += `${mode.name.padStart(9)} | ${String(v).padStart(7)} | ${String(draws).padStart(5)} | ${String(diff).padStart(8)} | ${(ratio * 100).toFixed(3).padStart(7)}% | ${mean.toFixed(3).padStart(9)} | ${String(maxd).padStart(8)} | ${String(zbad).padStart(12)} | ${zmax.toExponential(2).padStart(16)} | ${ok ? 'GEÇTİ' : 'KALDI'}\n`;
+      out.textContent = lines;
+    }
+  }
+  ex.engine_gpu_set(0);
+  const pass = rows.every((r) => r.ok);
+  lines += `\n${pass ? 'tüm görünümler eşik altında' : 'eşik aşıldı'} (düz: %${FLAT_LIMIT * 100}; shader: fark > ${TOL} olan piksel %${SHADER_LIMIT * 100})`;
+  out.innerHTML = lines.replace(/GEÇTİ/g, '<span class="ok">GEÇTİ</span>').replace(/KALDI/g, '<span class="bad">KALDI</span>');
+  window.__gpuCheck = { pass, rows, W, H };
+} catch (e) {
+  out.textContent = 'hata: ' + (e.stack || e);
+  window.__gpuCheck = { pass: false, error: String(e) };
+}
+</script>
+</body>
+</html>
