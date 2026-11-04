@@ -5,7 +5,7 @@
 // sayfa yazılım render'da kalır.
 
 const GC_END = 0, GC_FRAME = 1, GC_MESH = 2, GC_DRAW = 3, GC_TEX = 4, GC_SHADOW = 5, GC_SHADOW_END = 6, GC_OVERLAY = 7, GC_REFLECT = 8, GC_REFLECT_END = 9, GPROG_OVERLAY = 1, GPROG_NONE = 0xFFFFFFFF, MAGIC = 0x5550474d, SLOT = 256, TEX_HEADER = 356;
-const STREAM_VERSION = 7;   // gpu/gcmd.h GCMD_VERSION; doku bağlama düzeni değişince de artar (D50)
+const STREAM_VERSION = 8;   // gpu/gcmd.h GCMD_VERSION; doku bağlama düzeni değişince de artar (D50)
 const CULL = ['none', 'back', 'front'];   // raster.h CullMode sırası; ön yüz NDC'de CCW (D3)
 
 export async function createGpu(ex, memory, colorFormat) {
@@ -21,9 +21,9 @@ export async function createGpu(ex, memory, colorFormat) {
     buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: SLOT } });
   const bglU = device.createBindGroupLayout({ entries: [uniformEntry(0, GPUShaderStage.VERTEX), uniformEntry(1, GPUShaderStage.FRAGMENT)] });
   const bglT = device.createBindGroupLayout({ entries: [
-    ...[0, 1, 2].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } })),
-    ...[3, 4, 5].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } })),
-    ...[6, 7].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } })),
+    ...[0, 1, 2, 3].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } })),
+    ...[4, 5, 6, 7].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } })),
+    ...[8, 9].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } })),
   ] });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bglU, bglT] });
   const vbufs = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ arrayStride: 4, attributes: [{ shaderLocation: i, offset: 0, format: 'float32' }] }));
@@ -88,6 +88,7 @@ export async function createGpu(ex, memory, colorFormat) {
       device.queue.writeTexture({ texture: tex, mipLevel: k }, memory.buffer, { offset: px + h[TW_LVOFS + k] * 4, bytesPerRow: lw * 4 }, [lw, lh]);
     }
   }
+  const dynOfs = new Uint32Array(2);
   let ubuf = null, bindU = null, depth = null, frameNo = 0, keepDepth = false, msaaColor = null, lastSamples = 1;
   let shadowDepth = null;   // gölge derinliği; içerik her gölge geçişinde doku tamponuna kopyalanır
   let reflColor = null, reflDepth = null;   // su yansıması; renk her karede donanım dokusuna kopyalanır (D47, D50)
@@ -159,15 +160,15 @@ export async function createGpu(ex, memory, colorFormat) {
     textures.set(id, { px, words, buf, gen, hw });
   }
 
-  function texBind(a, b, c) {
-    const key = `${a}|${b}|${c}`;
+  function texBind(a, b, c, e) {
+    const key = `${a}|${b}|${c}|${e}`;
     let g = texBinds.get(key);
     if (!g) {
       const res = (id) => ({ buffer: id ? textures.get(id).buf : noTex });
       const hwRes = (id) => (id && textures.get(id).hw ? textures.get(id).hw.createView() : noHw);
-      g = device.createBindGroup({ layout: bglT, entries: [{ binding: 0, resource: res(a) }, { binding: 1, resource: res(b) }, { binding: 2, resource: res(c) },
-        { binding: 3, resource: hwRes(a) }, { binding: 4, resource: hwRes(b) }, { binding: 5, resource: hwRes(c) },
-        { binding: 6, resource: samplerWrap }, { binding: 7, resource: samplerClamp }] });
+      g = device.createBindGroup({ layout: bglT, entries: [{ binding: 0, resource: res(a) }, { binding: 1, resource: res(b) }, { binding: 2, resource: res(c) }, { binding: 3, resource: res(e) },
+        { binding: 4, resource: hwRes(a) }, { binding: 5, resource: hwRes(b) }, { binding: 6, resource: hwRes(c) }, { binding: 7, resource: hwRes(e) },
+        { binding: 8, resource: samplerWrap }, { binding: 9, resource: samplerClamp }] });
       texBinds.set(key, g);
     }
     return g;
@@ -190,6 +191,7 @@ export async function createGpu(ex, memory, colorFormat) {
     }
     if (ubytes) device.queue.writeBuffer(ubuf, 0, memory.buffer, hdr[4], ubytes);
     const enc = device.createCommandEncoder();
+    let sPass = null, sMesh = null, sVert = -1, sFrag = -1, sCull = -1, sTest = -1, sWrite = -1, sT0 = -1, sT1 = -1, sT2 = -1, sT3 = -1;
     let pass = null, draws = 0, samples = 1, shadowTex = 0, shadowLayer = 0, tsShadow = false, inOverlay = false, reflTex = 0, tsRefl = false, passFmt = fmt;
     const stamp = (begin, end) => (hasTs ? { timestampWrites: { querySet, beginningOfPassWriteIndex: begin, endOfPassWriteIndex: end } } : {});
     for (let i = 6; i < w.length;) {
@@ -276,14 +278,27 @@ export async function createGpu(ex, memory, colorFormat) {
         i += 5;
       } else if (op === GC_DRAW) {
         const m = meshes.get(w[i + 1]);
-        pass.setPipeline(pipeline(w[i + 4], w[i + 5], w[i + 9], w[i + 10], w[i + 11], passFmt, samples));
-        pass.setBindGroup(0, bindU, [w[i + 2] * SLOT, w[i + 3] * SLOT]);
-        pass.setBindGroup(1, texBind(w[i + 6], w[i + 7], w[i + 8]));
-        m.bufs.forEach((b, k) => pass.setVertexBuffer(k, b));
-        pass.setIndexBuffer(m.ibuf, 'uint32');
+        // aynı durum yeniden kurulmaz (D53): 1000 küpte gönderim ana iş parçacığının en büyük kalemi. Durum geçiş başına sıfırlanır
+        if (pass !== sPass) { sPass = pass; sVert = sFrag = sCull = sTest = sWrite = sT0 = sT1 = sT2 = sT3 = -1; sMesh = null; }
+        if (w[i + 4] !== sVert || w[i + 5] !== sFrag || w[i + 10] !== sCull || w[i + 11] !== sTest || w[i + 12] !== sWrite) {
+          sVert = w[i + 4]; sFrag = w[i + 5]; sCull = w[i + 10]; sTest = w[i + 11]; sWrite = w[i + 12];
+          pass.setPipeline(pipeline(sVert, sFrag, sCull, sTest, sWrite, passFmt, samples));
+        }
+        dynOfs[0] = w[i + 2] * SLOT;
+        dynOfs[1] = w[i + 3] * SLOT;
+        pass.setBindGroup(0, bindU, dynOfs, 0, 2);
+        if (w[i + 6] !== sT0 || w[i + 7] !== sT1 || w[i + 8] !== sT2 || w[i + 9] !== sT3) {
+          sT0 = w[i + 6]; sT1 = w[i + 7]; sT2 = w[i + 8]; sT3 = w[i + 9];
+          pass.setBindGroup(1, texBind(sT0, sT1, sT2, sT3));
+        }
+        if (m !== sMesh) {
+          sMesh = m;
+          m.bufs.forEach((b, k) => pass.setVertexBuffer(k, b));
+          pass.setIndexBuffer(m.ibuf, 'uint32');
+        }
         pass.drawIndexed(m.ic);
         draws++;
-        i += 12;
+        i += 13;
       } else if (op === GC_OVERLAY) {
         const [x, y, ow, oh, px] = [w[i + 1], w[i + 2], w[i + 3], w[i + 4], w[i + 5]];
         if (!inOverlay) {

@@ -13,7 +13,7 @@
 #define GCMD_OVERLAYS_MAX 2u
 #define GCMD_FIXED_WORDS (GCMD_FRAME_WORDS + GCMD_SHADOWS_MAX * (GCMD_SHADOW_WORDS + 1u) + GCMD_REFLECT_WORDS + 1u + GCMD_OVERLAYS_MAX * GCMD_OVERLAY_WORDS)
 #define GCMD_MESH_WORDS 14u
-#define GCMD_DRAW_WORDS 12u
+#define GCMD_DRAW_WORDS 13u
 #define GCMD_TEX_WORDS 5u
 #define GCMD_DRAW_MAX (GCMD_MESH_WORDS + GCMD_DRAW_WORDS + WGSL_MAX_TEX * GCMD_TEX_WORDS)   /* çizim başına en çok */
 
@@ -144,7 +144,7 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
         mem_copy(c->words + c->count, r, sizeof(r));
         c->count += GCMD_MESH_WORDS;
     }
-    u32 tex[WGSL_MAX_TEX] = { 0, 0, 0 };
+    u32 tex[WGSL_MAX_TEX] = { 0, 0, 0, 0 };
     if (!depth_only && frag && uniforms) {
         for (u32 k = 0; k < frag->wgsl.tex_count; k++) {
             const Texture* t;
@@ -164,7 +164,7 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
         c->last_frag = frag;
         c->last_slot = fslot;
     }
-    u32 d[GCMD_DRAW_WORDS] = { GC_DRAW, id, vslot, fslot, vert->id, depth_only ? GPROG_NONE : frag ? frag->id : GPROG_FLAT, tex[0], tex[1], tex[2], (u32)cull,
+    u32 d[GCMD_DRAW_WORDS] = { GC_DRAW, id, vslot, fslot, vert->id, depth_only ? GPROG_NONE : frag ? frag->id : GPROG_FLAT, tex[0], tex[1], tex[2], tex[3], (u32)cull,
                                depth_test ? 1u : 0u, depth_write ? 1u : 0u };
     mem_copy(c->words + c->count, d, sizeof(d));
     c->count += GCMD_DRAW_WORDS;

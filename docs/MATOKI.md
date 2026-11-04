@@ -96,6 +96,7 @@ yazılırsa (örnek: `LitUniforms` ↔ `lit.mtk`) aynı uniform bloğu hem C hem
 | `texel_fetch(tex, x: i32, y: i32) -> i32` | ham texel (0xAABBGGRR); koordinatlar kenetlenir |
 | `tex_size(tex) -> vec2` | (genişlik, yükseklik) |
 | `bitcast_f32(i32)`, `bitcast_i32(f32)` | bit düzeyinde yeniden yorum (gölge haritası derinliği vb.) |
+| `quad0(x)` | quad'ın ilk lane'indeki değer, tüm lane'lere; sonuç quad-sabit. Yumuşak dokunun koordinatında 4 okuma yerine 1 (D53). GPU'da kaba türevle aynı değer |
 | `dFdx(x) dFdy(x) fwidth(x)` | kaba quad türevi: `v[lane1] - v[lane0]`, `v[lane2] - v[lane0]`; uniform → 0 |
 | `frag_coord() -> vec3` | (x + 0.5, y + 0.5, z) |
 

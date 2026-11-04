@@ -98,7 +98,7 @@ void ir_guard_build(Arena* a, const IrFunc* f, const u8* skip, b32 no_deriv_arm,
         else c->head = i;
         c->tail = i;
         c->cost++;
-        if (f->ins[i].op == IR_DERIV_X || f->ins[i].op == IR_DERIV_Y) c->deriv++;
+        if (f->ins[i].op == IR_DERIV_X || f->ins[i].op == IR_DERIV_Y || f->ins[i].op == IR_QUAD0) c->deriv++;
     }
     for (u32 gr = 0; gr < g->ngroups; gr++) g->group_at[first[gr]] = gr + 1u;
     for (u32 k = g->ngroups * 2u; k >= 1u; k--) {   /* alt düğümler üstlerinden sonra kuruldu: id > üst id */

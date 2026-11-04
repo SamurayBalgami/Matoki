@@ -54,6 +54,13 @@
 #define REFL_H 512
 #define WATER_Y 0.9f           /* m: göl düzlemi */
 #define WATER_Z -8.0f          /* m: göl merkezi */
+#define WATER_HALF 20.0f       /* m: göl yarı kenarı */
+#define CURB_H 1.55f           /* m: taş kenar yüksekliği, dalga tepesinin üstünde */
+#define FLOOR_FIELD_N 256
+#define FLOOR_FIELD_M 64.0f    /* m: zemin alanı kenarı (texel 0,25 m) */
+#define AO_MAX 256
+#define AO_HEIGHT 1.0f         /* m: bu yükseklikteki taban zemine iz bırakmaz */
+typedef struct AoSplat { f32 x, z, hx, hz, r, s; } AoSplat;
 #define WAVE_N 256             /* dalga denklemi ızgarası (D49); water.mtk WAVE_SIZE ile eşleşir */
 #define WAVE_SIZE 40.0f
 #define FLAG_FIELD_N 64        /* bayrak gerinim dokusu (D49) */
@@ -138,6 +145,8 @@ typedef struct Demo {
 
     Mesh* cube;
     Mesh* big_floor;
+    Mesh* curb_x;
+    Mesh* curb_z;
     Texture* tex_bricks;
     Texture* tex_paint;
     Texture* tex_pavers;
@@ -145,12 +154,22 @@ typedef struct Demo {
     Texture* tex_grass;
     Texture* tex_cloth;
     Texture* tex_clouds;
+    /* zemin alanı (D53): B büyük ölçekli leke (statik), G temas gölgesi (çizilen nesnelerin taban izinden) */
+    Texture* floor_field;
+    AoSplat ao[AO_MAX];
+    u32 ao_n, ao_hash;
+    i32 ao_x0, ao_x1, ao_y0, ao_y1;
+    b32 ao_collect;
+    u32 ao_max;
+    LitUniforms u_curb;
+    Material m_curb;
     Texture* tex_white;     /* 4×4 beyaz: düz renkli malzemeler (direk, cetvel) — ince gövdede doku uzamasın */
     LitUniforms u_pole;
     Material m_pole;
     LitUniforms u_bricks, u_grid[3], u_floor, u_pillar;
     Material m_bricks, m_grid[3], m_floor, m_pillar;
     Mat4* grid_models;
+    Mesh* grid_merged[GRID_N * 3];   /* GPU kipi: birleşik ızgara dilimleri, ilk kullanımda */
     PhysWorld phys;
     Vehicle car;
     Character chr;
@@ -316,6 +335,8 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     mem_zero(&u->shadow_mat2, sizeof(u->shadow_mat2));
     u->shadow_bias2 = 0.0f;
     u->field = refl_none();
+    u->clouds = refl_none();
+    u->cloud_time = 0.0f;
     u->field_scale = 0.0f;
     lit_uniforms_prepare(u);
 }
@@ -379,7 +400,10 @@ static const LitField LIT_FIELDS[] = {
     LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
     LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(metal, TB_FLOAT, 1), LIT_FIELD(rough, TB_FLOAT, 1),
     LIT_FIELD(bump, TB_FLOAT, 1), LIT_FIELD(shadow_mat2, TB_MAT, 4), LIT_FIELD(shadow_bias2, TB_FLOAT, 1),
-    LIT_FIELD(screen_ix, TB_FLOAT, 1), LIT_FIELD(screen_iy, TB_FLOAT, 1), LIT_FIELD(field, TB_TEX, 1), LIT_FIELD(field_scale, TB_FLOAT, 1),
+    LIT_FIELD(cloud_time, TB_FLOAT, 1), LIT_FIELD(clouds, TB_TEX, 1), LIT_FIELD(field, TB_TEX, 1), LIT_FIELD(field_scale, TB_FLOAT, 1),
+    /* water.mtk metal / pürüz okumaz: 1 / ekran boyu orada (yansıma haritası ekran konumundan okunur, D47) */
+    { "screen_ix", (u32)__builtin_offsetof(LitUniforms, metal), TB_FLOAT, 1 },
+    { "screen_iy", (u32)__builtin_offsetof(LitUniforms, rough), TB_FLOAT, 1 },
     { "wave", (u32)__builtin_offsetof(LitUniforms, field), TB_TEX, 1 },   /* water.mtk: alan yuvasında dalga denklemi */
     { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
 };
@@ -1378,6 +1402,8 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     for (u32 i = 0; i < 16; i++) g.tex_white->px[i] = color_pack(255, 255, 255, 255);
 
     g.cube = mesh_cube(&g.perm);
+    g.floor_field = tex_create(&g.perm, FLOOR_FIELD_N, FLOOR_FIELD_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
+    procgen_macro(g.floor_field, 71);
     g.big_floor = mesh_plane(&g.perm, 4000.0f, 4000.0f, 0.25f, 16);   /* doku 4 m: 8 × 8 taş, taş 0,5 m. 16 parça: dev üçgende CPU ↔ GPU interpolasyon farkı büyür */
     g.water = mesh_plane(&g.perm, 40.0f, 40.0f, 0.15f, 128);   /* 129² köşe, 32 768 üçgen */
     g.ocean_mesh = mesh_plane(&g.perm, 40.0f, 40.0f, 0.15f, 128);
@@ -1406,6 +1432,17 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_grid[2], g.tex_paint, v3(0.42f, 0.5f, 0.72f));
     lit_defaults(&g.u_floor, g.tex_pavers, v3(1, 1, 1));
     g.u_floor.fog_start = 10.0f;      /* üstel sis: uzak zemin ufukta gök rengine erir (pus) */
+    /* uv tam sayı kaydırılır (taş deseni aynı): alan dokusunun dikişi sahne ortasına değil ±32 m'ye düşer */
+    for (u32 i = 0; i < g.big_floor->vertex_count; i++) {
+        g.big_floor->u[i] += 8.0f;
+        g.big_floor->v[i] += 8.0f;
+    }
+    g.u_floor.field = g.floor_field;
+    g.u_floor.field_scale = 1.0f / (0.25f * FLOOR_FIELD_M);   /* uv = metre × 0,25 → alan = metre / 64 */
+    g.curb_x = mesh_box(&g.perm, 1.8f, CURB_H, 2.0f * (WATER_HALF + 1.8f), 0.25f);
+    g.curb_z = mesh_box(&g.perm, 2.0f * WATER_HALF, CURB_H, 1.8f, 0.25f);
+    lit_defaults(&g.u_curb, g.tex_pavers, v3(0.86f, 0.84f, 0.8f));
+    material(&g.m_curb, &g.u_curb);
     g.u_floor.fog_end = 160.0f;       /* ufkun birkaç pikseline sıkışmasın: zemin hava perspektifiyle geniş bir bantta erir */
     lit_defaults(&g.u_pillar, g.tex_bricks, v3(1, 1, 1));
     g.u_pillar.fog_start = 10.0f;
@@ -1604,8 +1641,72 @@ static void draw_hud(b32 gpu) {
 
 EXPORT(engine_set_hud) void engine_set_hud(i32 on) { g.hud_on = on != 0; }
 
+/* temas gölgesi (D53): yere yakın nesnenin dünya AABB'si zemin alanına iz bırakır. Kaynak fizik değil çizim: her sahne bedava gelir */
+static void floor_ao_collect(const Mesh* m, const Material* mat, const Mat4* model) {
+    if (mat == &g.m_floor || mat == &g.m_sky || mat == &g.m_ocean || mat == &g.m_water || g.ao_n == AO_MAX) return;
+    Vec3 mn, mx;
+    pipe_transform_aabb(model, m->aabb_min, m->aabb_max, &mn, &mx);
+    if (mn.y > AO_HEIGHT) return;
+    f32 hx = (mx.x - mn.x) * 0.5f, hz = (mx.z - mn.z) * 0.5f;
+    f32 near = 1.0f - m_maxf(mn.y, 0.0f) / AO_HEIGHT;
+    AoSplat* s = &g.ao[g.ao_n++];
+    s->x = (mn.x + mx.x) * 0.5f;
+    s->z = (mn.z + mx.z) * 0.5f;
+    s->hx = hx;
+    s->hz = hz;
+    /* yarıçap: nesnenin yüksekliğiyle büyür, duvar dibi geniş, küçük taş dar */
+    s->r = m_clampf(0.25f + 0.45f * (mx.y - mn.y), 0.3f, 1.4f);
+    s->s = near * near;
+}
+
+/* nesneler çizildi, zemin birazdan: iz değiştiyse dokuya yaz. Sahne durunca kare maliyeti de GPU yüklemesi de sıfır */
+static void floor_ao_bake(void) {
+    u32 h = 2166136261u;
+    const u32* w = (const u32*)(const void*)g.ao;
+    for (usize i = 0; i < g.ao_n * sizeof(AoSplat) / 4u; i++) h = (h ^ w[i]) * 16777619u;
+    if (h == g.ao_hash) return;
+    g.ao_hash = h;
+    u32* px = g.floor_field->px;
+    for (i32 y = g.ao_y0; y <= g.ao_y1; y++) {
+        for (i32 x = g.ao_x0; x <= g.ao_x1; x++) px[y * FLOOR_FIELD_N + x] &= 0xFFFF00FFu;
+    }
+    g.ao_x0 = g.ao_y0 = FLOOR_FIELD_N;
+    g.ao_x1 = g.ao_y1 = -1;
+    g.ao_max = 0;
+    const f32 per_m = (f32)FLOOR_FIELD_N / FLOOR_FIELD_M;
+    for (u32 i = 0; i < g.ao_n; i++) {
+        const AoSplat* s = &g.ao[i];
+        f32 cx = (s->x / FLOOR_FIELD_M + 0.5f) * (f32)FLOOR_FIELD_N - 0.5f, cz = (s->z / FLOOR_FIELD_M + 0.5f) * (f32)FLOOR_FIELD_N - 0.5f;
+        f32 rx = (s->hx + s->r) * per_m, rz = (s->hz + s->r) * per_m;
+        i32 x0 = (i32)m_maxf(cx - rx, 1.0f), x1 = (i32)m_minf(cx + rx + 1.0f, (f32)(FLOOR_FIELD_N - 2));
+        i32 y0 = (i32)m_maxf(cz - rz, 1.0f), y1 = (i32)m_minf(cz + rz + 1.0f, (f32)(FLOOR_FIELD_N - 2));
+        if (x0 > x1 || y0 > y1) continue;
+        g.ao_x0 = MIN(g.ao_x0, x0);
+        g.ao_x1 = MAX(g.ao_x1, x1);
+        g.ao_y0 = MIN(g.ao_y0, y0);
+        g.ao_y1 = MAX(g.ao_y1, y1);
+        f32 irm = 1.0f / (s->r * per_m), hx = s->hx * per_m, hz = s->hz * per_m;
+        for (i32 y = y0; y <= y1; y++) {
+            f32 dz = m_maxf(m_absf((f32)y - cz) - hz, 0.0f);
+            for (i32 x = x0; x <= x1; x++) {
+                f32 dx = m_maxf(m_absf((f32)x - cx) - hx, 0.0f);
+                f32 t = 1.0f - m_sqrtf(dx * dx + dz * dz) * irm;
+                if (t <= 0.0f) continue;
+                u32 v = (u32)(t * t * s->s * 255.0f);
+                u32 c = px[y * FLOOR_FIELD_N + x], old = (c >> 8) & 0xFFu;
+                if (v > old) {
+                    px[y * FLOOR_FIELD_N + x] = (c & 0xFFFF00FFu) | (v << 8);
+                    if (v > g.ao_max) g.ao_max = v;
+                }
+            }
+        }
+    }
+    g.floor_field->gen++;
+}
+
 static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
     DrawItem d;
+    if (g.ao_collect) floor_ao_collect(mesh, mat, &model);
     d.mesh = mesh;
     d.mat = g.shadow_pass ? shadow_caster() : g.flat ? &g.m_flat : mat;
     d.model = model;
@@ -1615,18 +1716,20 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 static void set_frame_uniforms(Vec3 eye) {
     g.u_water.wrap = g.time;   /* water.mtk: wrap yerinde zaman */
     g.u_sky.wrap = g.time;     /* sky.mtk: bulut rüzgârı */
-    g.u_water.screen_ix = 1.0f / (f32)g.fb.w;
-    g.u_water.screen_iy = 1.0f / (f32)g.fb.h;
+    g.u_water.metal = 1.0f / (f32)g.fb.w;   /* water.mtk: screen_ix, screen_iy */
+    g.u_water.rough = 1.0f / (f32)g.fb.h;
     if (g_water && !g.capture) {
         g.u_water.tex = g.refl_active ? &g.refl_tex : refl_none();
         lit_uniforms_prepare(&g.u_water);
     }
-    LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_floor, &g.u_pillar,
+    LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_curb, &g.u_floor, &g.u_pillar,
                            &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly[0], &g.u_jelly[1], &g.u_jelly[2], &g.u_water, &g.u_sky, &g.u_pole,
                            &g.u_arm, &g.u_tent };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = eye;
         all[i]->use_mip = g.mip;
+        all[i]->cloud_time = g.time;
+        all[i]->clouds = g.sky ? g.tex_clouds : refl_none();   /* gök kapalıysa bulut da yok */
         if (g.shadow_active) {
             all[i]->shadow = &g.shadow->tex;
             all[i]->shadow_mat = g.shadow->c[0].world_to_tex;
@@ -1644,7 +1747,7 @@ static void set_frame_uniforms(Vec3 eye) {
     g.u_water.field = g.wave_tex;
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
-    Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_floor, &g.m_pillar,
+    Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_curb, &g.m_floor, &g.m_pillar,
                          &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly[0], &g.m_jelly[1], &g.m_jelly[2], &g.m_water, &g.m_ocean, &g.m_pole,
                          &g.m_arm, &g.m_tent };
     /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
@@ -1685,9 +1788,58 @@ static void draw_sky(void) {
     draw(g.sphere, &g.m_sky, mat4_mul(mat4_translate(g.cam.pos), mat4_scale(v3(r, r, r))));
 }
 
+/* z dilimi × malzeme: dilim kırpılır ve yakından uzağa çizilir (erken derinlik testi); tek dev ağda arkadaki küpler de boyanıyordu */
+static void grid_merged_build(void) {
+    const Mesh* c = g.cube;
+    for (u32 z = 0; z < GRID_N; z++) {
+        for (u32 k = 0; k < 3; k++) {
+            u32 n = 0;
+            for (u32 i = z * GRID_N * GRID_N; i < (z + 1u) * GRID_N * GRID_N; i++) n += i % 3u == k;
+            Mesh* m = mesh_alloc(&g.perm, n * c->vertex_count, n * c->index_count);
+            u32 cube = 0;
+            for (u32 i = z * GRID_N * GRID_N; i < (z + 1u) * GRID_N * GRID_N; i++) {
+                if (i % 3u != k) continue;
+                u32 vb = cube * c->vertex_count, ib = cube * c->index_count;
+                for (u32 v = 0; v < c->vertex_count; v++) {
+                    Vec3 p = mat4_mul_point(&g.grid_models[i], v3(c->px[v], c->py[v], c->pz[v]));
+                    m->px[vb + v] = p.x;
+                    m->py[vb + v] = p.y;
+                    m->pz[vb + v] = p.z;
+                    m->nx[vb + v] = c->nx[v];   /* küpler döndürülmez: yüz normali aynı */
+                    m->ny[vb + v] = c->ny[v];
+                    m->nz[vb + v] = c->nz[v];
+                    m->u[vb + v] = c->u[v];
+                    m->v[vb + v] = c->v[v];
+                }
+                for (u32 x = 0; x < c->index_count; x++) m->indices[ib + x] = vb + c->indices[x];
+                cube++;
+            }
+            mesh_compute_bounds(m);
+            g.grid_merged[z * 3u + k] = m;
+        }
+    }
+}
+
 static void render_scene1(void) {
     Mat4 spin = mat4_mul(mat4_rotate_y(g.time * 0.9f), mat4_rotate_x(g.time * 0.6f));
     draw(g.cube, &g.m_bricks, mat4_mul(mat4_translate(v3(0, 2.2f, 2.0f)), mat4_mul(spin, mat4_scale(v3(2.5f, 2.5f, 2.5f)))));
+    if (g.gpu_on) {
+        /* GPU kipi: sabit küpler dilim dilim birleşik (D53): 2000 çizim yerine en çok 60; tarayıcının komut işleme süresi kare süresini belirliyor */
+        if (!g.grid_merged[0]) grid_merged_build();
+        /* temas gölgesi küp küp: birleşik ağın AABB'si tüm ızgaranın altına iz bırakırdı */
+        if (g.ao_collect) for (u32 i = 0; i < GRID_COUNT; i++) floor_ao_collect(g.cube, &g.m_grid[i % 3], &g.grid_models[i]);
+        b32 collect = g.ao_collect;
+        g.ao_collect = FALSE;
+        /* dilim z = -20 - 2,5 · k: kameraya en yakından başla, iki yana açıl */
+        i32 near = (i32)m_clampf((-20.0f - g.cam.pos.z) / 2.5f + 0.5f, 0.0f, (f32)(GRID_N - 1));
+        for (i32 d = 0; d < GRID_N * 2; d++) {
+            i32 z = near + (d & 1 ? (d + 1) / 2 : -(d / 2));
+            if (z < 0 || z >= GRID_N) continue;
+            for (u32 k = 0; k < 3; k++) draw(g.grid_merged[(u32)z * 3u + k], &g.m_grid[k], mat4_identity());
+        }
+        g.ao_collect = collect;
+        return;
+    }
     for (u32 i = 0; i < GRID_COUNT; i++) draw(g.cube, &g.m_grid[i % 3], g.grid_models[i]);
 }
 
@@ -1896,6 +2048,12 @@ static void wave_update(void) {
 }
 
 static void render_scene7(void) {
+    /* gölün taş kenarı: suyun ağ sınırını saklar, dalga alanının yansıyan kenarıyla aynı yerde */
+    f32 curb_c = WATER_HALF + 0.9f - 0.4f;
+    draw(g.curb_x, &g.m_curb, mat4_translate(v3(-curb_c, CURB_H * 0.5f, WATER_Z)));
+    draw(g.curb_x, &g.m_curb, mat4_translate(v3(curb_c, CURB_H * 0.5f, WATER_Z)));
+    draw(g.curb_z, &g.m_curb, mat4_translate(v3(0.0f, CURB_H * 0.5f, WATER_Z - curb_c)));
+    draw(g.curb_z, &g.m_curb, mat4_translate(v3(0.0f, CURB_H * 0.5f, WATER_Z + curb_c)));
     if (!g.shadow_pass && !g.refl_pass) {   /* su gölge düşürmez, kendini yansıtmaz */
         if (g.ocean_on) draw(g.ocean_mesh, &g.m_ocean, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
         else draw(g.water, &g.m_water, mat4_translate(v3(0.0f, 0.9f, -8.0f)));
@@ -1955,7 +2113,10 @@ static void render_scene(void) {
     else if (g.scene == 9) render_scene9();
     else render_scene5();
     /* zemin nesnelerden sonra (D52): örttüğü yer derinlikte elenir, gölgelenmez. Sahne 5 arazi; yansımada zemin su düzleminin altında kalır */
-    if (g.scene != 5 && !g.refl_pass) draw(g.big_floor, &g.m_floor, mat4_identity());
+    if (g.scene != 5 && !g.refl_pass) {
+        if (g.ao_collect) floor_ao_bake();
+        draw(g.big_floor, &g.m_floor, mat4_identity());
+    }
 }
 
 /* harita (ilk kullanımda) + ışık izdüşümü; FALSE: bu karede gölge yok */
@@ -2360,7 +2521,10 @@ EXPORT(engine_frame) void engine_frame(f32 dt_ms) {
     pipe_begin(&g.pipe, &g.raster, &g.frame, camera_view(&g.cam), camera_proj(&g.cam), g.cam.pos);
     pipe_set_time(&g.pipe, g.time);
     if (gpu) pipe_set_gpu(&g.pipe, &g.gcmd);
+    g.ao_collect = !g.flat && !g.capture;
+    g.ao_n = 0;
     render_scene();
+    g.ao_collect = FALSE;
     draw_sky();   /* en son (D52): yalnız açıkta kalan gök pikselleri gölgelenir */
     f64 t_geo = sys_now_ms();
     pipe_end(&g.pipe);
@@ -2662,6 +2826,8 @@ EXPORT(engine_set_vert_mode) void engine_set_vert_mode(i32 m) { g.vert_mode = m 
 
 /* ölçüm: gökyüzü kubbesi aç / kapa */
 EXPORT(engine_set_sky) void engine_set_sky(i32 on) { g.sky = on != 0; }
+EXPORT(engine_floor_ao_max) i32 engine_floor_ao_max(void) { return (i32)g.ao_max; }   /* temas gölgesi alanının en büyük değeri: tanı */
+EXPORT(engine_floor_ao_gen) i32 engine_floor_ao_gen(void) { return (i32)g.floor_field->gen; }   /* yazım sayacı: duran sahnede artmamalı */
 
 EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0 ? (u32)n : 0); }
 

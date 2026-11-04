@@ -25,6 +25,8 @@ Mesh* mesh_alloc(Arena* a, u32 vertex_count, u32 index_count);
 void  mesh_touch(Mesh* m);
 /* sınırlar + mesh_touch */
 void  mesh_compute_bounds(Mesh* m);
+/* metre ölçekli doku koordinatlı kutu, merkez orijin: duvar, kenar taşı (mesh_cube dokuyu yüze sığdırır, uzun yüzde uzar) */
+Mesh* mesh_box(Arena* a, f32 sx, f32 sy, f32 sz, f32 uv_per_unit);
 /* alan ağırlıklı köşe normalleri (üçgen kenar çarpımı); aralık dışı indeksli üçgen atlanır,
  * hiçbir üçgene değmeyen köşenin normali 0 kalır (MatokiEngine'den, D37) */
 void  mesh_compute_normals(Mesh* m);

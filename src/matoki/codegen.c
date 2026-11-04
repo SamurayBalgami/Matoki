@@ -324,6 +324,15 @@ static b32 push_scalar(const Emit* e, u32 i) {
         byte(b, OP_I32_LOAD);
         memarg(b, 2, 0);
         return TRUE;
+    case IR_QUAD0:
+        if (f->ins[in->a].uniform) {
+            sget(e, in->a);
+        } else {
+            vget(e, in->a);
+            simd(b, S_F32X4_EXTRACT);
+            byte(b, 0);
+        }
+        return TRUE;
     case IR_DERIV_X:
     case IR_DERIV_Y:
         if (f->ins[in->a].uniform) {
@@ -467,6 +476,11 @@ static b32 emit_vector(const Emit* e, u32 i) {
     case IR_UNIFORM:
     case IR_TEX_FIELD:
         push_leaf_vector(e, i);
+        break;
+    case IR_QUAD0:
+        vget(e, in->a);
+        vget(e, in->a);
+        shuffle_broadcast(body, 0);
         break;
     case IR_DERIV_X:
     case IR_DERIV_Y:
@@ -631,8 +645,9 @@ static void body_needs(const IrFunc* f, Plan* pl, u32 kind) {
         u32 ar = ir_op_arity((IrOp)in->op);
         const u32 ops[3] = { in->a, in->b, in->c };
         if (scal(f, i)) {
-            if (in->op == IR_DERIV_X || in->op == IR_DERIV_Y) {
+            if (in->op == IR_DERIV_X || in->op == IR_DERIV_Y || in->op == IR_QUAD0) {
                 if (!f->ins[in->a].uniform) pl->need_v[in->a] = 1;
+                else if (in->op == IR_QUAD0) pl->need_s[in->a] = 1;
             } else {
                 for (u32 k = 0; k < ar; k++) pl->need_s[ops[k]] = 1;
             }
@@ -800,7 +815,7 @@ static void plan_make(const IrFunc* f, Arena* a, Plan* pl) {
         if (cheap_source(op)) {
             pl->du[i] = 1;
         } else if (op == IR_VARYING || op == IR_ATTR || op == IR_FRAG_X || op == IR_FRAG_Y || op == IR_FRAG_Z ||
-                   op == IR_DERIV_X || op == IR_DERIV_Y) {
+                   op == IR_DERIV_X || op == IR_DERIV_Y || op == IR_QUAD0) {
             pl->du[i] = 0;
         } else {
             u32 ar = ir_op_arity((IrOp)op);

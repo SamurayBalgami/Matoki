@@ -210,6 +210,14 @@ static b32 put_expr(StrBuf* s, const MatokiWgsl* w, const IrInst* in, u32 stage)
     case IR_I2F: put_call1(s, "f32", in->a); return TRUE;
     case IR_BITCAST_F2I: put_call1(s, "bitcast<i32>", in->a); return TRUE;
     case IR_BITCAST_I2F: put_call1(s, "bitcast<f32>", in->a); return TRUE;
+    case IR_QUAD0:   /* quad'ın sol üst pikseli: yazılımla aynı değer, görüntü aynı kalsın */
+        put_ref(s, in->a);
+        sb_cstr(s, " - dpdxCoarse(");
+        put_ref(s, in->a);
+        sb_cstr(s, ") * f32(i32(in.pos.x) & 1) - dpdyCoarse(");
+        put_ref(s, in->a);
+        sb_cstr(s, ") * f32(i32(in.pos.y) & 1)");
+        return stage == MATOKI_STAGE_FRAG;
     case IR_DERIV_X: put_call1(s, "dpdxCoarse", in->a); return stage == MATOKI_STAGE_FRAG;
     case IR_DERIV_Y: put_call1(s, "dpdyCoarse", in->a); return stage == MATOKI_STAGE_FRAG;
     default:
@@ -320,7 +328,7 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
         if (vert) return wgsl_fail(err, "gpu: köşe aşamasında doku yok");
         u32 ofs = in->op == IR_TEX_FIELD || in->op == IR_HW_SAMPLE ? (in->imm & 0xFFFFu) : in->imm;
         if (tex_binding(out, ofs) >= 0) continue;
-        if (out->tex_count == WGSL_MAX_TEX) return wgsl_fail(err, "gpu: parça başına en çok 3 doku");
+        if (out->tex_count == WGSL_MAX_TEX) return wgsl_fail(err, "gpu: parça başına en çok 4 doku");
         out->tex_ofs[out->tex_count++] = ofs;
     }
     u32 live = 0;
@@ -353,7 +361,7 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
             sb_u64(s, k);
             sb_cstr(s, ": texture_2d<f32>;\n");
         }
-        sb_cstr(s, "@group(1) @binding(6) var sw: sampler;\n@group(1) @binding(7) var sc: sampler;\n");
+        sb_cstr(s, "@group(1) @binding(8) var sw: sampler;\n@group(1) @binding(9) var sc: sampler;\n");
     }
     sb_cstr(s, "fn mask(b: bool) -> i32 { return select(0i, -1i, b); }\n");
     b32 ok = TRUE;

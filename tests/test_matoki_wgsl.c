@@ -95,8 +95,8 @@ typedef struct WgslCase {
 TEST(wgsl_demo_shaders_structure) {
     const WgslCase CASES[] = {
         { "lit.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, wrap) },
-        { "lit_hq.mtk", MATOKI_STAGE_FRAG, 3, (u32)__builtin_offsetof(LitUniforms, lv_count) },
-        { "water.mtk", MATOKI_STAGE_FRAG, 3, (u32)__builtin_offsetof(LitUniforms, field_scale) },
+        { "lit_hq.mtk", MATOKI_STAGE_FRAG, 4, (u32)__builtin_offsetof(LitUniforms, lv_count) },
+        { "water.mtk", MATOKI_STAGE_FRAG, 4, (u32)__builtin_offsetof(LitUniforms, field_scale) },
         { "sky.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, shadow) },
         { "std_vert.mtk", MATOKI_STAGE_VERT, 0, 168 },
         { "wave_vert.mtk", MATOKI_STAGE_VERT, 0, 184 },
@@ -256,12 +256,12 @@ TEST(wgsl_rejects_programs_over_gpu_limits) {
     /* varying > 8 yuva */
     CHECK(!wgsl_of("varying a: vec4; varying b: vec4; varying c: f32;\nfn frag() -> vec4 { return vec4(a.x + b.x + c); }", MATOKI_STAGE_FRAG, &e));
     CHECK(e.msg[0] != 0);
-    /* 4 doku */
-    CHECK(!wgsl_of("uniform a: texture2d; uniform b: texture2d; uniform c: texture2d; uniform d: texture2d; varying v: vec2;\n"
-                   "fn frag() -> vec4 { return sample(a, v) + sample(b, v) + sample(c, v) + sample(d, v); }", MATOKI_STAGE_FRAG, &e));
+    /* 5 doku */
+    CHECK(!wgsl_of("uniform a: texture2d; uniform b: texture2d; uniform c: texture2d; uniform d: texture2d; uniform e2: texture2d; varying v: vec2;\n"
+                   "fn frag() -> vec4 { return sample(a, v) + sample(b, v) + sample(c, v) + sample(d, v) + sample(e2, v); }", MATOKI_STAGE_FRAG, &e));
     CHECK(e.msg[0] != 0);
     /* ölü dokular sayılmaz */
-    CHECK(wgsl_of("uniform a: texture2d; uniform b: texture2d; uniform c: texture2d; uniform d: texture2d; varying v: vec2;\n"
+    CHECK(wgsl_of("uniform a: texture2d; uniform b: texture2d; uniform c: texture2d; uniform d: texture2d; uniform e2: texture2d; varying v: vec2;\n"
                   "fn frag() -> vec4 { return sample(c, v); }", MATOKI_STAGE_FRAG, &e));
     /* köşe aşamasında doku */
     CHECK(!wgsl_of("uniform t: texture2d; attribute p: vec2;\nfn vert() -> vec4 { return vec4(sample(t, p).x); }", MATOKI_STAGE_VERT, &e));

@@ -76,6 +76,26 @@ static void set_vert(Mesh* m, u32 i, Vec3 p, Vec3 n, f32 u, f32 v) {
     m->u[i] = u; m->v[i] = v;
 }
 
+Mesh* mesh_box(Arena* a, f32 sx, f32 sy, f32 sz, f32 uv_per_unit) {
+    Mesh* m = mesh_cube(a);
+    for (u32 f = 0; f < 6; f++) {
+        /* yüzün iki kenar uzunluğu: normal ekseni dışındakiler; sıra mesh_cube'daki s, t */
+        f32 su = f < 2 ? sz : sx, sv = f == 2 || f == 3 ? sz : sy;
+        for (u32 k = 0; k < 4; k++) {
+            u32 i = f * 4 + k;
+            m->u[i] *= su * uv_per_unit;
+            m->v[i] *= sv * uv_per_unit;
+        }
+    }
+    for (u32 i = 0; i < m->vertex_count; i++) {
+        m->px[i] *= sx;
+        m->py[i] *= sy;
+        m->pz[i] *= sz;
+    }
+    mesh_compute_bounds(m);
+    return m;
+}
+
 Mesh* mesh_cube(Arena* a) {
     Mesh* m = mesh_alloc(a, 24, 36);
     /* her yüz: normal n, yüzeyde sağ (s) ve yukarı (t) eksenleri; s × t = n (CCW) */

@@ -4,6 +4,7 @@
 #include "img/image.h"
 #include "img/procgen.h"
 #include "core/math.h"
+#include "gfx3d/mesh.h"
 
 static f32 luma(u32 c) {
     return (f32)(c & 0xFFu) * 0.3f + (f32)((c >> 8) & 0xFFu) * 0.6f + (f32)((c >> 16) & 0xFFu) * 0.1f;
@@ -93,4 +94,40 @@ TEST(procgen_clouds_channels_span) {
     CHECK(lo_d < 128u);
     CHECK(hi_d > 173u);
     CHECK(hi_l - lo_l > 60u);
+}
+
+TEST(procgen_macro_only_blue_and_spans) {
+    Arena* a = test_arena();
+    Texture* t = tex_create(a, 64, 64, 0);
+    procgen_macro(t, 71);
+    u32 lo = 255, hi = 0, other = 0;
+    for (u32 i = 0; i < 64u * 64u; i++) {
+        u32 b = (t->px[i] >> 16) & 0xFFu;
+        lo = MIN(lo, b);
+        hi = MAX(hi, b);
+        other |= t->px[i] & 0xFFFFu;
+    }
+    CHECK(other == 0u);   /* G temas gölgesinin, R boş: boyanmaz */
+    CHECK(hi - lo > 60u);
+}
+
+/* kutu: boyut doğru, doku metre ölçekli (uzun yüzde uzamaz), normal değişmez */
+TEST(mesh_box_size_and_metric_uv) {
+    Arena* a = test_arena();
+    Mesh* m = mesh_box(a, 2.0f, 4.0f, 40.0f, 0.25f);
+    CHECK_NEAR(m->aabb_max.x - m->aabb_min.x, 2.0f, 1e-5f);
+    CHECK_NEAR(m->aabb_max.y - m->aabb_min.y, 4.0f, 1e-5f);
+    CHECK_NEAR(m->aabb_max.z - m->aabb_min.z, 40.0f, 1e-4f);
+    for (u32 f = 0; f < 6; f++) {
+        f32 umax = 0.0f, vmax = 0.0f;
+        for (u32 k = 0; k < 4; k++) {
+            umax = m_maxf(umax, m->u[f * 4 + k]);
+            vmax = m_maxf(vmax, m->v[f * 4 + k]);
+        }
+        /* mesh_cube sırası: +x, -x (z × y), +y, -y (x × z), +z, -z (x × y) */
+        f32 eu = (f < 2 ? 40.0f : 2.0f) * 0.25f, ev = (f == 2 || f == 3 ? 40.0f : 4.0f) * 0.25f;
+        CHECK_NEAR(umax, eu, 1e-5f);
+        CHECK_NEAR(vmax, ev, 1e-5f);
+    }
+    CHECK_NEAR(m->ny[8], 1.0f, 1e-6f);
 }

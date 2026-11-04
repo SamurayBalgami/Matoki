@@ -10,7 +10,7 @@
 
 struct MatokiProgram;
 
-#define WGSL_MAX_TEX      3u     /* parça başına doku (lit_hq: tex + shadow + field) */
+#define WGSL_MAX_TEX      4u     /* parça başına doku (lit_hq: tex + shadow + clouds + field) */
 #define WGSL_MAX_UNIFORM  256u   /* uniform yuvası (gpu/gcmd.h GCMD_SLOT) */
 #define WGSL_MAX_VARYINGS 8u     /* 3D boru hattı yerleşimi (VAR3D_COUNT) */
 #define WGSL_MAX_ATTRS    8u     /* ATTR3D_COUNT; WebGPU varsayılan köşe tamponu sınırı da 8 */

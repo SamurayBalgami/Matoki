@@ -258,7 +258,7 @@ static void lower_sample_lod(Lower* L, const GlobalDecl* g, IrRef u, IrRef v, Ir
 /* vert aşamasında lane'ler komşu pikseller değil bağımsız köşelerdir: türev ve ondan türeyenler anlamsız */
 static b32 vert_forbids(const Node* e) {
     switch ((Builtin)e->builtin) {
-    case BI_DFDX: case BI_DFDY: case BI_FWIDTH: case BI_FRAG_COORD: case BI_MIP_LEVEL:
+    case BI_DFDX: case BI_DFDY: case BI_FWIDTH: case BI_QUAD0: case BI_FRAG_COORD: case BI_MIP_LEVEL:
         return TRUE;
     case BI_SAMPLE:
         return (e->list->sym->g->attrs & ATTR_MIPMAP) != 0;
@@ -453,6 +453,9 @@ static u32 lower_builtin(Lower* L, Node* e, IrRef out[4]) {
     case BI_BITCAST_I32:
         out[0] = op1(L, IR_BITCAST_F2I, I, av[0][0]);
         return 1;
+    case BI_QUAD0:
+        for (u32 i = 0; i < rn; i++) out[i] = op1(L, IR_QUAD0, F, av[0][i]);
+        return rn;
     case BI_DFDX: case BI_DFDY:
         for (u32 i = 0; i < rn; i++) out[i] = op1(L, e->builtin == BI_DFDX ? IR_DERIV_X : IR_DERIV_Y, F, av[0][i]);
         return rn;

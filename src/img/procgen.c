@@ -172,6 +172,15 @@ void procgen_paint(Texture* t, u32 seed) {
     }
 }
 
+void procgen_macro(Texture* t, u32 seed) {
+    for (u32 y = 0; y < t->h; y++) {
+        for (u32 x = 0; x < t->w; x++) {
+            f32 f = fbm((f32)x / (f32)t->w, (f32)y / (f32)t->h, 5, 5, seed);
+            t->px[y * t->w + x] = pack_f(0.0f, 0.0f, m_clampf((f - 0.28f) * 2.2f, 0.0f, 1.0f));
+        }
+    }
+}
+
 void procgen_clouds(Texture* t, u32 seed, f32 sun_x, f32 sun_y) {
     for (u32 y = 0; y < t->h; y++) {
         for (u32 x = 0; x < t->w; x++) {

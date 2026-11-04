@@ -19,6 +19,8 @@ void procgen_grass(Texture* t, u32 seed);
 void procgen_cloth(Texture* t, u32 seed);
 /* yıpranmış boya: tint ile boyanır, kenarda kir, yüzeyde leke ve çizik */
 void procgen_paint(Texture* t, u32 seed);
+/* büyük ölçekli çeşitlilik: B = 0..255 leke, diğer kanallar 0; zemin alanının statik tabanı (D53) */
+void procgen_macro(Texture* t, u32 seed);
 /* bulut: R yoğunluk, G güneş tarafından aydınlanma (1 = aydınlık); (sun_x, sun_y) doku düzleminde güneş yönü */
 void procgen_clouds(Texture* t, u32 seed, f32 sun_x, f32 sun_y);
 

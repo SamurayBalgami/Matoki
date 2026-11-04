@@ -28,7 +28,7 @@ static const struct { const char* name; Builtin bi; } BUILTINS[] = {
     { "sample", BI_SAMPLE }, { "texel_fetch", BI_TEXEL_FETCH }, { "tex_size", BI_TEX_SIZE },
     { "sample_level", BI_SAMPLE_LEVEL }, { "mip_level", BI_MIP_LEVEL },
     { "bitcast_f32", BI_BITCAST_F32 }, { "bitcast_i32", BI_BITCAST_I32 },
-    { "dFdx", BI_DFDX }, { "dFdy", BI_DFDY }, { "fwidth", BI_FWIDTH },
+    { "dFdx", BI_DFDX }, { "dFdy", BI_DFDY }, { "fwidth", BI_FWIDTH }, { "quad0", BI_QUAD0 },
     { "frag_coord", BI_FRAG_COORD },
 };
 
@@ -274,7 +274,7 @@ static Type sema_builtin(Sema* s, Node* call, Builtin bi, Node** args, u32 n) {
         return args[0]->type;
     case BI_FLOOR: case BI_CEIL: case BI_FRACT: case BI_TRUNC: case BI_ROUND: case BI_SQRT: case BI_SIN: case BI_COS:
     case BI_EXP2: case BI_LOG2: case BI_EXP: case BI_LOG:
-    case BI_NORMALIZE: case BI_DFDX: case BI_DFDY: case BI_FWIDTH:
+    case BI_NORMALIZE: case BI_DFDX: case BI_DFDY: case BI_FWIDTH: case BI_QUAD0:
         if (!expect_args(s, call, n, 1) || !all_float(s, call, args, 1)) return F1;
         return args[0]->type;
     case BI_LENGTH:

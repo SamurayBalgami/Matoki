@@ -47,7 +47,9 @@ typedef struct LitUniforms {
     f32  bump;          /* doku parlaklığı → yükseklik (m) */
     Mat4 shadow_mat2;   /* uzak gölge kademesi (D46); shadow_mat yakın kademe */
     f32  shadow_bias2;
-    f32  screen_ix, screen_iy;   /* 1 / ekran boyu: water.mtk yansıma haritasını ekran konumundan okur (D47) */
+    /* bulut (D53): sky.mtk ile aynı doku, güneşi keser ve parlak yüzeye yansır; yoksa refl_none. Saat rüzgârı sürer */
+    f32  cloud_time;
+    const Texture* clouds;
     /* fizik alanı (D49): R gerilme, G katlanma; fizik modülü yazar, malzeme okur. water.mtk burada dalga alanını okur */
     const Texture* field;
     f32  field_scale;   /* uv → alan dokusu; 0 = alan yok, kol çalışmaz */

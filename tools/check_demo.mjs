@@ -125,5 +125,17 @@ for (let i = 0; i < 90; i++) ex.engine_frame(1000 / 60);
 check(ex.engine_jelly_field_max() > 0, `jöle gerinim alanı dolu (en büyük ${ex.engine_jelly_field_max()})`);
 check(ex.engine_flag_field_max() > 0, `bayrak gerinim alanı dolu (en büyük ${ex.engine_flag_field_max()})`);
 
+// temas gölgesi (D53): yere değen nesne iz bırakır; duran sahnede doku yeniden yazılmaz, hareket edende yazılır
+ex.engine_bench_view(4);
+ex.engine_frame(0);
+const aoMax = ex.engine_floor_ao_max(), aoGen0 = ex.engine_floor_ao_gen();
+for (let i = 0; i < 5; i++) ex.engine_frame(0);
+check(aoMax > 100, `sütun dibinde temas gölgesi (en büyük ${aoMax})`);
+check(ex.engine_floor_ao_gen() === aoGen0, 'duran sahnede temas gölgesi yeniden yazılmaz');
+ex.engine_bench_view(11);
+const aoGen1 = ex.engine_floor_ao_gen();
+for (let i = 0; i < 60; i++) ex.engine_frame(1000 / 60);
+check(ex.engine_floor_ao_gen() > aoGen1 + 10, `hareket eden sahnede temas gölgesi güncellenir (${ex.engine_floor_ao_gen() - aoGen1} yazım)`);
+
 console.log(fails ? `${fails} denetim başarısız` : 'tüm demo denetimleri geçti');
 process.exit(fails ? 1 : 0);

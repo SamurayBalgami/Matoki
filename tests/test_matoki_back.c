@@ -126,6 +126,7 @@ static void build_random(IrFunc* f, u64 seed, b32 vert) {
             break;
         case 10: case 11:   /* türevler (vert'te yok: yerine çarpma) */
             if (vert) push_f(&p, ir_emit(f, IR_FMUL, IR_T_F32, pf(&r, &p), pf(&r, &p), 0, 0));
+            else if ((rng_u32(&r) & 3) == 0) push_f(&p, ir_emit(f, IR_QUAD0, IR_T_F32, canon(f, pf(&r, &p)), 0, 0, 0));   /* NaN türevi katlamayla ayrışır: kanonik */
             else push_f(&p, ir_emit(f, (rng_u32(&r) & 1) ? IR_DERIV_X : IR_DERIV_Y, IR_T_F32, pf(&r, &p), 0, 0, 0));
             break;
         case 12: {          /* doku sözcüğü (mip ofset tablosu, sözcük 8..23) */

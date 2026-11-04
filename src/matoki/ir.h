@@ -43,6 +43,7 @@ typedef enum IrOp {
     IR_DERIV_X,     /* kaba: tüm lane'lere v[1] - v[0] (F32); işlenen uniform ise sabit 0.
                      * Sonuç lane'ler arasında aynıdır → uniform bayrağı 1 (quad-sabit). */
     IR_DERIV_Y,     /* kaba: tüm lane'lere v[2] - v[0] */
+    IR_QUAD0,       /* tüm lane'lere v[0] (D53): yumuşak değerde quad başına tek hesap; sonuç uniform. WGSL'de kaba türevle aynı piksel */
     IR_OP_COUNT
 } IrOp;
 

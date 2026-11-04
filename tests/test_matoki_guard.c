@@ -261,6 +261,7 @@ TEST(guard_lit_hq_matches_oracle) {
     u.tex = tex;
     u.shadow = sh;
     u.field = tex;
+    u.clouds = tex;
     u.rough = 1.0f;
     u.to_light = v3(0.3f, 0.8f, 0.5f);
     u.ambient = 0.3f;
@@ -313,6 +314,7 @@ TEST(lit_hq_shadow_factor_in_range) {
     u.tex = tex;
     u.shadow = sh;
     u.field = tex;
+    u.clouds = tex;
     u.rough = 1.0f;
     u.to_light = v3(0.0f, 1.0f, 0.0f);
     u.light_color = v3(0.4f, 0.4f, 0.4f);

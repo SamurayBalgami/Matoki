@@ -12,7 +12,7 @@ static const char* const OP_NAMES[IR_OP_COUNT] = {
     "feq", "fne", "flt", "fle", "fgt", "fge",
     "iadd", "isub", "imul", "ineg", "iand", "ior", "ixor", "ishl", "ishr", "ishru", "imin", "imax",
     "ieq", "ine", "ilt", "ile", "igt", "ige",
-    "select", "f2i", "i2f", "bitcast_f2i", "bitcast_i2f", "deriv_x", "deriv_y",
+    "select", "f2i", "i2f", "bitcast_f2i", "bitcast_i2f", "deriv_x", "deriv_y", "quad0",
 };
 
 const char* ir_op_name(IrOp op) { return op < IR_OP_COUNT ? OP_NAMES[op] : "?"; }
@@ -25,7 +25,7 @@ u32 ir_op_arity(IrOp op) {
     case IR_TEXEL_LOAD: case IR_TEX_WORD:
     case IR_FNEG: case IR_FABS: case IR_FSQRT: case IR_FFLOOR: case IR_FCEIL: case IR_FTRUNC: case IR_FNEAREST:
     case IR_INEG: case IR_F2I: case IR_I2F: case IR_BITCAST_F2I: case IR_BITCAST_I2F:
-    case IR_DERIV_X: case IR_DERIV_Y:
+    case IR_DERIV_X: case IR_DERIV_Y: case IR_QUAD0:
         return 1;
     case IR_SELECT: case IR_HW_SAMPLE:
         return 3;
@@ -44,7 +44,7 @@ u32 ir_result_type(IrOp op, u32 t) {
     switch (op) {
     case IR_F2I: case IR_BITCAST_F2I: return t == IR_T_F32 ? IR_T_I32 : 0;
     case IR_I2F: case IR_BITCAST_I2F: return t == IR_T_I32 ? IR_T_F32 : 0;
-    case IR_DERIV_X: case IR_DERIV_Y: return t == IR_T_F32 ? IR_T_F32 : 0;
+    case IR_DERIV_X: case IR_DERIV_Y: case IR_QUAD0: return t == IR_T_F32 ? IR_T_F32 : 0;
     default: return t;
     }
 }
@@ -187,7 +187,7 @@ IrRef ir_emit(IrFunc* f, IrOp op, u32 type, IrRef a, IrRef b, IrRef c, u32 imm) 
     u8 uniform = 1;
     if (op == IR_VARYING || op == IR_ATTR || op == IR_FRAG_X || op == IR_FRAG_Y || op == IR_FRAG_Z) uniform = 0;
     /* türev her lane'e aynı farkı yayar: işleneni ne olursa olsun quad-sabit */
-    if (op == IR_DERIV_X || op == IR_DERIV_Y) ar = 0;
+    if (op == IR_DERIV_X || op == IR_DERIV_Y || op == IR_QUAD0) ar = 0;
     if (ar >= 1 && !f->ins[a].uniform) uniform = 0;
     if (ar >= 2 && !f->ins[b].uniform) uniform = 0;
     if (ar >= 3 && !f->ins[c].uniform) uniform = 0;

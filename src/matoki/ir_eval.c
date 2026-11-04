@@ -55,6 +55,11 @@ void ir_eval_io(const IrFunc* f, const void* input, const void* uniforms, void* 
             for (u32 l = 0; l < 4; l++) r[l] = tex[v[in->a][l]];
             break;
         }
+        case IR_QUAD0: {
+            u32 x0 = v[in->a][0];
+            for (u32 l = 0; l < 4; l++) r[l] = x0;
+            break;
+        }
         case IR_DERIV_X:
         case IR_DERIV_Y: {
             if (f->ins[in->a].uniform) {

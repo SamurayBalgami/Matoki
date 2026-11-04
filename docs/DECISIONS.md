@@ -704,3 +704,34 @@ Kazanç eşit dağılmadı. Gök ağırlıklı görünümler pahalandı: yazıl�
 
 Kabul: `gpu_check` 66/66 (en kötü %0,029), 268/268 test (iki kipte), `check_demo` geçti (ara değerleme kıyasında gök kapalı: bulut saate bağlı).
 Sınır: kıyı çizgisi hâlâ sert, bulut yansıması ve bulut gölgesi yok, orta mesafede döşeme tekrarı hafifçe seçiliyor. Tek adaptör; gerçek ekranda FPS ölçülmedi.
+
+## D53. Bulut gölgesi, temas gölgesi, taş kenarlı göl, ucuz gönderim
+D52'nin açık bıraktığı kusurlar kapatıldı.
+- **Bulut:** `clouds` dördüncü doku yuvası (akış sürümü 8, `WGSL_MAX_TEX` 4). Bulut güneşi keser (256 m'lik doku, gökle aynı rüzgâr), suya ve pürüzü 0,25'in altındaki yüzeye yansır. Yer açmak için `screen_ix/iy` çıktı: su onları metal / pürüz yuvasında okur.
+- **Zemin alanı:** D49'un alan yuvası zemine de bağlandı. B büyük ölçekli leke (64 m, döşeme tekrarını kırar). G temas gölgesi: çizilen nesnelerin AABB'si zemine iz bırakır, kaynak fizik değil çizim olduğu için her sahneye bedava gelir; iz değişmediyse doku yazılmaz. Alan tekrar ettiği için G yalnız ±31 m içinde okunur (yoksa kenar taşının izi 64 m'de bir hayalet çizgi veriyordu). Dik ve alt yüzeyler yere yakın kararır (okuma yok).
+- **Göl:** dalga alanının yansıyan kenarında taş kenar (`mesh_box`, metre ölçekli doku); kenar boyunca ve dalga tepesinde köpük, ek doku okuması yok.
+- **`quad0(x)`:** Matoki yerleşiği, quad'ın ilk lane'indeki değer. Çıktısı quad-sabit olduğu için derleyici okumayı skalerleştirir: 16 yerine 4 yükleme. Yalnız gerçekten yumuşak veride: bulut gölgesi ve zemin alanı. Gökte ve yansımada denendi, bulut kenarı blok blok oldu (fark 70/255, `gpu_check` %1): orada piksel başına. WGSL kaba türevle aynı pikseli hesaplar, görüntü iki yolda aynı.
+- **Gönderim** (`gpu.mjs`): aynı boru hattı, doku grubu ve köşe tamponu yeniden kurulmaz. **Izgara:** GPU kipinde sabit küpler z dilimi × malzeme birleşik ağ, yakından uzağa; yazılım yolu değişmedi.
+- **Denenip atılan, kazancı ölçülmeyen:** gölge yoklamasını quad başına indirmek (×1,06 kayıp), küpleri tek tek önden arkaya sıralamak (kazanç yok), tek dev birleşik ağ (görünüm 2 GPU geçişi 16 → 24 ms).
+
+Kare süresi, 1920×1080, A/B D52'ye karşı:
+
+| 10 görünüm toplamı | D52 | D53 | Oran |
+|---|---|---|---|
+| Yazılım, gölge + MSAA | 2307 ms | 2380 ms | 1,03 |
+| Yazılım, düz | 1195 ms | 1329 ms | 1,11 |
+| GPU geçişleri, gölge + MSAA | 134 ms | 145 ms | 1,08 |
+| GPU geçişleri, düz | 88 ms | 98 ms | 1,11 |
+
+Yazılım ölçümünde makine yüklüydü (mutlak süreler normalin yaklaşık 4 katı); oran önceki koşularda ×1,01–1,06 / ×1,08–1,09 çıktı. GPU satırı iki ölçümün birleşimi: görünüm 1–3 dilimli ızgaradan sonra, 4–10 ondan önce (bu görünümlerin yolu dilimlemeden etkilenmez).
+
+| Küp görünümleri, her kare iş bitimi beklenerek kare süresi (D52 → D53) | Görünüm 1 | Görünüm 2 | Görünüm 3 |
+|---|---|---|---|
+| gölge + MSAA | 42 → 29 ms | 43 → 28 ms | 41 → 25 ms |
+| düz | 22 → 15 ms | 20 → 19 ms | 24 → 15 ms |
+| Ana iş parçacığı (motor + gönderim, gölge + MSAA) | 9,3 → 1,5 ms | 8,5 → 1,6 ms | 9,2 → 1,5 ms |
+
+GPU varsayılan ayarda geçiş süresi 16,6 ms üstü: görünüm 1 (18,0), 2 (17,5), 6 (17,1). Bekleme ölçümü tarayıcının bildirim gecikmesini de içerir, FPS değildir.
+
+Kabul: `gpu_check` 66/66 (en kötü %0,029), 270/270 test (iki kipte), `check_demo` geçti (temas gölgesi dolu, duran sahnede yazılmıyor, hareket edende yazılıyor). Bozma: dördüncü doku yuvası boş bağlanınca `gpu_check` 20 satırda düşüyor.
+Sınır: gerçek ekranda FPS hâlâ ölçülmedi (uygulama penceresi odakta değilken `requestAnimationFrame` saniyede bir çalışıyor). Tek adaptör. Temas gölgesi kutu izi: eğik ve yuvarlak nesnede yaklaşık. Yansıma düzlemi düz.
