@@ -1657,6 +1657,12 @@ static void floor_ao_collect(const Mesh* m, const Material* mat, const Mat4* mod
     /* yarıçap: nesnenin yüksekliğiyle büyür, duvar dibi geniş, küçük taş dar */
     s->r = m_clampf(0.25f + 0.45f * (mx.y - mn.y), 0.3f, 1.4f);
     s->s = near * near;
+    /* küre tek noktada değer: kutu izi yerine merkezden yuvarlak düşüş */
+    if (m == g.sphere) {
+        s->r = m_maxf(hx, hz) * 1.15f + 0.1f;
+        s->hx = s->hz = 0.0f;
+        s->s *= 0.8f;
+    }
 }
 
 /* nesneler çizildi, zemin birazdan: iz değiştiyse dokuya yaz. Sahne durunca kare maliyeti de GPU yüklemesi de sıfır */

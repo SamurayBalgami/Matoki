@@ -57,6 +57,11 @@ static void resolve_rows(void* ctx, u32 index, u32 tid) {
         for (i32 x = 0; x < fb->w; x++) {
             usize i = (usize)y * (usize)fb->w + (usize)x;
             const u32* s = &fb->color_ms[i * RASTER_MSAA];
+            /* kenar olmayan pikselde 4 örnek aynı: (4a + 2) >> 2 = a, ortalama gereksiz */
+            if (s[0] == s[1] && s[0] == s[2] && s[0] == s[3]) {
+                fb->color[i] = s[0];
+                continue;
+            }
             u32 out = 0;
             for (u32 ch = 0; ch < 32; ch += 8) {
                 u32 sum = 2;

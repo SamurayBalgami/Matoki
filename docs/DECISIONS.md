@@ -735,3 +735,33 @@ GPU varsayılan ayarda geçiş süresi 16,6 ms üstü: görünüm 1 (18,0), 2 (1
 
 Kabul: `gpu_check` 66/66 (en kötü %0,029), 270/270 test (iki kipte), `check_demo` geçti (temas gölgesi dolu, duran sahnede yazılmıyor, hareket edende yazılıyor). Bozma: dördüncü doku yuvası boş bağlanınca `gpu_check` 20 satırda düşüyor.
 Sınır: gerçek ekranda FPS hâlâ ölçülmedi (uygulama penceresi odakta değilken `requestAnimationFrame` saniyede bir çalışıyor). Tek adaptör. Temas gölgesi kutu izi: eğik ve yuvarlak nesnede yaklaşık. Yansıma düzlemi düz.
+
+## D54. D53'ün yazılım maliyeti geri alındı: MSAA yolu ve anizotropi
+Önce ölçüm aracı düzeltildi: `node --no-liftoff --no-wasm-tier-up` ile V8'in çalışırken yaptığı derleme gürültüsü kalkar; motor kendisiyle kıyaslanınca toplam fark %1–2 (görünüm başına ±%5). Bu bayraklar olmadan aynı kod ±%30 oynuyordu ve ilk görünüm 5 kat yavaş görünebiliyordu.
+
+Görünüm 8, tek thread, kare başına profil:
+
+| Kalem | MSAA'sız | MSAA, önce | MSAA, sonra |
+|---|---|---|---|
+| Gölgeleme (JIT) | 153 ms | 160 ms | 125 ms |
+| Üçgen işleme | 14 ms | 50 ms | 39 ms |
+| Çözümleme | 0 | 11,5 ms | 3,9 ms |
+
+- **Çözümleme:** dört örnek eşitse ortalama alınmaz: (4a + 2) >> 2 = a. **Üçgen işleme:** en kötü köşesi içeride olan quad kenar testine girmez, tam kapsanan piksel eski değeri okumadan yazılır. İkisinden sonra `hashes.mjs` 11/11 aynı.
+- **Anizotropi:** shader parçaları tek tek kapatıldı: süzme gölgelemenin yarısı (131,9 → 65,1 ms kapalıyken), seviye karışımı tek başına %20; bulut %7, zemin alanı %5, sis ve ton %1'in altında. En çok 8 örnek → 4, karışım bandı %60 → %40. Bedel: uzak zeminde hafif yumuşama, 1080p yakın kırpıntıda taş deseni okunuyor. Görüntü bu adımda bilerek değişti.
+- **Temas gölgesi:** küre kutu izi yerine yuvarlak iz bırakır.
+- **Denenip atılan:** arkası dönük yüzeyde ve uzak kademe dışında gölgeyi atlamak: yazılımda gölgenin kendi payı yalnız ~3 ms, ölçülebilir kazanç yok (×1,005).
+
+| A/B, 1920×1080, 10 görünüm toplamı | Önce | Sonra | Oran |
+|---|---|---|---|
+| Yazılım, gölge + MSAA, D53'e karşı (tek thread) | 2441 ms | 2211 ms | 0,906 |
+| Yazılım, düz, D53'e karşı (tek thread) | 1542 ms | 1418 ms | 0,920 |
+| Yazılım, gölge + MSAA, D52'ye karşı (tüm thread) | 554 ms | 521 ms | 0,940 |
+| Yazılım, düz, D52'ye karşı (tüm thread) | 323 ms | 325 ms | 1,006 |
+| GPU geçişleri, gölge + MSAA, D53'e karşı | 158 ms | 146 ms | 0,92 |
+| GPU geçişleri, düz, D53'e karşı | 100 ms | 95 ms | 0,95 |
+
+Kazanç eşit dağılmadı: görünüm 3 tek thread'de ×1,03, görünüm 6 D52'ye karşı ×1,06, görünüm 2 düz kipte D52'ye karşı ×1,15. GPU varsayılan ayarda geçiş süresi 16,6 ms üstü: görünüm 2 (21,6), 10 (17,2); görünüm 6 sınırda (16,6). Bu ölçüm öncekilerden sıcak bir koşuda; D53'te aynı görünümler 17,5 / 14,7 / 17,1 ms okunmuştu, görünüm başına tek değere güvenilmez, oran aynı koşudan.
+
+Kabul: `gpu_check` 66/66 (en kötü %0,029), 270/270 test, `check_demo` geçti.
+Sınır: gerçek ekranda FPS hâlâ ölçülmedi. GPU'da MSAA ve gölge kopyası (zaman damgası dışında) açık kalem; tek adaptör. Yazılımda üçgen işleme MSAA'sız yolun hâlâ yaklaşık 3 katı.

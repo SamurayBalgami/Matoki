@@ -1,6 +1,6 @@
 // shaders/lit_hq.mtk — yüksek kaliteli aydınlatma: anizotropik + trilinear doku süzme, yumuşak diffuse, kumaş
-// geçirgenliği, üstel sis. Doku: mip seviyesi KÜÇÜK eksenden (ayak izi ≥ büyük / 8), büyük eksen boyunca oran kadar (1, 2,
-// 4, 8) çift doğrusal örnek, iki komşu seviye arasında kesirli seviyeyle karışım (seviye sınırında görünür bant yok).
+// geçirgenliği, üstel sis. Doku: mip seviyesi KÜÇÜK eksenden (ayak izi ≥ büyük / 4), büyük eksen boyunca oran kadar (1, 2,
+// 4) çift doğrusal örnek, iki komşu seviye arasında kesirli seviyeyle karışım (seviye sınırında görünür bant yok).
 // Işık: Lambert ↔ half-Lambert² diffuse + yarım küre ortam + arkadan ışık. Sis: 1 - 2^(-4x²), x = (d - başla) / aralık
 // (yumuşak başlar, ufukta gök rengine erir; sky.mtk ile aynı ufuk rengi).
 // Gölge (M13 faz 7): gfx3d/shadow.h haritası, f32 derinlik bitleri texel_fetch + bitcast_f32 ile, süzmeli karşılaştırma
@@ -57,19 +57,12 @@ fn axis4(p: vec2, axis: vec2, k: i32) -> vec4 {
     for i in 0..4 { a += sample_level(tex, p + axis * ((f32(i) + 0.5) * 0.25 - 0.5), k); }
     return a * 0.25;
 }
-fn axis8(p: vec2, axis: vec2, k: i32) -> vec4 {
-    var a = vec4(0.0);
-    for i in 0..8 { a += sample_level(tex, p + axis * ((f32(i) + 0.5) * 0.125 - 0.5), k); }
-    return a * 0.125;
-}
 // örnek sayısı quad başına: büyük / küçük eksen oranı kadar (GPU'lardaki gibi). Koşullar quad-sabit → seçilmeyen kol çalışmaz (D43)
 fn axis_avg(p: vec2, axis: vec2, k: i32, ratio2: f32) -> vec4 {
-    return select(ratio2 <= 1.5, sample_level(tex, p, k),
-           select(ratio2 <= 4.0, axis2(p, axis, k),
-           select(ratio2 <= 16.0, axis4(p, axis, k), axis8(p, axis, k))));
+    return select(ratio2 <= 1.5, sample_level(tex, p, k), select(ratio2 <= 6.0, axis2(p, axis, k), axis4(p, axis, k)));
 }
 
-// anizotropik + trilinear: büyük eksen boyunca en çok 8 örnek, her örnek gerekirse iki seviyede
+// anizotropik + trilinear: büyük eksen boyunca en çok 4 örnek (D54: gölgelemenin yarısı buradaydı, taş ve tuğla dokusunda 8 örnekle farkı görünmüyor), her örnek gerekirse iki seviyede
 fn sample_aniso(p: vec2) -> vec4 {
     let ts = tex_size(tex);
     let dx = dFdx(p);
@@ -82,8 +75,8 @@ fn sample_aniso(p: vec2) -> vec4 {
     let major2 = max(lx, ly);
     let minor2 = min(lx, ly);
     let axis = select(x_major, dx, dy);
-    // texel cinsinden ayak izi²: küçük eksen, ama büyük eksenin 1/8'inden az değil (8 örnek kapsar)
-    let foot2 = max(minor2, major2 * 0.015625);
+    // texel cinsinden ayak izi²: küçük eksen, ama büyük eksenin 1/4'ünden az değil (4 örnek kapsar)
+    let foot2 = max(minor2, major2 * 0.0625);
     let lodf = select(use_mip != 0, 0.5 * log2(max(foot2, 1.0)), 0.0);
     let l0f = floor(lodf);
     let frac = lodf - l0f;
@@ -92,7 +85,7 @@ fn sample_aniso(p: vec2) -> vec4 {
     // uzak seviyede (texel başına 8+ piksel ayak izi) doku zaten ortalama, ayrıca sisli: en çok 2 örnek yeter (D52)
     let ratio2 = min(select(foot2 > 0.0, major2 / max(foot2, 0.000001), 1.0), select(l0 >= 3, 4.0, 1000000.0));
     // seviye geçişi yalnız kesrin orta bandında (donanımlardaki "brilinear"): uçlarda tek seviye yeter, örnek sayısı yarıya iner (D50)
-    let w = clamp((frac - 0.2) * 1.6667, 0.0, 1.0);
+    let w = clamp((frac - 0.3) * 2.5, 0.0, 1.0);
     return select(w <= 0.0, axis_avg(p, axis, l0, ratio2),
            select(w >= 1.0, axis_avg(p, axis, l1, ratio2), mix(axis_avg(p, axis, l0, ratio2), axis_avg(p, axis, l1, ratio2), w)));
 }

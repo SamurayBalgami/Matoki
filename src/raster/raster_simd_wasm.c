@@ -241,11 +241,25 @@ void raster_tile_msaa_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i3
             u32 smask[4] = { 0, 0, 0, 0 };
             v128_t zs[4];
             u32 pass = 0;
+            /* quad'ın en kötü köşesi bile içerideyse piksel başına kenar testi gereksiz (sonuç aynı) */
+            b32 inside = full;
+            if (!inside) {
+                inside = TRUE;
+                for (u32 k = 0; k < 3; k++) {
+                    i64 lo = t->e[k].c + t->e[k].sx * qx + t->e[k].sy * qy + mn[k];
+                    if (t->e[k].sx < 0) lo += t->e[k].sx;
+                    if (t->e[k].sy < 0) lo += t->e[k].sy;
+                    if (lo < 0) {
+                        inside = FALSE;
+                        break;
+                    }
+                }
+            }
             for (u32 l = 0; l < 4; l++) {
                 i32 px = qx + LX[l], py = qy + LY[l];
                 if (px >= fbw || py >= fbh) continue;
                 u32 cov = 0xF;
-                if (!full) {
+                if (!inside) {
                     i64 c[3];
                     b32 all_in = TRUE, none = FALSE;
                     for (u32 k = 0; k < 3; k++) {
@@ -295,8 +309,14 @@ void raster_tile_msaa_simd(Raster* r, TriSetup* t, i32 tx0, i32 ty0, i32 tx1, i3
             for (u32 l = 0; l < 4; l++) {
                 if (!(pass & (1u << l))) continue;
                 usize base = ((usize)(qy + LY[l]) * (usize)fbw + (usize)(qx + LX[l])) * RASTER_MSAA;
-                const v128_t m = wasm_i32x4_ne(wasm_v128_and(wasm_i32x4_splat((i32)smask[l]), sbits), zero);
                 u32* cp = &fb->color_ms[base];
+                if (!blend && smask[l] == 0xF) {   /* tam kapsama: eskiyi okumaya gerek yok */
+                    wasm_v128_store(cp, wasm_i32x4_splat((i32)out[l]));
+                    if (t->depth_write) wasm_v128_store(&fb->depth_ms[base], zs[l]);
+                    written++;
+                    continue;
+                }
+                const v128_t m = wasm_i32x4_ne(wasm_v128_and(wasm_i32x4_splat((i32)smask[l]), sbits), zero);
                 if (blend) {
                     for (u32 s = 0; s < RASTER_MSAA; s++) {
                         if (smask[l] & (1u << s)) cp[s] = raster_blend_px(blend, out[l], cp[s]);
