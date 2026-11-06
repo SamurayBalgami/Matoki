@@ -832,3 +832,32 @@ bayrak görünümünde (5) tüm sütunlar, jöle görünümünde (11) MSAA sütu
 Maliyet (yazılım, tek thread, 960×540, 4 tekrarın en küçüğü): bayrak görünümü gölge + MSAA 102,5 → 115,0 ms, düz 62,8 → 63,0 ms; yalnız shader
 değişiklikleri (sıklaştırma 1 iken) 101,4 / 61,2 ms, yani pah, alan ve normal ofseti ölçüm gürültüsünde. Diğer görünümler toplamı ×1,00–1,03 (gürültü
 ±%5). GPU geçiş süresi ölçülmedi.
+
+## D59. Fizik doğruluk düzeneği: zor sahneler, açık eşikler
+Amaç: "PhysX / Box2D'den iyi" iddiası ölçülebilir olsun. `phys_bench` hız ölçüyordu; doğruluk için Box2D'nin (solver2d) ve PhysX'in kendi
+testlerindeki türden sahneler yoktu. `src/phys/phys_suite.c` 13 sahne, her biri en çok 4 ölçüt ve açık bir geçme eşiği; ad, ölçüt ve eşik
+C tablosunda (tek kaynak), `tools/phys_suite.mjs` yazdırır (`--json`). Analitik cevabı olanlar yasayla karşılaştırılır (sürtünme rampası
+a = g(sin θ − μ cos θ), esneklik h/h₀ = e², sarkaç enerjisi, serbest dönmede açısal momentum); olmayanlar bozulma ölçüsüyle. Varsayılan dünya,
+uyku kapalı (uykunun gizlediği titreme de ölçülsün).
+
+İlk ölçüm (i7-12650H, node 24, tek thread) — 6/12 geçti:
+
+| sahne | sonuç | ana ölçüt |
+|---|---|---|
+| dikey yığın (20 kutu) | KALDI | kule yıkılıyor: yatay kayma 7,7 m |
+| piramit (210 kutu) | geçti | yer değ. 0,030 m |
+| kütle oranı (1000 kg / 1 kg) | KALDI | ağır kutu yığını eziyor: batma 2,0 m, girişim 0,42 m |
+| ağır sarkaç zinciri (oran 1000) | KALDI | patlıyor (eklem hatası 269 m); oran 1'de bile %5 uzama, oran 100'de 12 m |
+| sürtünme rampası | KALDI | kayan/duran 9/9 doğru; etkin kinetik sürtünme %4–5 düşük (μ 0,5: a 0,813, olması gereken 0,657 m/s²) |
+| esneklik | geçti | en büyük hata 0,008 |
+| girişim kurtarma | KALDI | ayrılma hızı 3,5 m/s (eşik 3; Box2D'nin itme sınırı 3 m/s) |
+| domino (40) | geçti | dalga 2,7 m/s |
+| mermi (50–800 m/s) | geçti | tünelleme yok |
+| sarkaç enerjisi | geçti | sapma %0,72 mgL |
+| açısal momentum | KALDI | jiroskopik terim yok: L %5,3 sapıyor, ara eksende takla yok (Dzhanibekov) |
+| belirlenimcilik | geçti | iki koşu ve SIMD = skaler bit-bit aynı |
+| büyük yığın 2000 kutu | bilgi | 4,0 ms/adım aktif, 4,5 oturmuş, 9111 temas |
+
+Sahne kurulumu ayrıca sınandı: zincir kütle oranı 1'de patlamıyor (kurulum doğru), domino 8 s'de yetişmiyordu (süre 20 s'ye çıktı), ağırlık önce
+halkalarla çakışıyordu (düzeltildi). Eşikler bizim; Box2D / PhysX ile aynı sahnede yan yana ölçüm sonraki adım (kodlarını indirmek ayrıca onay ister).
+Kabul: `test_phys_suite.c` bugün geçen 6 sahnenin geçmeye devam ettiğini ve kalan 6'nın belirleyici olduğunu denetler; 282/282 test (iki kipte).

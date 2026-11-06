@@ -8,6 +8,7 @@ GPU kullanmadan tarayıcıda çalışan yazılım render motoru. C11, freestandi
 - `python build.py serve` → `http://localhost:8080/3d.html` (COOP/COEP başlıklı)
 - `node tools/bench.mjs build/engine.wasm [--frames N] [--res WxH]` → sabit görünümlerde ms + framebuffer hash
   (performans değişikliğinden önce/sonra çalıştır; hash değişmemeli ya da değişimin nedeni yazılmalı)
+- `node tools/phys_suite.mjs` → fizik doğruluk düzeneği (D59): zor sahneler, açık eşikler (fizik değişikliğinden önce/sonra)
 - `node tools/bench.mjs --mt` → tek thread ↔ tüm thread'ler; `python build.py test --threads 0` → worker'sız testler
 - `node tools/hashes.mjs` → görünüm × shader × MSAA kare hash'leri (render değişikliğinden önce/sonra karşılaştır)
 - `node tools/shot.mjs <görünüm> <shader> out.png` → kareyi PNG'ye; `tools/bench_geo.mjs` geometri, `bench_quality.mjs` kalite maliyeti
