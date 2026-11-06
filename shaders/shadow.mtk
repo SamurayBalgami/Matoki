@@ -1,0 +1,111 @@
+// shaders/shadow.mtk — gölge haritası okuması (D57 kütüphanesi; M13 faz 7, D45, D46, D51): gfx3d/shadow.h haritası, f32 derinlik
+// bitleri texel_fetch + bitcast_f32 ile. İki kademe tek dokuda alt alta: yakın keskin (shadow_mat), uzak geniş (shadow_mat2, satır + boy).
+// shadow_lit: 4×4 üçüncü derece B-spline süzme, alıcı düzlemi, kenarda olmayan quad'da 5 okuma (lit_hq). shadow_lit_fast: tek bilinear (su).
+// Kapalıyken 1×1 / derinlik 2 / matrisler 0 → çarpan tam 1. `import "shadow.mtk";` ile katılır; 1 = aydınlık, 0 = gölgede.
+
+uniform shadow: texture2d @clamp;
+uniform shadow_mat: mat4;
+uniform shadow_bias: f32;
+uniform shadow_mat2: mat4;
+uniform shadow_bias2: f32;
+
+// üçüncü derece B-spline ağırlıkları, kesir f ∈ [0, 1): dört komşu (taban - 1 .. taban + 2), toplam 1
+fn spline(f: f32) -> vec4 {
+    let g = 1.0 - f;
+    let f2 = f * f;
+    let g2 = g * g;
+    return vec4(g2 * g, 4.0 - 3.0 * f2 * (2.0 - f), 4.0 - 3.0 * g2 * (2.0 - g), f2 * f) * (1.0 / 6.0);
+}
+
+fn shadow_cmp(ix: i32, iy: i32, z: f32) -> f32 {
+    return select(z > bitcast_f32(texel_fetch(shadow, ix, iy)), 0.0, 1.0);
+}
+
+// bir satırın ağırlıklı toplamı; z satırın lane konumundaki derinliği, zu yatayda texel başına eğimi, cx taban sütunun lane'e uzaklığı
+fn shadow_row(ix: i32, iy: i32, z: f32, zu: f32, cx: f32, w: vec4) -> f32 {
+    return shadow_cmp(ix - 1, iy, z + zu * (cx - 1.0)) * w.x + shadow_cmp(ix, iy, z + zu * cx) * w.y +
+           shadow_cmp(ix + 1, iy, z + zu * (cx + 1.0)) * w.z + shadow_cmp(ix + 2, iy, z + zu * (cx + 2.0)) * w.w;
+}
+
+// ışık görüşünden görünür mü: 1 = aydınlık, 0 = gölgede; 4×4 komşunun sonucu B-spline ağırlıklarıyla karışır. Her komşu alıcı
+// düzleminin o noktadaki derinliğiyle karşılaştırılır: yoksa geniş çekirdek eğik yüzeyin kendisini gölge sayar
+fn shadow_lit(p: vec3) -> f32 {
+    // iki kademe (D46): çekirdek yakın haritaya sığıyorsa o (keskin), yoksa uzak; seçim lane başına, türevler kademe başına
+    let s0 = shadow_mat * vec4(p, 1.0);
+    let s1 = shadow_mat2 * vec4(p, 1.0);
+    let size = tex_size(shadow).x;
+    let lo = 6.0 / size;
+    let hi = 1.0 - lo;
+    let near = s0.x > lo && s0.x < hi && s0.y > lo && s0.y < hi && s0.z <= 1.0;
+    let sx = select(near, s0.x, s1.x);
+    let sy = select(near, s0.y, s1.y);
+    let sz = select(near, s0.z, s1.z);
+    let x = sx * size - 0.5;
+    let y = sy * size - 0.5;
+    let fx = floor(x);
+    let fy = floor(y);
+    let wx = spline(x - fx);
+    let wy = spline(y - fy);
+    let ix = i32(fx);
+    let iy = i32(fy) + select(near, 0, i32(size));
+    let bias = select(near, shadow_bias, shadow_bias2);
+    let z = sz - bias;
+    // derinliğin texel başına eğimi: ekran türevlerinden (2×2 sistemin çözümü), sıçrama olan quad'da taşmasın diye kenetli
+    let xdx = select(near, dFdx(s0.x), dFdx(s1.x)) * size;
+    let xdy = select(near, dFdy(s0.x), dFdy(s1.x)) * size;
+    let ydx = select(near, dFdx(s0.y), dFdx(s1.y)) * size;
+    let ydy = select(near, dFdy(s0.y), dFdy(s1.y)) * size;
+    let zdx = select(near, dFdx(s0.z), dFdx(s1.z));
+    let zdy = select(near, dFdy(s0.z), dFdy(s1.z));
+    let det = xdx * ydy - ydx * xdy;
+    let inv = select(abs(det) > 0.000001, 1.0 / det, 0.0);
+    let lim = bias * 2.0;
+    let zu = clamp((ydy * zdx - ydx * zdy) * inv, -lim, lim);
+    let zv = clamp((xdx * zdy - xdy * zdx) * inv, -lim, lim);
+    let cx = fx - x;
+    let cy = fy - y;
+    // önce beş nokta (köşeler + orta): quad'da hepsi aydınlık ya da hepsi gölgeyse kenarda değiliz, 16 okuma gereksiz (koşul quad-sabit →
+    // gerçek dal, D43). Köşeler quad'ın ayak izi kadar açık: türev dördüncü lane'i görmez, ama onun çekirdeği de bu karenin içinde.
+    // q = dFdx(probe · piksel x): probe quad'da sabitken probe'un kendisi; sabit değilse zaten kenar
+    let mi = min(i32(ceil(max(abs(xdx) + abs(xdy), abs(ydx) + abs(ydy)))), 3);
+    let m = f32(mi);
+    let probe = shadow_cmp(ix - 1 - mi, iy - 1 - mi, z + zu * (cx - 1.0 - m) + zv * (cy - 1.0 - m)) +
+                shadow_cmp(ix + 2 + mi, iy - 1 - mi, z + zu * (cx + 2.0 + m) + zv * (cy - 1.0 - m)) +
+                shadow_cmp(ix - 1 - mi, iy + 2 + mi, z + zu * (cx - 1.0 - m) + zv * (cy + 2.0 + m)) +
+                shadow_cmp(ix + 2 + mi, iy + 2 + mi, z + zu * (cx + 2.0 + m) + zv * (cy + 2.0 + m)) +
+                shadow_cmp(ix, iy, z + zu * cx + zv * cy);
+    let q = dFdx(probe * frag_coord().x);
+    let edge = dFdx(probe) != 0.0 || dFdy(probe) != 0.0 || abs(q - 2.5) < 2.5;
+    let full = shadow_row(ix, iy - 1, z + zv * (cy - 1.0), zu, cx, wx) * wy.x + shadow_row(ix, iy, z + zv * cy, zu, cx, wx) * wy.y +
+               shadow_row(ix, iy + 1, z + zv * (cy + 1.0), zu, cx, wx) * wy.z + shadow_row(ix, iy + 2, z + zv * (cy + 2.0), zu, cx, wx) * wy.w;
+    let lit = select(edge, full, q * 0.2);
+    // iki haritanın da dışı aydınlık; kapalı harita (matrisler 0) ağırlık toplamının yuvarlamasına girmeden tam 1 verir
+    let inside = near || (sx > lo && sx < hi && sy > lo && sy < hi && sz <= 1.0);
+    return select(inside, lit, 1.0);
+}
+
+// tek bilinear karşılaştırma (D51, su): dalgalı yüzeyde süzme seçilmez, 4 okuma yeter; kademe sınırı daha dar (2 texel)
+fn shadow_lit_fast(p: vec3) -> f32 {
+    let s0 = shadow_mat * vec4(p, 1.0);
+    let s1 = shadow_mat2 * vec4(p, 1.0);
+    let size = tex_size(shadow).x;
+    let lo = 2.0 / size;
+    let hi = 1.0 - lo;
+    let near = s0.x > lo && s0.x < hi && s0.y > lo && s0.y < hi && s0.z <= 1.0;
+    let sx = select(near, s0.x, s1.x);
+    let sy = select(near, s0.y, s1.y);
+    let z = select(near, s0.z - shadow_bias * 3.0, s1.z - shadow_bias2 * 3.0);
+    let x = sx * size - 0.5;
+    let y = sy * size - 0.5;
+    let fx = floor(x);
+    let fy = floor(y);
+    let ix = i32(fx);
+    let iy = i32(fy) + select(near, 0, i32(size));
+    let a = shadow_cmp(ix, iy, z);
+    let b = shadow_cmp(ix + 1, iy, z);
+    let c = shadow_cmp(ix, iy + 1, z);
+    let e = shadow_cmp(ix + 1, iy + 1, z);
+    let lit = mix(mix(a, b, x - fx), mix(c, e, x - fx), y - fy);
+    let inside = near || (sx > lo && sx < hi && sy > lo && sy < hi && s1.z <= 1.0);
+    return select(inside, lit, 1.0);
+}

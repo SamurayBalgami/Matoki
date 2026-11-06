@@ -523,6 +523,8 @@ static u32 lower_expr(Lower* L, Node* e, IrRef out[4]) {
     case NK_NAME: {
         Sym* y = e->sym;
         u32 n = y->type.n;
+        /* const (D57): değeri yerinde indirilir; katlama + CSE tek sabite çevirir */
+        if (y->kind == SYM_CONST) return lower_expr(L, y->g->init, out);
         for (u32 i = 0; i < n; i++) {
             if (y->kind == SYM_ATTRIBUTE) {
                 if (L->stage != MATOKI_STAGE_VERT) {

@@ -387,33 +387,30 @@ static ShadeFn lit_shader_for(i32 mode) {
     return shade_lit_tex;
 }
 
-/* .mtk'yi derle + JIT (aşama: frag / vert); uniform yerleşimi denetimi çağıranda. */
-/* lit ailesi shader'ın her uniform'u LitUniforms'taki aynı adlı alanla ad + tip + ofset olarak eşleşmeli (açılış ve canlı
- * derleme aynı denetim). Yalnız ofset bakmak yetmiyordu: aynı ofsette yanlış tip (işaretçiyi f32 okumak) ya da yapının
- * sonundan taşan yeni uniform geçiyordu. Uyuşmayan ilk uniform *bad'e (hata konumu için). tex ve tint zorunlu. */
-
-/* src NULL → gömülü dosya; değilse src (aynı ad günlükte) */
-static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* src, u32 len, u32 stage) {
-    const EmbedFile* ef = src ? NULL : embed_find(file);
+/* .mtk'yi derle + JIT (aşama: frag / vert). Frag uniform'ları LIT_LAYOUT'a adla bağlanır, denetimi derleyici yapar (D56);
+ * vert'in yerleşimi burada denetlenir. import'lar gömülü dosyalardan (D57); ov: const değiştirmeleri (NULL olabilir). */
+static MatokiProgram* matoki_load_ov(Arena* a, const char* file, u32 stage, const MatokiConsts* ov) {
+    const char* src = NULL;
+    u32 len = 0;
+    const EmbedFile* ef = embed_find(file);
     char buf[320];
     StrBuf sb;
     sb_init(&sb, buf, sizeof(buf));
-    if (!src && !ef) {
+    if (!ef) {
         sb_cstr(&sb, "matoki: gömülü değil: ");
         sb_cstr(&sb, file);
         log_sb(&sb);
         return NULL;
     }
-    if (!src) {
-        src = (const char*)ef->data;
-        len = ef->len;
-    }
+    src = (const char*)ef->data;
+    len = ef->len;
     MatokiProgram* p = ARENA_NEW(a, MatokiProgram);
     MatokiError e;
     MatokiOptions opt;
     mem_zero(&opt, sizeof(opt));
     opt.stage = stage;
     opt.layout = stage == MATOKI_STAGE_FRAG ? &LIT_LAYOUT : NULL;   /* frag: uniform'lar adla (D56) */
+    if (ov) opt.overrides = *ov;
     f64 t0 = sys_now_ms();
     b32 ok = matoki_compile(a, src, len, &opt, p, &e) && matoki_jit(a, p, &e);
     f64 t1 = sys_now_ms();
@@ -445,6 +442,13 @@ static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* sr
     }
     sb_cstr(&sb, "matoki: ");
     sb_cstr(&sb, file);
+    for (u32 i = 0; ov && i < ov->count; i++) {
+        sb_cstr(&sb, i ? ", " : " (");
+        sb_cstr(&sb, ov->items[i].name);
+        sb_char(&sb, '=');
+        sb_f64(&sb, ov->items[i].value, 0);
+        if (i + 1 == ov->count) sb_char(&sb, ')');
+    }
     sb_cstr(&sb, " derlendi + JIT: ");
     sb_u64(&sb, p->ir_live);
     sb_cstr(&sb, " IR komutu (");
@@ -458,33 +462,15 @@ static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* sr
     return p;
 }
 
-static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) { return matoki_load_src(a, file, NULL, 0, stage); }
+static MatokiProgram* matoki_load(Arena* a, const char* file, u32 stage) { return matoki_load_ov(a, file, stage, NULL); }
 
-/* lit_hq.mtk'nin gölgesiz türevi: shadow_lit(wpos) → 1.0 (fonksiyon kullanılmaz, DCE atar). Çarpan zaten tam 1 olduğu
- * için çıktı gölgeli programın gölge kapalı haliyle ve faz 6 öncesiyle bit-bit aynı; gölge hesabı hiç çalışmaz. */
+/* lit_hq.mtk'nin gölgesiz türevi (D57): const SHADOWS = false → select katlanır, shadow_lit hiç indirilmez (DCE). Çarpan zaten
+ * tam 1 olduğu için çıktı gölgeli programın gölge kapalı haliyle bit-bit aynı. Eskiden kaynak metninde 'shadow_lit(wpos)' aranıp
+ * '1.0' yazılıyordu: kaynak değişince sessizce bozulabilirdi */
 static MatokiProgram* matoki_load_hq_noshadow(Arena* a) {
-    const EmbedFile* ef = embed_find("lit_hq.mtk");
-    static const char KEY[] = "shadow_lit(wpos)";
-    if (!ef) return NULL;
-    const char* src = (const char*)ef->data;
-    u32 n = ef->len, k = (u32)sizeof(KEY) - 1, at = n;
-    u32 hits = 0;
-    for (u32 i = 0; i + k <= n; i++) {
-        if (mem_equal(src + i, KEY, k)) {
-            if (!hits) at = i;
-            hits++;
-        }
-    }
-    /* tam bir çağrı (yorumda / ikinci kullanımda geçerse türev yanlış yeri değiştirirdi): değilse gölgeli program kullanılır */
-    if (hits != 1) {
-        LOG("matoki: lit_hq.mtk'de 'shadow_lit(wpos)' %u kez geçiyor (1 olmalı): gölgesiz türev derlenmedi", hits);
-        return NULL;
-    }
-    char* out = ARENA_ARRAY(a, char, n + 1);
-    mem_copy(out, src, at);
-    mem_copy(out + at, "1.0", 3);
-    mem_copy(out + at + 3, src + at + k, n - at - k);
-    return matoki_load_src(a, "lit_hq.mtk (gölgesiz)", out, n - k + 3, MATOKI_STAGE_FRAG);
+    static const MatokiOverride NO_SHADOW[] = { { "SHADOWS", 0.0f } };
+    MatokiConsts ov = { NO_SHADOW, 1 };
+    return matoki_load_ov(a, "lit_hq.mtk", MATOKI_STAGE_FRAG, &ov);
 }
 
 /* program GPU yolunun sınırlarını aşarsa g_gpu[id] öncekini korur (yazılım yolu etkilenmez) */

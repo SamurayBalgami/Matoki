@@ -3,18 +3,18 @@
 // sisle eriyen zemin gökle dikişsiz birleşir. Uniform'lar adla bağlanır (D56, gfx3d/lit_layout.c):
 // fog_color = ufuk, tint = tepe, to_light = güneş yönü, light_color = güneş rengi.
 // Bulut (D52): tek bilinear okuma, doku başlangıçta üretilir (R yoğunluk, G güneş tarafı aydınlığı). Düz katman izdüşümü, ufukta söner.
+// Bulut eşlemesi ve rüzgâr atmos.mtk'de (D57): yansımalar ve zemin gölgesi aynı katmanı görür.
+
+import "atmos.mtk";
 
 uniform tex: texture2d @bilinear;
 uniform to_light: vec3;
 uniform ambient: f32;
 uniform light_color: vec3;
-uniform fog_start: f32;
 uniform fog_color: vec3;
-uniform fog_end: f32;
 uniform eye: vec3;
 uniform use_mip: i32;
 uniform tint: vec3;
-uniform time: f32;
 uniform translucency: f32;
 
 varying wpos: vec3;
@@ -33,7 +33,7 @@ fn frag() -> vec4 {
     // ufkun altı: sis rengi (zemin zaten sisle bu renge erir)
     let clear = select(dir.y >= 0.0, sky, fog_color);
     // bulut katmanı: tepede yakın, ufka doğru uzak. Güneşe bakan kenar parlak, güneşin yanında ince gümüş astar
-    let layer = sample_level(tex, vec2(dir.x, dir.z) * (0.42 / (up + 0.28)) + vec2(0.0035, 0.0014) * time, 0);
+    let layer = sample_level(tex, cloud_uv(dir, up), 0);
     let cov = smoothstep(0.5, 0.68, layer.r) * smoothstep(0.015, 0.2, dir.y);
     let shade = mix(0.66, 1.0, layer.g) + c * c * 0.08;
     let base = mix(clear, mix(vec3(0.72, 0.76, 0.84), vec3(1.0, 0.98, 0.95), shade), cov * 0.92);

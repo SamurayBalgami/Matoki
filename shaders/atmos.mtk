@@ -1,0 +1,30 @@
+// shaders/atmos.mtk — gök, bulut ve sisin ortak kodu (D57): gök kubbesi, yansımalar ve zemin aynı rüzgârı, aynı bulut
+// eşlemesini, aynı sis derinliğini kullanır. Kütüphane: giriş noktası yok, `import "atmos.mtk";` ile katılır.
+// Bulut dokusu (D52, D53): R yoğunluk, G güneş tarafı aydınlığı; düz katman izdüşümü, tepede yakın, ufka doğru uzak.
+// Uniform'lar motorun kare alanları (gfx3d/lit_layout.c): import eden shader aynısını bildirebilir, bir kez sayılır.
+
+uniform time: f32;
+uniform clouds: texture2d @bilinear;
+uniform fog_start: f32;
+uniform fog_end: f32;
+
+// bulut katmanının kayması, uv / s (gök, yansıma ve zemin gölgesi birlikte kayar)
+const CLOUD_WIND = vec2(0.0035, 0.0014);
+// zemindeki bulut gölgesi: dokunun bir tekrarı 256 m
+const CLOUD_GROUND_SCALE = 0.0039;
+
+// d yönündeki bulut katmanının dokusu; up = clamp(d.y, 0, 1)
+fn cloud_uv(d: vec3, up: f32) -> vec2 {
+    return vec2(d.x, d.z) * (0.42 / (up + 0.28)) + CLOUD_WIND * time;
+}
+
+// bulut gölgesi (D53): güneşin p'ye düşen payı, 0,5 ile 1 arası. Quad başına bir okuma (quad0): gölge yumuşak, 16 piksele bir yeter
+fn cloud_sun(p: vec3) -> f32 {
+    return 1.0 - 0.5 * smoothstep(0.55, 0.72, sample_level(clouds, quad0(vec2(p.x, p.z) * CLOUD_GROUND_SCALE + CLOUD_WIND * time), 0).x);
+}
+
+// sis derinliği: 0 sisin başladığı yerde, 1 bittiği yerde (uzaklık d)
+fn fog_depth(d: f32) -> f32 {
+    let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
+    return max(d - fog_start, 0.0) * fog_scale;
+}

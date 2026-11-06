@@ -15,6 +15,39 @@ typedef struct Sema {
     Sym*         scope;
 } Sema;
 
+/* const ifadesi (D57): literal, önceki const, işleç, swizzle ve saf yerleşik çağrısı. Uniform, doku, türev, ekran konumu
+ * ve kullanıcı fonksiyonu yok: değer derlemede bilinir, katlama tek sabite indirir */
+static const Node* const_bad_node(const Node* e) {
+    switch (e->kind) {
+    case NK_INT: case NK_FLOAT: case NK_BOOL: return NULL;
+    case NK_NAME: return e->sym && e->sym->kind == SYM_CONST ? NULL : e;
+    case NK_UNARY: case NK_SWIZZLE: return const_bad_node(e->a);
+    case NK_BINARY: {
+        const Node* b = const_bad_node(e->a);
+        return b ? b : const_bad_node(e->b);
+    }
+    case NK_CALL: {
+        Builtin bi = (Builtin)e->builtin;
+        if (e->fn || bi == BI_NONE || (bi >= BI_SAMPLE && bi <= BI_MIP_LEVEL) || (bi >= BI_DFDX && bi <= BI_FRAG_COORD)) return e;
+        for (const Node* a = e->list; a; a = a->next) {
+            const Node* b = const_bad_node(a);
+            if (b) return b;
+        }
+        return NULL;
+    }
+    default: return e;
+    }
+}
+
+/* for sınırı olarak const: değeri tamsayı literaline (ya da -literal'e, başka bir const'a) inmeli */
+static b32 const_int_value(const Node* e, i64* out, u32 depth) {
+    if (depth > 64) return FALSE;
+    if (e->kind == NK_INT) { *out = e->ival; return TRUE; }
+    if (e->kind == NK_UNARY && e->op == T_MINUS && const_int_value(e->a, out, depth + 1)) { *out = -*out; return TRUE; }
+    if (e->kind == NK_NAME && e->sym && e->sym->kind == SYM_CONST) return const_int_value(e->sym->g->init, out, depth + 1);
+    return FALSE;
+}
+
 static const struct { const char* name; Builtin bi; } BUILTINS[] = {
     { "vec2", BI_VEC2 }, { "vec3", BI_VEC3 }, { "vec4", BI_VEC4 }, { "f32", BI_F32 }, { "i32", BI_I32 },
     { "abs", BI_ABS }, { "min", BI_MIN }, { "max", BI_MAX }, { "clamp", BI_CLAMP },
@@ -541,6 +574,24 @@ static void sema_stmt(Sema* s, Node* st) {
         if (st->c) sema_block(s, st->c);
         return;
     case NK_FOR: {
+        /* isimli sınır (D57): const, tamsayıya inmeli */
+        for (u32 k = 0; k < 2; k++) {
+            Node* b = k ? st->c : st->a;
+            if (!b) continue;
+            Sym* y = lookup(s, b->name, b->name_len);
+            i64 v;
+            if (!y || y->kind != SYM_CONST) {
+                err_name(s, b, "for sınırı tamsayı sabiti ya da const olmalı:");
+                return;
+            }
+            b->sym = y;
+            if (!const_int_value(b, &v, 0)) {
+                err_name(s, b, "for sınırı tamsayı değerli const olmalı:");
+                return;
+            }
+            if (k) st->hi = v;
+            else st->lo = v;
+        }
         if (st->hi - st->lo > 1024) {
             err_at(s, st, "döngü en fazla 1024 tur (tamamen açılır)");
             return;
@@ -622,7 +673,7 @@ static void sema_fn(Sema* s, FnDecl* f, const Node* site) {
     f->visit = 2;
 }
 
-b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, SemaResult* out, MatokiError* err) {
+b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, const MatokiConsts* overrides, SemaResult* out, MatokiError* err) {
     Sema s;
     mem_zero(&s, sizeof(s));
     s.a = a;
@@ -631,6 +682,7 @@ b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, SemaResult* out
     mem_zero(out, sizeof(*out));
 
     u32 uofs = 0, vslot = 0, aslot = 0;
+    u32 used_overrides = 0;
     Sym** gtail = &s.globals;
     for (GlobalDecl* g = m->globals; g && !err->failed; g = g->next) {
         for (GlobalDecl* h = m->globals; h != g; h = h->next) {
@@ -639,6 +691,54 @@ b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, SemaResult* out
             }
         }
         if (find_builtin(g->name, g->name_len) != BI_NONE) matoki_error(err, g->line, g->col, "yerleşik adı kullanılamaz:", g->name, g->name_len);
+        if (err->failed) break;
+        if (g->kind == GD_CONST) {
+            /* yalnız önceki global'ler görünür: const kendinden sonrakine bakamaz (döngü olmaz) */
+            Type t = sema_expr(&s, g->init);
+            if (err->failed) break;
+            if (g->has_decl_type) {
+                if (is_f(g->type)) coerce_float(g->init);
+                if (!type_eq(g->init->type, g->type)) {
+                    err_types(&s, g->init, "const değeri bildirilen tiple uyuşmuyor", g->init->type, g->type);
+                    break;
+                }
+            }
+            t = g->init->type;
+            if (t.base != TB_FLOAT && t.base != TB_INT && t.base != TB_BOOL) {
+                err_types(&s, g->init, "const bu tipte olamaz", t, type_make(TB_ERROR, 0));
+                break;
+            }
+            const Node* bad = const_bad_node(g->init);
+            if (bad) {
+                err_at(&s, bad, "const değeri derleme zamanında bilinmeli (literal, const, işleç, saf yerleşik)");
+                break;
+            }
+            g->type = t;
+            for (u32 i = 0; overrides && i < overrides->count; i++) {
+                const char* on = overrides->items[i].name;
+                if (!name_eq(on, (u32)cstr_len(on), g->name, g->name_len)) continue;
+                if (t.n != 1) {
+                    matoki_error(err, g->line, g->col, "yalnız skaler const değiştirilebilir:", g->name, g->name_len);
+                    break;
+                }
+                f32 v = overrides->items[i].value;
+                Node* lit = ARENA_NEW(a, Node);
+                lit->line = g->init->line;
+                lit->col = g->init->col;
+                lit->type = t;
+                if (t.base == TB_BOOL) { lit->kind = NK_BOOL; lit->ival = v != 0.0f; }
+                else if (t.base == TB_INT) { lit->kind = NK_INT; lit->ival = (i64)(i32)v; }
+                else { lit->kind = NK_FLOAT; lit->fval = v; }
+                g->init = lit;
+                used_overrides |= 1u << (i & 31);
+            }
+            if (err->failed) break;
+            Sym* y = sym_new(&s, g->name, g->name_len, SYM_CONST, t, FALSE);
+            y->g = g;
+            *gtail = y;
+            gtail = &y->next;
+            continue;
+        }
         if (g->kind == GD_UNIFORM) {
             if (g->type.base == TB_BOOL) {
                 matoki_error(err, g->line, g->col, "bool uniform yok (i32 kullanın):", g->name, g->name_len);
@@ -692,6 +792,13 @@ b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, SemaResult* out
         *gtail = y;
         gtail = &y->next;
     }
+    for (u32 i = 0; overrides && i < overrides->count && i < 32 && !err->failed; i++) {
+        if (!(used_overrides & (1u << i))) {
+            const char* on = overrides->items[i].name;
+            matoki_error(err, 1, 1, "değiştirilmek istenen const kaynakta yok:", on, (u32)cstr_len(on));
+        }
+    }
+    if (overrides && overrides->count > 32 && !err->failed) matoki_error(err, 1, 1, "en fazla 32 const değiştirilebilir", NULL, 0);
     out->uniform_size = uofs;
     out->globals = s.globals;
     for (FnDecl* f = m->fns; f && !err->failed; f = f->next) {

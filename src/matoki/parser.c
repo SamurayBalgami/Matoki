@@ -338,12 +338,15 @@ static Node* parse_stmt(Parser* p) {
         expect(p, T_DOTDOT, "'..'");
         Node* hi = parse_unary(p);
         if (failed(p)) return n;
-        if (lo->kind != NK_INT || hi->kind != NK_INT) {
+        if ((lo->kind != NK_INT && lo->kind != NK_NAME) || (hi->kind != NK_INT && hi->kind != NK_NAME)) {
             matoki_error(p->err, lo->line, lo->col, "for sınırları tamsayı sabiti olmalı", NULL, 0);
             return n;
         }
+        /* isim: const olmalı, sema değerini yazar (D57) */
         n->lo = lo->ival;
         n->hi = hi->ival;
+        if (lo->kind == NK_NAME) n->a = lo;
+        if (hi->kind == NK_NAME) n->c = hi;
         n->b = parse_block(p);
         return n;
     }
@@ -431,9 +434,42 @@ b32 parse_module(Arena* a, const TokenList* toks, Module* out, MatokiError* err)
     mem_zero(out, sizeof(*out));
     GlobalDecl** gtail = &out->globals;
     FnDecl** ftail = &out->fns;
+    Import** itail = &out->imports;
     while (!failed(&p) && !at(&p, T_EOF)) {
         const Token* t = peek(&p);
-        if (t->kind == T_UNIFORM || t->kind == T_VARYING || t->kind == T_ATTRIBUTE) {
+        if (t->kind == T_IMPORT) {
+            advance(&p);
+            const Token* s = expect(&p, T_STRING, "dosya adı (\"ad.mtk\")");
+            expect(&p, T_SEMI, "';'");
+            if (failed(&p)) break;
+            if (gtail != &out->globals || ftail != &out->fns) {
+                error_at(&p, t, "import dosyanın başında olmalı:");
+                break;
+            }
+            Import* im = ARENA_NEW(a, Import);
+            im->name = s->p;
+            im->name_len = s->len;
+            im->line = s->line;
+            im->col = s->col;
+            *itail = im;
+            itail = &im->next;
+        } else if (t->kind == T_CONST) {
+            advance(&p);
+            const Token* name = expect(&p, T_IDENT, "sabit adı");
+            GlobalDecl* g = ARENA_NEW(a, GlobalDecl);
+            g->kind = GD_CONST;
+            g->name = name->p;
+            g->name_len = name->len;
+            g->line = name->line;
+            g->col = name->col;
+            g->slot = -1;
+            if (accept(&p, T_COLON) && !failed(&p)) g->has_decl_type = parse_type(&p, &g->type);
+            expect(&p, T_ASSIGN, "'='");
+            if (!failed(&p)) g->init = parse_expr(&p);
+            expect(&p, T_SEMI, "';'");
+            *gtail = g;
+            gtail = &g->next;
+        } else if (t->kind == T_UNIFORM || t->kind == T_VARYING || t->kind == T_ATTRIBUTE) {
             advance(&p);
             const Token* name = expect(&p, T_IDENT, "isim");
             GlobalDecl* g = ARENA_NEW(a, GlobalDecl);

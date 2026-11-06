@@ -80,7 +80,8 @@ typedef struct FnDecl {
     struct FnDecl* next;
 } FnDecl;
 
-enum { GD_UNIFORM, GD_VARYING, GD_ATTRIBUTE };
+/* GD_CONST: derleme zamanı sabiti (D57), değer init ifadesi; her kullanımda yeniden indirilir, katlama sabite çevirir */
+enum { GD_UNIFORM, GD_VARYING, GD_ATTRIBUTE, GD_CONST };
 
 #define ATTR_CLAMP    1u
 #define ATTR_MIPMAP   2u
@@ -95,18 +96,31 @@ typedef struct GlobalDecl {
     u32                attrs;
     i32                slot;     /* varying: açık @slot(N) veya -1 */
     u32                offset;   /* sema: uniform bayt ofseti / varying yuvası */
+    Node*              init;     /* const: değer */
+    b32                has_decl_type;
     struct GlobalDecl* next;
 } GlobalDecl;
+
+/* import "dosya.mtk"; — matoki_compile çözer, içeriği modüle katar (D57) */
+typedef struct Import {
+    const char*    name;
+    u32            name_len;
+    i32            line, col;
+    struct Import* next;
+} Import;
 
 typedef struct Module {
     GlobalDecl* globals;
     FnDecl*     fns;
+    Import*     imports;
 } Module;
 
 typedef struct MatokiError {
     b32  failed;
     i32  line, col;
     char msg[200];
+    char file[40];      /* hata import edilen dosyadaysa onun adı (line/col o dosyada); ana kaynakta boş */
+    i32  via_line;      /* file doluysa: ana kaynakta zinciri başlatan import satırı */
 } MatokiError;
 
 void matoki_error(MatokiError* e, i32 line, i32 col, const char* msg, const char* detail, u32 detail_len);

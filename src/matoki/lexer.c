@@ -17,17 +17,18 @@ static const Kw KEYWORDS[] = {
     { "fn", T_FN }, { "let", T_LET }, { "var", T_VAR }, { "if", T_IF }, { "else", T_ELSE },
     { "for", T_FOR }, { "in", T_IN }, { "return", T_RETURN }, { "uniform", T_UNIFORM },
     { "varying", T_VARYING }, { "true", T_TRUE }, { "false", T_FALSE }, { "discard", T_DISCARD }, { "attribute", T_ATTRIBUTE },
+    { "const", T_CONST }, { "import", T_IMPORT },
 };
 
 static const char* const TOK_NAMES[T_COUNT] = {
-    "dosya sonu", "hata", "isim", "tamsayı", "ondalık sayı",
+    "dosya sonu", "hata", "isim", "tamsayı", "ondalık sayı", "dize",
     "'('", "')'", "'{'", "'}'", "','", "';'", "':'", "'.'", "'..'", "'->'", "'@'",
     "'+'", "'-'", "'*'", "'/'", "'%'",
     "'<'", "'>'", "'<='", "'>='", "'=='", "'!='", "'&&'", "'||'", "'!'",
     "'='", "'+='", "'-='", "'*='", "'/='",
     "'&'", "'|'", "'^'", "'<<'", "'>>'", "'~'",
     "'fn'", "'let'", "'var'", "'if'", "'else'", "'for'", "'in'", "'return'", "'uniform'", "'varying'", "'true'", "'false'",
-    "'discard'", "'attribute'",
+    "'discard'", "'attribute'", "'const'", "'import'",
 };
 
 const char* tok_name(TokKind k) { return k < T_COUNT ? TOK_NAMES[k] : "?"; }
@@ -174,6 +175,14 @@ b32 lex_source(Arena* a, const char* src, u32 len, TokenList* out) {
                 }
             }
             t->len = i - start;
+        } else if (c == '"') {
+            u32 j = i + 1;
+            while (j < len && src[j] != '"' && src[j] != '\n') j++;
+            if (j >= len || src[j] != '"') return fail(out, t->line, t->col, "kapanmamış dize");
+            t->kind = T_STRING;
+            t->p = src + i + 1;
+            t->len = j - i - 1;
+            i = j + 1;
         } else {
             char d = i + 1 < len ? src[i + 1] : 0;
             TokKind k = T_ERROR;

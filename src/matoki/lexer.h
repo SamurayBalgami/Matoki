@@ -1,13 +1,14 @@
 /* matoki/lexer.h — Matoki sözcük çözümleyicisi.
  * Kaynağın tamamını tek seferde Token dizisine çevirir (arena). Yorumlar: satır (//) ve blok.
- * Sayılar: 123, 0x1F (i32), 1.5, 1e-3, 2.0e+4 (f32). "0..4" → INT DOTDOT INT. */
+ * Sayılar: 123, 0x1F (i32), 1.5, 1e-3, 2.0e+4 (f32). "0..4" → INT DOTDOT INT.
+ * Dize yalnız import için: "dosya.mtk", tek satır, kaçış yok; token p/len tırnaksız içeriği gösterir. */
 #ifndef MATOKI_LEXER_H
 #define MATOKI_LEXER_H
 #include "core/arena.h"
 
 typedef enum TokKind {
     T_EOF, T_ERROR,
-    T_IDENT, T_INT, T_FLOAT,
+    T_IDENT, T_INT, T_FLOAT, T_STRING,
     T_LPAREN, T_RPAREN, T_LBRACE, T_RBRACE, T_COMMA, T_SEMI, T_COLON, T_DOT, T_DOTDOT, T_ARROW, T_AT,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
     T_LT, T_GT, T_LE, T_GE, T_EQEQ, T_NE, T_ANDAND, T_OROR, T_BANG,
@@ -15,7 +16,7 @@ typedef enum TokKind {
     T_AMP, T_PIPE, T_CARET, T_SHL, T_SHR, T_TILDE,
     /* anahtar sözcükler */
     T_FN, T_LET, T_VAR, T_IF, T_ELSE, T_FOR, T_IN, T_RETURN, T_UNIFORM, T_VARYING, T_TRUE, T_FALSE,
-    T_DISCARD, T_ATTRIBUTE,
+    T_DISCARD, T_ATTRIBUTE, T_CONST, T_IMPORT,
     T_COUNT
 } TokKind;
 

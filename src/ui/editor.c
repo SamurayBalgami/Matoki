@@ -106,6 +106,8 @@ static u32 ed_token_color(const Token* tok) {
     case T_UNIFORM:
     case T_VARYING:
     case T_ATTRIBUTE:
+    case T_CONST:
+    case T_IMPORT:
         return ED_COL_KEYWORD;
     case T_TRUE:
     case T_FALSE:
@@ -405,8 +407,10 @@ void editor_set_diag(CodeEditor* ed, const MatokiError* err, f64 compile_ms, u32
     sb_init(&sb, ed->diag_text, sizeof(ed->diag_text));
     matoki_format_error(err, &sb);
     ed->diag_len = sb.len;
-    ed->errors[0].line = err->line > 0 ? (u32)err->line : 1u;
-    ed->errors[0].col  = err->col > 0 ? (u32)err->col : 1u;
+    /* hata import edilen dosyadaysa işaret ana kaynaktaki import satırına (D57); dosya ve satır tanı metninde */
+    i32 line = err->file[0] ? err->via_line : err->line;
+    ed->errors[0].line = line > 0 ? (u32)line : 1u;
+    ed->errors[0].col  = !err->file[0] && err->col > 0 ? (u32)err->col : 1u;
     ed->error_count = 1;
 }
 

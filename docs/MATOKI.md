@@ -48,6 +48,16 @@ Gerçek bir örnek: [`shaders/lit.mtk`](../shaders/lit.mtk) — C referansı `sh
 | `varying ad: f32 / vecN;` | Rasterizer'dan gelen interpole değer. Ardışık yuvalara yerleşir; `@slot(N)` ile başlangıç yuvası seçilir. Toplam ≤ 16 yuva. |
 | `fn ad(p: tip, ...) -> tip { ... }` | Fonksiyon. Her çağrıda satır içine alınır; özyineleme yasak. Gövde `return <ifade>;` ile bitmeli, başka yerde `return` olamaz. |
 | `fn frag() -> vec4` | Giriş noktası. Dönen `vec4` (0..1) `clamp → ×255 + 0.5 → kesme` ile RGBA8'e paketlenir (`pack_rgb` ile aynı). |
+| `const AD = ifade;` / `const AD: tip = ifade;` | Derleme zamanı sabiti (D57): `f32`, `i32`, `bool`, `vecN`. Değer literal, önceki `const`, işleç, swizzle ve saf yerleşiklerden (kurucu, matematik, `select`); uniform, varying, doku, türev, `frag_coord`, kullanıcı fonksiyonu olamaz. Her kullanımda katlanır: literal yazmakla aynı IR. Tamsayı değerli `const`, `for` sınırı olabilir. |
+| `import "ad.mtk";` | Dosyanın başında, başka dosyanın global'lerini ve fonksiyonlarını katar (D57). Her dosya bir kez, bağımlılık önce; döngü hatadır, en çok 16 dosya. Aynı uniform/varying iki dosyada **aynı** bildirimle geçerse bir kez sayılır, farklıysa "yinelenen global". Kütüphanenin giriş noktası olmaz. Hata import edilen dosyadaysa `dosya:satır:sütun`. |
+
+Kaynak çözücü `MatokiOptions.resolve` (yoksa gömülü `shaders/*.mtk`). Kütüphaneler: `atmos.mtk` (bulut eşlemesi, rüzgâr,
+bulut gölgesi, sis derinliği), `shadow.mtk` (iki kademeli gölge haritası: süzmeli `shadow_lit`, tek okumalı `shadow_lit_fast`).
+
+**const değiştirme** (`MatokiOptions.overrides`, D57; WGSL `override`'ı gibi): motor bir skaler `const`'un değerini derlemede
+değiştirir, aynı kaynaktan türev program çıkar. Örnek: `lit_hq.mtk`'de `const SHADOWS = true;` ve
+`select(SHADOWS, shadow_lit(wpos), 1.0)`; motor `SHADOWS = 0` ile gölgesiz türevi derler, `select` katlanır, gölge kodu DCE ile
+düşer. Kaynakta olmayan ad ya da vektör `const` hatadır.
 
 Uniform yerleşimi derleyiciden sorgulanır: `matoki_find_uniform(p, "ad")->offset`. C struct'ı aynı sırayla
 yazılırsa (örnek: `LitUniforms` ↔ `lit.mtk`) aynı uniform bloğu hem C hem Matoki shader'ına verilebilir.
@@ -71,7 +81,7 @@ yazılırsa (örnek: `LitUniforms` ↔ `lit.mtk`) aynı uniform bloğu hem C hem
 
 - `if c { } else if c2 { } else { }`: koşul `bool`. Quad'ın lane'leri farklı dallara gidebilir. İki dal da
   çalıştırılır, değişen yereller `select` ile birleştirilir. Yan etki olmadığı için bu, sonucu değiştirmez.
-- `for i in A..B { }`: A ve B tamsayı sabiti, en fazla 1024 tur. Derleme anında tamamen açılır; `i` bir `i32` sabitidir.
+- `for i in A..B { }`: A ve B tamsayı sabiti ya da tamsayı değerli `const`, en fazla 1024 tur. Derleme anında tamamen açılır; `i` bir `i32` sabitidir.
 - Satır içi çağrı + açılan döngü toplamı 4096 ile sınırlı ("shader çok büyük" hatası).
 - `discard;`: o anki yolda (iç içe if koşullarının hepsi doğru olan lane'ler) pikseli atar; renk ve derinlik
   yazılmaz. SPMD gereği kod akmaya devam eder; `discard`'dan sonraki atamalar zararsızdır. Fonksiyon içinde de
@@ -167,5 +177,5 @@ Kare süresi oranı Matoki / C (eşli ölçüm `node tools/bench.mjs --pair`, ik
 ## Henüz olmayanlar
 
 Seviyeler arası (trilinear) filtre, tam matris değerleri (yerel, `M * M`), uniform dizileri, quad-sabit
-koşullarda gerçek dallanma (C'nin erken çıkışı gibi), uniform özelleştirme ve varyant önbelleği, vertex
+koşullarda gerçek dallanma (C'nin erken çıkışı gibi), varyant önbelleği (const değiştirme var, D57), struct / dönüşte birden çok değer, vertex
 aşamasında kullanıcı tanımlı köşe girdileri (şimdilik standart konum/normal/uv).

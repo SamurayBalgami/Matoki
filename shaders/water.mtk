@@ -4,29 +4,23 @@
 // tint = derin su rengi, fog_color = ufuk / gök rengi (sis de aynı renge kaçar). Doku kullanılmaz.
 // Kırışıklık (D45): ağın taşıyamadığı küçük dalgalar yalnız normalde, üç yönlü sinüs eğimi; uzakta söner (örtüşmesin).
 // Yansıma (D47): tex = düzlem yansıma haritası (x'i aynalı, önceden çarpılmış); kırışıklık kadar saptırılır, alfası kadar nesne, kalanı gök.
-// Bulut (D53): gök yansımasında seçilir, güneş parıltısını keser.
+// Bulut (D53): gök yansımasında seçilir, güneş parıltısını keser. Bulut, sis: atmos.mtk; gölge: shadow.mtk (D57).
+
+import "atmos.mtk";
+import "shadow.mtk";
 
 uniform tex: texture2d @bilinear @clamp;
 uniform to_light: vec3;
 uniform ambient: f32;
 uniform light_color: vec3;
-uniform fog_start: f32;
 uniform fog_color: vec3;
-uniform fog_end: f32;
 uniform eye: vec3;
 uniform use_mip: i32;
 uniform tint: vec3;
-uniform time: f32;
 uniform translucency: f32;
-uniform shadow: texture2d @clamp;
-uniform shadow_mat: mat4;
-uniform shadow_bias: f32;
 uniform screen_ix: f32;
 uniform screen_iy: f32;
 uniform bump: f32;
-uniform shadow_mat2: mat4;
-uniform shadow_bias2: f32;
-uniform clouds: texture2d @bilinear;
 uniform field: texture2d @bilinear @clamp;   // dalga denklemi alanı (D49)
 
 varying wpos: vec3;
@@ -36,32 +30,6 @@ varying uv: vec2;
 // (x, z) eğimi: yön · dalga sayısı · genlik · cos(faz)
 fn ripple(d: vec2, k: f32, a: f32, w: f32) -> vec2 {
     return d * (a * cos((wpos.x * d.x + wpos.z * d.y) * k + time * w));
-}
-
-// sütun ve sandık gölgesi (D51): güneş parıltısı ve gövde ışığı kesilir, gök yansıması kalır. Dalgalı yüzeye tek bilinear karşılaştırma yeter
-fn sun_vis(p: vec3) -> f32 {
-    let s0 = shadow_mat * vec4(p, 1.0);
-    let s1 = shadow_mat2 * vec4(p, 1.0);
-    let size = tex_size(shadow).x;
-    let lo = 2.0 / size;
-    let hi = 1.0 - lo;
-    let near = s0.x > lo && s0.x < hi && s0.y > lo && s0.y < hi && s0.z <= 1.0;
-    let sx = select(near, s0.x, s1.x);
-    let sy = select(near, s0.y, s1.y);
-    let z = select(near, s0.z - shadow_bias * 3.0, s1.z - shadow_bias2 * 3.0);
-    let x = sx * size - 0.5;
-    let y = sy * size - 0.5;
-    let fx = floor(x);
-    let fy = floor(y);
-    let ix = i32(fx);
-    let iy = i32(fy) + select(near, 0, i32(size));
-    let a = select(z > bitcast_f32(texel_fetch(shadow, ix, iy)), 0.0, 1.0);
-    let b = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy)), 0.0, 1.0);
-    let c = select(z > bitcast_f32(texel_fetch(shadow, ix, iy + 1)), 0.0, 1.0);
-    let e = select(z > bitcast_f32(texel_fetch(shadow, ix + 1, iy + 1)), 0.0, 1.0);
-    let lit = mix(mix(a, b, x - fx), mix(c, e, x - fx), y - fy);
-    let inside = near || (sx > lo && sx < hi && sy > lo && sy < hi && s1.z <= 1.0);
-    return select(inside, lit, 1.0);
 }
 
 fn frag() -> vec4 {
@@ -83,8 +51,7 @@ fn frag() -> vec4 {
     // gök: ufukta açık, tepeye doğru doygun mavi
     let r = reflect(-v, n);
     let up = clamp(r.y, 0.0, 1.0);
-    let drift = vec2(0.0035, 0.0014) * time;
-    let cover = smoothstep(0.5, 0.68, sample_level(clouds, vec2(r.x, r.z) * (0.42 / (up + 0.28)) + drift, 0).x) * smoothstep(0.015, 0.2, r.y);
+    let cover = smoothstep(0.5, 0.68, sample_level(clouds, cloud_uv(r, up), 0).x) * smoothstep(0.015, 0.2, r.y);
     let sky = mix(mix(fog_color, vec3(0.32, 0.52, 0.86), up * 0.8), vec3(0.92, 0.91, 0.9), cover * 0.9);
     // ekran konumu + normalin yatay payı: yakında çok, uzakta az saptırır; harita x'i aynalı
     let fc = frag_coord();
@@ -94,7 +61,7 @@ fn frag() -> vec4 {
     let refl = mirror.rgb + sky * (1.0 - mirror.a);
     // derin su: ortam + yumuşak diffuse
     let nl = dot(n, to_light);
-    let vis = sun_vis(wpos) * (1.0 - 0.5 * smoothstep(0.55, 0.72, sample_level(clouds, quad0(vec2(wpos.x, wpos.z) * 0.0039 + drift), 0).x));
+    let vis = shadow_lit_fast(wpos) * cloud_sun(wpos);
     let body = tint * (ambient * (0.6 + 0.4 * n.y) + light_color * max(nl * 0.5 + 0.5, 0.0) * 0.45 * (0.35 + 0.65 * vis));
     let glint = pow(max(dot(r, to_light), 0.0), 96.0) * 2.5 * vis;
     // köpük (D53): taş kenar boyunca dalgalı şerit, dalga tepesinde seyrek. Kabarcık deseni kırışıklık eğiminden, doku okuması yok
@@ -104,8 +71,7 @@ fn frag() -> vec4 {
     let crest = smoothstep(0.84, 0.72, n.y) * 0.5;
     let foam = max(smoothstep(1.2, 0.1, edge + wob * 0.4), crest) * smoothstep(0.25, 0.75, froth) * 0.6;
     let c = mix(mix(body, refl, fresnel), vec3(0.86, 0.88, 0.88) * (0.6 + 0.4 * vis), foam) + light_color * glint;
-    let fog_scale = 1.0 / max(fog_end - fog_start, 0.000001);
-    let x = max(d - fog_start, 0.0) * fog_scale;
+    let x = fog_depth(d);
     let f = 1.0 - exp2(-4.0 * x * x);      // lit_hq.mtk ile aynı üstel sis
     return vec4(mix(c, fog_color, f), 1.0);
 }

@@ -1,5 +1,6 @@
 /* matoki/matoki.h — Matoki derleyicisinin üst düzey API'si.
- * matoki_compile: kaynak → (lexer → parser → sema → lower) → IR (sabit katlama + CSE dahil).
+ * matoki_compile: kaynak → (lexer → parser → import → sema → lower) → IR (sabit katlama + CSE dahil).
+ * import "x.mtk"; dosyaları opt->resolve ile (yoksa gömülü dosyalardan) gelir, bağımlılık önce katılır (D57).
  * matoki_jit: IR → wasm (codegen) → JIT yükleme → ShadeFn (frag) / VertexFn (vert, opt->stage). Uniform yerleşimi yansıtma ile
  * sorgulanır (matoki_find_uniform); C tarafı uniform bloğunu bu ofsetlere göre yazar. */
 #ifndef MATOKI_MATOKI_H
@@ -23,11 +24,19 @@ typedef struct MatokiProgram {
     u32        ir_live;     /* DCE sonrası canlı komut */
 } MatokiProgram;
 
+/* import edilen dosyanın kaynağı: bulursa *src / *len (derleme bitene dek yaşamalı) ve TRUE */
+typedef b32 (*MatokiResolveFn)(void* user, const char* name, u32 name_len, const char** src, u32* len);
+
+#define MATOKI_MAX_IMPORTS 16
+
 typedef struct MatokiOptions {
     u32 ir_cap;     /* 0 → 65536 */
     b32 no_fold;    /* sabit katlama + CSE kapalı (test) */
     u32 stage;      /* MATOKI_STAGE_FRAG (varsayılan) / MATOKI_STAGE_VERT */
     const MatokiLayout* layout;   /* NULL: uniform'lar bildirim sırasıyla; değilse adla bu tablodan (D56) */
+    MatokiResolveFn resolve;      /* NULL: gömülü dosyalar (embed_find) */
+    void*           resolve_user;
+    MatokiConsts    overrides;    /* const değiştirme (D57) */
 } MatokiOptions;
 
 b32 matoki_compile(Arena* a, const char* src, u32 len, const MatokiOptions* opt, MatokiProgram* p, MatokiError* err);
@@ -39,7 +48,7 @@ const GlobalDecl* matoki_find_uniform(const MatokiProgram* p, const char* name);
 const GlobalDecl* matoki_find_varying(const MatokiProgram* p, const char* name);
 const GlobalDecl* matoki_find_attribute(const MatokiProgram* p, const char* name);
 
-/* "satır:sütun: mesaj" biçiminde */
+/* "satır:sütun: mesaj"; hata import edilen dosyadaysa "dosya:satır:sütun: mesaj" */
 void matoki_format_error(const MatokiError* e, StrBuf* out);
 
 #endif

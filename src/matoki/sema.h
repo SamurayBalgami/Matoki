@@ -7,7 +7,7 @@
 #include "matoki/ast.h"
 #include "matoki/ir.h"
 
-enum { SYM_LOCAL, SYM_UNIFORM, SYM_VARYING, SYM_ATTRIBUTE };
+enum { SYM_LOCAL, SYM_UNIFORM, SYM_VARYING, SYM_ATTRIBUTE, SYM_CONST };
 
 typedef struct Sym {
     const char*  name;
@@ -61,7 +61,19 @@ typedef struct MatokiLayout {
     u32                       count;
 } MatokiLayout;
 
-b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, SemaResult* out, MatokiError* err);
+/* const değerini derleyen değiştirir (D57; WGSL override'ı gibi): aynı kaynaktan türev program, metin oynamadan.
+ * Yalnız skaler const: bool'da value != 0, i32'de tamsayı kısmı. Kaynakta olmayan ad hatadır. */
+typedef struct MatokiOverride {
+    const char* name;
+    f32         value;
+} MatokiOverride;
+
+typedef struct MatokiConsts {
+    const MatokiOverride* items;
+    u32                   count;
+} MatokiConsts;
+
+b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, const MatokiConsts* overrides, SemaResult* out, MatokiError* err);
 
 /* lower: tip denetimi geçmiş modülü IR'a çevirir. frag: çıktı paketlenmiş renk; vert: pos (out + xout[0..2])
  * ve varying'ler (xout, VertexOut ofsetleri). Aşamaya ait olmayan yapılar (türev, discard, attribute ...) hata. */

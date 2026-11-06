@@ -789,3 +789,24 @@ Sorun: tüm frag shader'ları tek 256 baytlık `LitUniforms` yapısını, onun b
 
 Kabul: kare hash'leri önce / sonra 11/11 aynı (görüntü bit bit aynı), `gpu_check` 66/66 (en kötü %0,027), 272/272 test (iki kipte; yeni: adla düzen, bilinmeyen ad, yanlış tip, 512 bayt sınırı), `check_demo` geçti.
 Maliyet: GPU geçiş süresi aynı (görünüm 1, 4, 6, 8, 9, 10: 15,2 / 11,9 / 20,1 / 13,1 / 12,8 / 17,5 → aynı ±0,1 ms), ana iş parçacığı aynı. Yazılım, 5 görünüm, tek thread: gölge + MSAA ×1,008, düz ×1,03 (görünüm başına gürültü ±%5).
+
+## D57. Matoki modülleri: const, import, const değiştirme
+Sorun: dilde sabit ve dosya paylaşımı yoktu. Aynı kod kopyalanıyordu: bulut eşlemesi ve rüzgâr (`0.42 / (up + 0.28)`, `vec2(0.0035, 0.0014) · time`) üç
+shader'da, bulut gölgesi iki, sis derinliği iki, gölge karşılaştırması iki shader'da; her frag shader'ı ortak uniform'ları yeniden bildiriyordu. Gölgesiz
+lit_hq türevi kaynak metninde `shadow_lit(wpos)` aranıp `1.0` yazılarak üretiliyordu: kaynak değişince sessizce bozulabilirdi.
+- **`const AD = ifade;`**: değer derleme zamanında bilinmeli (literal, önceki const, işleç, saf yerleşik); her kullanımda yerinde indirilir, katlama +
+  CSE tek sabite çevirir. Ayrı bir sabit tablosu yok: literal yazmakla aynı IR. Tamsayı değerli const `for` sınırı olabilir.
+- **const değiştirme** (`MatokiOptions.overrides`, WGSL `override`'ı gibi): skaler const'un değerini motor verir; `select(SHADOWS, …, 1.0)` katlanır,
+  seçilmeyen kol DCE ile düşer. Gölgesiz türev artık metin cerrahisi değil.
+- **`import "x.mtk";`**: `matoki_compile` çözer (`MatokiOptions.resolve`, yoksa gömülü dosyalar). Dosya bir kez, bağımlılık önce katılır; aynı uniform
+  iki dosyada aynı bildirimle bir kez sayılır (kütüphane ihtiyacını kendisi bildirir), farklıysa hata. Ad alanı yok: tek düz kapsam, çakışma hata.
+  Hata konumu: her dosyanın satırları bir bantta (k · 2^20) tutulur, hata olunca dosya adına ve yerel satıra çevrilir; editör işareti ana kaynaktaki
+  import satırına koyar. Ayrı dosya kimliği AST'nin her düğümüne taşınmadı: bant yeterli, 1 milyon satırlık shader yok.
+- **Kütüphaneler:** `atmos.mtk` (bulut eşlemesi, rüzgâr, bulut gölgesi, sis derinliği), `shadow.mtk` (lit_hq'nun B-spline gölgesi ve suyun tek okumalı
+  gölgesi; su artık `shadow_cmp`'yi paylaşıyor). İfadeler sırası korunarak taşındı: kayan nokta işlem sırası değişmedi.
+
+Kabul: 7 programın (lit, lit_hq, gölgesiz lit_hq, water, sky, std_vert, wave_vert) canlı IR sayısı ve JIT wasm boyutu önceki sürümle bayt bayt aynı
+(3109 / 87 466, 2656 / 73 085, 1164 / 31 647 …); kare hash'leri 11/11 aynı; `gpu_check` 66/66 (en kötü %0,027, önceki gibi); 278/278 test (iki kipte;
+yeni `test_matoki_module.c`: const = literal IR'ı, const kuralları, değiştirme, import bir kez + bağımlılık sırası, döngü / eksik / çakışma / konum, lit_hq
+gölgesiz türevde gölge okuması 0). İki bilinçli bozma (değiştirme uygulanmasın; dosya içi çift bildirim birleşsin) testlerce yakalandı.
+Maliyet: kare maliyeti yok (üretilen kod aynı). Derleme süresi ayrıca ölçülmedi; ek iş iki küçük dosyanın lex + parse'ı.
