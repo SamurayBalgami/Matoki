@@ -27,6 +27,7 @@ typedef struct MatokiOptions {
     u32 ir_cap;     /* 0 → 65536 */
     b32 no_fold;    /* sabit katlama + CSE kapalı (test) */
     u32 stage;      /* MATOKI_STAGE_FRAG (varsayılan) / MATOKI_STAGE_VERT */
+    const MatokiLayout* layout;   /* NULL: uniform'lar bildirim sırasıyla; değilse adla bu tablodan (D56) */
 } MatokiOptions;
 
 b32 matoki_compile(Arena* a, const char* src, u32 len, const MatokiOptions* opt, MatokiProgram* p, MatokiError* err);

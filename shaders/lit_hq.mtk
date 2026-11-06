@@ -10,7 +10,7 @@
 // metal / pürüz iş akışı; çevre yansıması analitik gökten (Karis 2014 yaklaşımı); ACES ton eğrisi, sonra gama; sis görüntü uzayında Beer-Lambert,
 // kanal başına sönüm (kısa dalga boyu daha çabuk saçılır). rough ≥ 0,97 malzeme parlak kolu çalıştırmaz, bump 0 kabartı kolunu (D43).
 // Bulut (D53): sky.mtk'nin dokusu; güneşi keser, pürüzsüz yüzeye yansır.
-// Uniform sırası LitUniforms ile aynı (wrap, translucency tint'ten sonra; ardından shadow, shadow_mat, shadow_bias, metal, rough, bump, shadow_mat2, shadow_bias2, cloud_time, clouds, field, field_scale).
+// Uniform'lar adla bağlanır (D56, gfx3d/lit_layout.c): sıra serbest, yalnız kullanılanlar.
 
 uniform tex: texture2d @mipmap @bilinear;
 uniform to_light: vec3;
@@ -32,7 +32,7 @@ uniform rough: f32;
 uniform bump: f32;
 uniform shadow_mat2: mat4;
 uniform shadow_bias2: f32;
-uniform cloud_time: f32;
+uniform time: f32;
 uniform clouds: texture2d @bilinear;
 uniform field: texture2d @bilinear @clamp;
 uniform field_scale: f32;
@@ -193,7 +193,7 @@ fn sky_linear(r: vec3, a: f32) -> vec3 {
     // ufuk çizgisi pürüz kadar bulanır (dikey metal yüzeyde sert sınır olmasın)
     let band = 0.04 + a * 0.5;
     // pürüzsüz yüzeyde bulut seçilir, pürüz 0,5'te tamamen ortalamaya karışır (kol uniform'a bağlı: mat yüzey ödemez)
-    let cl = select(a < 0.25, sample_level(clouds, vec2(r.x, r.z) * (0.42 / (up + 0.28)) + vec2(0.0035, 0.0014) * cloud_time, 0).x, 0.0);
+    let cl = select(a < 0.25, sample_level(clouds, vec2(r.x, r.z) * (0.42 / (up + 0.28)) + vec2(0.0035, 0.0014) * time, 0).x, 0.0);
     let cover = smoothstep(0.5, 0.68, cl) * clamp(1.0 - a * 4.0, 0.0, 1.0) * smoothstep(0.015, 0.2, r.y);
     return mix(vec3(0.13, 0.11, 0.09), mix(above, vec3(0.9, 0.88, 0.85), cover), clamp((r.y + band) / (2.0 * band), 0.0, 1.0));
 }
@@ -255,7 +255,7 @@ fn frag() -> vec4 {
     // arkadan ışık (ters yüz aydınlanır), yumuşak
     let back = max(-nl, 0.0) * translucency * (1.0 + phys.x * 1.5);
     // bulut gölgesi (D53): 256 m'lik doku, gökle aynı rüzgâr; yalnız doğrudan güneşi kısar. Gölge haritasından bağımsız
-    let cloud_sun = 1.0 - 0.5 * smoothstep(0.55, 0.72, sample_level(clouds, quad0(vec2(wpos.x, wpos.z) * 0.0039 + vec2(0.0035, 0.0014) * cloud_time), 0).x);
+    let cloud_sun = 1.0 - 0.5 * smoothstep(0.55, 0.72, sample_level(clouds, quad0(vec2(wpos.x, wpos.z) * 0.0039 + vec2(0.0035, 0.0014) * time), 0).x);
     let shadowed = shadow_lit(wpos);
     let vis = shadowed * cloud_sun;
     // yarım küre ortam: tepe gök, dip zemin (doğrusal ışıma)

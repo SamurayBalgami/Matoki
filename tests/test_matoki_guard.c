@@ -12,10 +12,14 @@
 #include "matoki/ir_guard.h"
 #include "matoki/matoki.h"
 #include "raster/ref_shaders.h"
+#include "gfx3d/lit_layout.h"
 
-static b32 guard_compile(TestCtx* t_, const char* src, u32 len, MatokiProgram* p) {
+static b32 guard_compile_with(TestCtx* t_, const char* src, u32 len, const MatokiLayout* layout, MatokiProgram* p) {
     MatokiError e;
-    b32 ok = matoki_compile(test_arena(), src, len, NULL, p, &e) && matoki_jit(test_arena(), p, &e);
+    MatokiOptions o;
+    mem_zero(&o, sizeof(o));
+    o.layout = layout;
+    b32 ok = matoki_compile(test_arena(), src, len, &o, p, &e) && matoki_jit(test_arena(), p, &e);
     if (!ok) {
         char buf[300];
         StrBuf sb;
@@ -27,6 +31,10 @@ static b32 guard_compile(TestCtx* t_, const char* src, u32 len, MatokiProgram* p
     CHECK(ok);
     return ok;
 }
+
+static b32 guard_compile(TestCtx* t_, const char* src, u32 len, MatokiProgram* p) { return guard_compile_with(t_, src, len, NULL, p); }
+/* lit ailesi motorun düzeniyle (D56): LitUniforms bloğu doğrudan verilir */
+static b32 guard_compile_lit(TestCtx* t_, const char* src, u32 len, MatokiProgram* p) { return guard_compile_with(t_, src, len, &LIT_LAYOUT, p); }
 
 static u32 branch_count(const MatokiProgram* p) {
     IrGuards g;
@@ -248,7 +256,7 @@ TEST(guard_lit_hq_matches_oracle) {
     const EmbedFile* ef = embed_find("lit_hq.mtk");
     CHECK(ef != NULL);
     MatokiProgram p;
-    if (!guard_compile(t_, (const char*)ef->data, ef->len, &p)) return;
+    if (!guard_compile_lit(t_, (const char*)ef->data, ef->len, &p)) return;
     CHECK(branch_count(&p) >= 6u);   /* seviye + 3 örnek sayısı dalı × iki seviye + parlaklık + kabartı */
     Texture* tex = tex_create(a, 64, 64, TEX_FLAG_MIPMAP | TEX_FLAG_BILINEAR);
     Rng r = rng_make(7);
@@ -303,7 +311,7 @@ TEST(lit_hq_shadow_factor_in_range) {
     const EmbedFile* ef = embed_find("lit_hq.mtk");
     CHECK(ef != NULL);
     MatokiProgram p;
-    if (!guard_compile(t_, (const char*)ef->data, ef->len, &p)) return;
+    if (!guard_compile_lit(t_, (const char*)ef->data, ef->len, &p)) return;
     Texture* tex = tex_create(a, 2, 2, TEX_FLAG_BILINEAR);
     for (u32 i = 0; i < 4u; i++) tex->px[i] = 0xFFFFFFFFu;
     Texture* sh = tex_create(a, 32, 64, TEX_FLAG_CLAMP);

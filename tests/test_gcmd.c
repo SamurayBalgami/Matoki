@@ -52,9 +52,9 @@ TEST(gcmd_stream_layout_and_dedup) {
     gcmd_draw(&c, plane, &v1, NULL, NULL, NULL, CULL_FRONT, FALSE, FALSE, FALSE);  /* düz shader: doku yok */
     gcmd_end(&c);
     const u32* w = c.words;
-    /* yuvalar: v0, f0, v1 (f0 paylaşılır), v2, f(düz) */
+    /* yuvalar (D56: parça iki yuva): v0 0, f0 1-2, v1 3 (f0 paylaşılır), v2 4, f(düz) 5-6; +1 bağlama payı */
     CHECK(w[0] == GCMD_MAGIC && w[1] == GCMD_VERSION && w[2] == c.count && w[3] == 3u);
-    CHECK(w[4] == (u32)(uptr)c.uniforms && w[5] == 5u * GCMD_SLOT && (w[4] % GCMD_SLOT) == 0u);
+    CHECK(w[4] == (u32)(uptr)c.uniforms && w[5] == 8u * GCMD_SLOT && (w[4] % GCMD_SLOT) == 0u);
     /* FRAME */
     CHECK(w[6] == GC_FRAME && w[7] == 320u && w[8] == 200u && w[9] == 0xFF112233u && bits_f32(w[10]) == 1.0f && w[11] == 4u);
     /* kayıtları yürü: MESH, TEX, DRAW, DRAW, MESH, DRAW, END */
@@ -86,11 +86,11 @@ TEST(gcmd_stream_layout_and_dedup) {
     const u32* d = draws[0];
     CHECK(d[1] == (u32)(uptr)cube && d[2] == 0u && d[3] == 1u && d[4] == 1u && d[5] == 3u && d[6] == (u32)(uptr)tex && d[7] == 0u);
     d = draws[1];
-    CHECK(d[2] == 2u && d[3] == 1u && d[10] == CULL_NONE && d[11] == 1u && d[12] == 0u);
+    CHECK(d[2] == 3u && d[3] == 1u && d[10] == CULL_NONE && d[11] == 1u && d[12] == 0u);
     d = draws[2];
-    CHECK(d[1] == (u32)(uptr)plane && d[2] == 3u && d[3] == 4u && d[5] == GPROG_FLAT && d[6] == 0u && d[10] == CULL_FRONT && d[11] == 0u);
+    CHECK(d[1] == (u32)(uptr)plane && d[2] == 4u && d[3] == 5u && d[5] == GPROG_FLAT && d[6] == 0u && d[10] == CULL_FRONT && d[11] == 0u);
     /* uniform içerikleri: köşe = VertUniforms ham, parça = programın boyu kadar, kalanı sıfır */
-    CHECK(mem_equal(c.uniforms + 2u * GCMD_SLOT, &v2, sizeof(v2)));
+    CHECK(mem_equal(c.uniforms + 3u * GCMD_SLOT, &v2, sizeof(v2)));
     const u8* f0 = c.uniforms + GCMD_SLOT;
     CHECK(mem_equal(f0, &lit, 80));
     b32 tail_zero = TRUE;

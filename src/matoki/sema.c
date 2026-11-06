@@ -622,7 +622,7 @@ static void sema_fn(Sema* s, FnDecl* f, const Node* site) {
     f->visit = 2;
 }
 
-b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err) {
+b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, SemaResult* out, MatokiError* err) {
     Sema s;
     mem_zero(&s, sizeof(s));
     s.a = a;
@@ -645,8 +645,26 @@ b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err) {
                 break;
             }
             if (g->type.base != TB_TEX && g->attrs) matoki_error(err, g->line, g->col, "öznitelik yalnızca texture2d için:", g->name, g->name_len);
-            g->offset = uofs;
-            uofs += g->type.base == TB_TEX ? 4u : g->type.base == TB_MAT ? 4u * g->type.n * g->type.n : 4u * g->type.n;
+            u32 size = g->type.base == TB_TEX ? 4u : g->type.base == TB_MAT ? 4u * g->type.n * g->type.n : 4u * g->type.n;
+            if (layout) {
+                const MatokiUniformField* f = NULL;
+                for (u32 i = 0; i < layout->count && !f; i++) {
+                    if (name_eq(layout->fields[i].name, (u32)cstr_len(layout->fields[i].name), g->name, g->name_len)) f = &layout->fields[i];
+                }
+                if (!f) {
+                    matoki_error(err, g->line, g->col, "motorun uniform düzeninde böyle bir alan yok:", g->name, g->name_len);
+                    break;
+                }
+                if (f->base != (u32)g->type.base || f->n != g->type.n) {
+                    matoki_error(err, g->line, g->col, "uniform tipi motorun düzeniyle uyuşmuyor:", g->name, g->name_len);
+                    break;
+                }
+                g->offset = f->offset;
+                uofs = MAX(uofs, f->offset + size);
+            } else {
+                g->offset = uofs;
+                uofs += size;
+            }
         } else if (g->kind == GD_ATTRIBUTE) {
             if (g->type.base != TB_FLOAT) {
                 matoki_error(err, g->line, g->col, "attribute f32/vecN olmalı:", g->name, g->name_len);

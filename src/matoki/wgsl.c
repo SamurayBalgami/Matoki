@@ -317,7 +317,7 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
     mem_zero(out, sizeof(*out));
     mem_zero(err, sizeof(*err));
     out->uniform_size = p->sema.uniform_size;
-    if (out->uniform_size > WGSL_MAX_UNIFORM) return wgsl_fail(err, "gpu: uniform bloğu 256 baytı aşıyor");
+    if (out->uniform_size > (vert ? 256u : WGSL_MAX_UNIFORM)) return wgsl_fail(err, vert ? "gpu: köşe uniform bloğu 256 baytı aşıyor" : "gpu: uniform bloğu 512 baytı aşıyor");
     if (p->sema.varying_slots > WGSL_MAX_VARYINGS) return wgsl_fail(err, "gpu: varying yuvası 8'i aşıyor");
     if (p->sema.attr_slots > WGSL_MAX_ATTRS) return wgsl_fail(err, "gpu: köşe girdisi 8'i aşıyor");
     /* canlı IR'ın okuduğu dokular → binding sırası */
@@ -344,7 +344,7 @@ b32 matoki_wgsl(Arena* a, const MatokiProgram* p, MatokiWgsl* out, MatokiError* 
     sb_init(s, buf, cap);
     sb_cstr(s, VOUT_DECL);
     sb_cstr(s, vert ? "@group(0) @binding(0)" : "@group(0) @binding(1)");
-    sb_cstr(s, " var<uniform> u: array<vec4u, 16>;\n");
+    sb_cstr(s, vert ? " var<uniform> u: array<vec4u, 16>;\n" : " var<uniform> u: array<vec4u, 32>;\n");
     for (u32 k = 0; k < out->tex_count; k++) {
         sb_cstr(s, "@group(1) @binding(");
         sb_u64(s, k);

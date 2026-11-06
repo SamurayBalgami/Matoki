@@ -10,6 +10,7 @@
 #include "core/mem.h"
 #include "core/sys.h"
 #include "matoki/matoki.h"
+#include "gfx3d/lit_layout.h"
 #include "phys/phys.h"
 #include "phys/character.h"
 #include "phys/shapes.h"
@@ -338,7 +339,8 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->shadow_bias2 = 0.0f;
     u->field = refl_none();
     u->clouds = refl_none();
-    u->cloud_time = 0.0f;
+    u->time = 0.0f;
+    u->screen_ix = u->screen_iy = 0.0f;
     u->field_scale = 0.0f;
     lit_uniforms_prepare(u);
 }
@@ -389,47 +391,6 @@ static ShadeFn lit_shader_for(i32 mode) {
 /* lit ailesi shader'ın her uniform'u LitUniforms'taki aynı adlı alanla ad + tip + ofset olarak eşleşmeli (açılış ve canlı
  * derleme aynı denetim). Yalnız ofset bakmak yetmiyordu: aynı ofsette yanlış tip (işaretçiyi f32 okumak) ya da yapının
  * sonundan taşan yeni uniform geçiyordu. Uyuşmayan ilk uniform *bad'e (hata konumu için). tex ve tint zorunlu. */
-typedef struct LitField {
-    const char* name;
-    u32 offset, base, n;
-} LitField;
-
-#define LIT_FIELD(f, b, k) { #f, (u32)__builtin_offsetof(LitUniforms, f), b, k }
-static const LitField LIT_FIELDS[] = {
-    LIT_FIELD(tex, TB_TEX, 1), LIT_FIELD(to_light, TB_FLOAT, 3), LIT_FIELD(ambient, TB_FLOAT, 1),
-    LIT_FIELD(light_color, TB_FLOAT, 3), LIT_FIELD(fog_start, TB_FLOAT, 1), LIT_FIELD(fog_color, TB_FLOAT, 3),
-    LIT_FIELD(fog_end, TB_FLOAT, 1), LIT_FIELD(eye, TB_FLOAT, 3), LIT_FIELD(use_mip, TB_INT, 1), LIT_FIELD(tint, TB_FLOAT, 3),
-    LIT_FIELD(wrap, TB_FLOAT, 1), LIT_FIELD(translucency, TB_FLOAT, 1), LIT_FIELD(shadow, TB_TEX, 1),
-    LIT_FIELD(shadow_mat, TB_MAT, 4), LIT_FIELD(shadow_bias, TB_FLOAT, 1), LIT_FIELD(metal, TB_FLOAT, 1), LIT_FIELD(rough, TB_FLOAT, 1),
-    LIT_FIELD(bump, TB_FLOAT, 1), LIT_FIELD(shadow_mat2, TB_MAT, 4), LIT_FIELD(shadow_bias2, TB_FLOAT, 1),
-    LIT_FIELD(cloud_time, TB_FLOAT, 1), LIT_FIELD(clouds, TB_TEX, 1), LIT_FIELD(field, TB_TEX, 1), LIT_FIELD(field_scale, TB_FLOAT, 1),
-    /* water.mtk metal / pürüz okumaz: 1 / ekran boyu orada (yansıma haritası ekran konumundan okunur, D47) */
-    { "screen_ix", (u32)__builtin_offsetof(LitUniforms, metal), TB_FLOAT, 1 },
-    { "screen_iy", (u32)__builtin_offsetof(LitUniforms, rough), TB_FLOAT, 1 },
-    { "wave", (u32)__builtin_offsetof(LitUniforms, field), TB_TEX, 1 },   /* water.mtk: alan yuvasında dalga denklemi */
-    { "time", (u32)__builtin_offsetof(LitUniforms, wrap), TB_FLOAT, 1 },   /* water.mtk: wrap yerinde zaman */
-};
-
-static b32 lit_layout_ok_at(const MatokiProgram* p, const GlobalDecl** bad) {
-    b32 has_tex = FALSE, has_tint = FALSE;
-    for (const GlobalDecl* g0 = p->module.globals; g0; g0 = g0->next) {
-        if (g0->kind != GD_UNIFORM) continue;
-        const LitField* f = NULL;
-        for (u32 i = 0; i < ARRAY_COUNT(LIT_FIELDS) && !f; i++) {
-            if (cstr_len(LIT_FIELDS[i].name) == g0->name_len && mem_equal(LIT_FIELDS[i].name, g0->name, g0->name_len)) f = &LIT_FIELDS[i];
-        }
-        if (!f || f->offset != g0->offset || f->base != (u32)g0->type.base || f->n != g0->type.n) {
-            if (bad) *bad = g0;
-            return FALSE;
-        }
-        has_tex |= f->offset == __builtin_offsetof(LitUniforms, tex);
-        has_tint |= f->offset == __builtin_offsetof(LitUniforms, tint);
-    }
-    if (bad) *bad = NULL;
-    return has_tex && has_tint;
-}
-
-static b32 lit_layout_ok(const MatokiProgram* p) { return lit_layout_ok_at(p, NULL); }
 
 /* src NULL → gömülü dosya; değilse src (aynı ad günlükte) */
 static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* src, u32 len, u32 stage) {
@@ -452,6 +413,7 @@ static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* sr
     MatokiOptions opt;
     mem_zero(&opt, sizeof(opt));
     opt.stage = stage;
+    opt.layout = stage == MATOKI_STAGE_FRAG ? &LIT_LAYOUT : NULL;   /* frag: uniform'lar adla (D56) */
     f64 t0 = sys_now_ms();
     b32 ok = matoki_compile(a, src, len, &opt, p, &e) && matoki_jit(a, p, &e);
     f64 t1 = sys_now_ms();
@@ -473,7 +435,7 @@ static MatokiProgram* matoki_load_src(Arena* a, const char* file, const char* sr
                     nm->offset == __builtin_offsetof(VertUniforms, normal_mat) && tm->offset == __builtin_offsetof(VertUniforms, time) &&
                     pos->offset == ATTR3D_POS;
     } else {
-        layout_ok = lit_layout_ok(p);
+        layout_ok = TRUE;   /* frag düzenini derleyici LIT_LAYOUT'a göre denetledi */
     }
     if (!layout_ok) {
         sb_cstr(&sb, "matoki: uniform yerleşimi C yapısıyla (LitUniforms / VertUniforms) uyuşmuyor: ");
@@ -1730,10 +1692,6 @@ static void draw(const Mesh* mesh, const Material* mat, Mat4 model) {
 }
 
 static void set_frame_uniforms(Vec3 eye) {
-    g.u_water.wrap = g.time;   /* water.mtk: wrap yerinde zaman */
-    g.u_sky.wrap = g.time;     /* sky.mtk: bulut rüzgârı */
-    g.u_water.metal = 1.0f / (f32)g.fb.w;   /* water.mtk: screen_ix, screen_iy */
-    g.u_water.rough = 1.0f / (f32)g.fb.h;
     if (g_water && !g.capture) {
         g.u_water.tex = g.refl_active ? &g.refl_tex : refl_none();
         lit_uniforms_prepare(&g.u_water);
@@ -1744,7 +1702,9 @@ static void set_frame_uniforms(Vec3 eye) {
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = eye;
         all[i]->use_mip = (all[i]->use_mip & LIT_BEVEL) | (g.mip ? LIT_MIP : 0u);
-        all[i]->cloud_time = g.time;
+        all[i]->time = g.time;
+        all[i]->screen_ix = 1.0f / (f32)g.fb.w;
+        all[i]->screen_iy = 1.0f / (f32)g.fb.h;
         all[i]->clouds = g.sky ? g.tex_clouds : refl_none();   /* gök kapalıysa bulut da yok */
         if (g.shadow_active) {
             all[i]->shadow = &g.shadow->tex;
@@ -2849,21 +2809,15 @@ EXPORT(engine_set_threads) void engine_set_threads(i32 n) { jobs_set_limit(n > 0
 
 EXPORT(engine_set_codegen_scalar) void engine_set_codegen_scalar(i32 on) { codegen_set_scalar(on != 0); }
 
-/* lit.mtk yerine geçecek kaynağı a'da derler; uniform yerleşimi uymazsa reddeder (yanlış ofsetten okuma olmasın).
+/* lit.mtk yerine geçecek kaynağı a'da derler; uniform adları LIT_LAYOUT'ta olmalı (yanlış ofsetten okuma olmasın).
  * Başarıda Matoki lit yolu yeni programa geçer. Çağrı kare dışında / raster boşken (önceki program artık çalışmıyor). */
 static b32 lit_recompile(Arena* a, const char* src, u32 len, MatokiError* err, u32* wasm_bytes) {
     MatokiProgram* p = ARENA_NEW(a, MatokiProgram);
     mem_zero(err, sizeof(*err));
-    if (!matoki_compile(a, src, len, NULL, p, err) || !matoki_jit(a, p, err)) return FALSE;
-    const GlobalDecl* bad = NULL;
-    if (!lit_layout_ok_at(p, &bad)) {
-        if (bad) {
-            matoki_error(err, bad->line, bad->col, "uniform LitUniforms'taki adı / tipi / sırasıyla uyuşmuyor:", bad->name, bad->name_len);
-        } else {
-            matoki_error(err, 1, 1, "uniform 'tex' ve 'tint' gerekli (LitUniforms sırası)", NULL, 0);
-        }
-        return FALSE;
-    }
+    MatokiOptions opt;
+    mem_zero(&opt, sizeof(opt));
+    opt.layout = &LIT_LAYOUT;   /* bilinmeyen uniform adı / yanlış tip derleme hatası olarak döner (D56) */
+    if (!matoki_compile(a, src, len, &opt, p, err) || !matoki_jit(a, p, err)) return FALSE;
     g_matoki_lit = p->fn_fast;
     g_matoki_pre = p->prelude;
     g_matoki_full = p->fn;

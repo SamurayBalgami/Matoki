@@ -5,7 +5,7 @@
 // sayfa yazılım render'da kalır.
 
 const GC_END = 0, GC_FRAME = 1, GC_MESH = 2, GC_DRAW = 3, GC_TEX = 4, GC_SHADOW = 5, GC_SHADOW_END = 6, GC_OVERLAY = 7, GC_REFLECT = 8, GC_REFLECT_END = 9, GPROG_OVERLAY = 1, GPROG_NONE = 0xFFFFFFFF, MAGIC = 0x5550474d, SLOT = 256, TEX_HEADER = 356;
-const STREAM_VERSION = 8;   // gpu/gcmd.h GCMD_VERSION; doku bağlama düzeni değişince de artar (D50)
+const STREAM_VERSION = 9;   // gpu/gcmd.h GCMD_VERSION; doku bağlama düzeni değişince de artar (D50)
 const CULL = ['none', 'back', 'front'];   // raster.h CullMode sırası; ön yüz NDC'de CCW (D3)
 
 export async function createGpu(ex, memory, colorFormat) {
@@ -17,9 +17,10 @@ export async function createGpu(ex, memory, colorFormat) {
   const hasTs = adapter.features.has('timestamp-query');
   const device = await adapter.requestDevice({ requiredFeatures: hasTs ? ['timestamp-query'] : [] });
   device.addEventListener('uncapturederror', (e) => console.error('[gpu]', e.error.message));
-  const uniformEntry = (binding, visibility) => ({ binding, visibility,
-    buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: SLOT } });
-  const bglU = device.createBindGroupLayout({ entries: [uniformEntry(0, GPUShaderStage.VERTEX), uniformEntry(1, GPUShaderStage.FRAGMENT)] });
+  const uniformEntry = (binding, visibility, size) => ({ binding, visibility,
+    buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: size } });
+  // parça uniform'u iki yuva (D56): 512 bayt
+  const bglU = device.createBindGroupLayout({ entries: [uniformEntry(0, GPUShaderStage.VERTEX, SLOT), uniformEntry(1, GPUShaderStage.FRAGMENT, 2 * SLOT)] });
   const bglT = device.createBindGroupLayout({ entries: [
     ...[0, 1, 2, 3].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } })),
     ...[4, 5, 6, 7].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } })),
@@ -186,8 +187,7 @@ export async function createGpu(ex, memory, colorFormat) {
     if (ubytes && (!ubuf || ubuf.size < ubytes)) {
       ubuf?.destroy();
       ubuf = device.createBuffer({ size: Math.max(ubytes, 64 * SLOT), usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      const res = { buffer: ubuf, size: SLOT };
-      bindU = device.createBindGroup({ layout: bglU, entries: [{ binding: 0, resource: res }, { binding: 1, resource: res }] });
+      bindU = device.createBindGroup({ layout: bglU, entries: [{ binding: 0, resource: { buffer: ubuf, size: SLOT } }, { binding: 1, resource: { buffer: ubuf, size: 2 * SLOT } }] });
     }
     if (ubytes) device.queue.writeBuffer(ubuf, 0, memory.buffer, hdr[4], ubytes);
     const enc = device.createCommandEncoder();

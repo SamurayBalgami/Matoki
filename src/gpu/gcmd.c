@@ -22,7 +22,7 @@ b32 gcmd_begin(GpuCmd* c, Arena* frame, u32 max_draws, const GpuProgram* std_ver
     c->cap = GCMD_HEADER + GCMD_FIXED_WORDS + max_draws * GCMD_DRAW_MAX + 1u;
     /* akış ve yuvalar sıfırlanmaz: yuvayı slot_take, akışı kayıtlar yazar (kare başına 10 MB temizlemek ölçülür bir maliyet) */
     c->words = (u32*)arena_try_nozero(frame, (usize)c->cap * 4u, 4);
-    c->max_slots = max_draws * 2u;   /* köşe + parça */
+    c->max_slots = max_draws * 3u + 1u;   /* köşe 1 + parça 2 (D56); +1: son parça bağlaması 512 bayt okur */
     c->uniforms = (u8*)arena_try_nozero(frame, (usize)c->max_slots * GCMD_SLOT, GCMD_SLOT);
     c->seen_cap = 1;
     while (c->seen_cap < max_draws * 6u) c->seen_cap <<= 1;   /* çizim başına mesh + 3 doku: en çok %75 dolu */
@@ -119,10 +119,12 @@ void gcmd_overlay_extract(const u32* on_black, const u32* on_white, u32* out, u3
     }
 }
 
-static u32 slot_take(GpuCmd* c, const void* src, u32 bytes) {
-    u32 slot = c->slots++;
+/* n ardışık yuva; parça uniform'u 512 bayt bağlanır (D56) */
+static u32 slot_take(GpuCmd* c, const void* src, u32 bytes, u32 n) {
+    u32 slot = c->slots;
+    c->slots += n;
     u8* dst = c->uniforms + (usize)slot * GCMD_SLOT;
-    mem_zero(dst, GCMD_SLOT);
+    mem_zero(dst, (usize)n * GCMD_SLOT);
     if (src) mem_copy(dst, src, bytes);
     return slot;
 }
@@ -131,7 +133,7 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
                CullMode cull, b32 depth_test, b32 depth_write, b32 depth_only) {
     if (!c->cap || !m->vertex_count || !m->index_count) return;
     if (!vert) vert = c->std_vert;
-    if (!vert || c->draws >= c->max_draws || c->slots + 2u > c->max_slots || c->count + GCMD_DRAW_MAX + 1u > c->cap ||
+    if (!vert || c->draws >= c->max_draws || c->slots + 4u > c->max_slots || c->count + GCMD_DRAW_MAX + 1u > c->cap ||
         c->seen_count + 4u > c->seen_cap - c->seen_cap / 4u) {
         c->overflow++;
         return;
@@ -152,14 +154,14 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
             tex[k] = tex_record(c, t);
         }
     }
-    u32 vslot = slot_take(c, vu, (u32)sizeof(*vu));
+    u32 vslot = slot_take(c, vu, (u32)sizeof(*vu), 1u);
     u32 fslot;
     if (depth_only) {
         fslot = vslot;   /* parça aşaması yok, bağlama geçerli olsun yeter */
     } else if (frag && uniforms == c->last_uniforms && frag == c->last_frag) {
         fslot = c->last_slot;
     } else {
-        fslot = slot_take(c, frag ? uniforms : NULL, frag ? frag->wgsl.uniform_size : 0u);
+        fslot = slot_take(c, frag ? uniforms : NULL, frag ? frag->wgsl.uniform_size : 0u, 2u);
         c->last_uniforms = uniforms;
         c->last_frag = frag;
         c->last_slot = fslot;
@@ -174,6 +176,6 @@ void gcmd_draw(GpuCmd* c, const Mesh* m, const VertUniforms* vu, const GpuProgra
 void gcmd_end(GpuCmd* c) {
     if (!c->cap) return;
     c->words[c->count++] = GC_END;
-    u32 hdr[GCMD_HEADER] = { GCMD_MAGIC, GCMD_VERSION, c->count, c->draws, (u32)(uptr)c->uniforms, c->slots * GCMD_SLOT };
+    u32 hdr[GCMD_HEADER] = { GCMD_MAGIC, GCMD_VERSION, c->count, c->draws, (u32)(uptr)c->uniforms, (c->slots + 1u) * GCMD_SLOT };
     mem_copy(c->words, hdr, sizeof(hdr));
 }

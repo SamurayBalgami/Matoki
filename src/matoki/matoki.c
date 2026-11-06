@@ -14,7 +14,7 @@ b32 matoki_compile(Arena* a, const char* src, u32 len, const MatokiOptions* opt,
         return FALSE;
     }
     if (!parse_module(a, &toks, &p->module, err)) return FALSE;
-    if (!sema_module(a, &p->module, &p->sema, err)) return FALSE;
+    if (!sema_module(a, &p->module, opt ? opt->layout : NULL, &p->sema, err)) return FALSE;
     u32 cap = opt && opt->ir_cap ? opt->ir_cap : 65536;
     ir_init(&p->ir, a, cap, opt ? opt->no_fold : FALSE);
     p->stage = opt ? opt->stage : MATOKI_STAGE_FRAG;

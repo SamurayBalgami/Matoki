@@ -11,6 +11,7 @@
 #include "img/procgen.h"
 #include "matoki/ir_eval.h"
 #include "matoki/matoki.h"
+#include "gfx3d/lit_layout.h"
 #include "raster/ref_shaders.h"
 
 static b32 compile(const char* src, MatokiProgram* p, MatokiError* e) {
@@ -97,7 +98,30 @@ TEST(matoki_errors_have_positions) {
 static b32 compile_lit(MatokiProgram* p, MatokiError* e) {
     const EmbedFile* ef = embed_find("lit.mtk");
     if (!ef) return FALSE;
-    return matoki_compile(test_arena(), (const char*)ef->data, ef->len, NULL, p, e);
+    MatokiOptions o;
+    mem_zero(&o, sizeof(o));
+    o.layout = &LIT_LAYOUT;
+    return matoki_compile(test_arena(), (const char*)ef->data, ef->len, &o, p, e);
+}
+
+/* düzen tablosu (D56): sıra serbest, alt küme yeter; bilinmeyen ad ve yanlış tip satır:sütunla reddedilir */
+TEST(matoki_layout_by_name) {
+    MatokiOptions o;
+    mem_zero(&o, sizeof(o));
+    o.layout = &LIT_LAYOUT;
+    MatokiProgram p;
+    MatokiError e;
+    static const char OK[] = "uniform tint: vec3;\nuniform eye: vec3;\nvarying uv: vec2;\nfn frag() -> vec4 { return vec4(tint + eye, 1.0); }";
+    CHECK(matoki_compile(test_arena(), OK, (u32)cstr_len(OK), &o, &p, &e));
+    CHECK(matoki_find_uniform(&p, "tint")->offset == __builtin_offsetof(LitUniforms, tint));
+    CHECK(matoki_find_uniform(&p, "eye")->offset == __builtin_offsetof(LitUniforms, eye));
+    CHECK(p.sema.uniform_size == __builtin_offsetof(LitUniforms, tint) + 12u);
+    static const char UNKNOWN[] = "uniform tint: vec3;\nuniform glow: f32;\nfn frag() -> vec4 { return vec4(tint * glow, 1.0); }";
+    CHECK(!matoki_compile(test_arena(), UNKNOWN, (u32)cstr_len(UNKNOWN), &o, &p, &e));
+    CHECK(e.line == 2 && e.col == 9);
+    static const char WRONG[] = "uniform tint: vec4;\nfn frag() -> vec4 { return tint; }";
+    CHECK(!matoki_compile(test_arena(), WRONG, (u32)cstr_len(WRONG), &o, &p, &e));
+    CHECK(e.line == 1);
 }
 
 TEST(matoki_lit_reflection_matches_c_struct) {

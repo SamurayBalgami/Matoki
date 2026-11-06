@@ -48,7 +48,20 @@ typedef struct SemaResult {
 /* derleme aşaması (MatokiOptions.stage) */
 enum { MATOKI_STAGE_FRAG = 0, MATOKI_STAGE_VERT = 1 };
 
-b32 sema_module(Arena* a, Module* m, SemaResult* out, MatokiError* err);
+/* motorun uniform düzeni (D56): verilirse uniform ofseti adla tablodan gelir, bildirim sırası serbest; yoksa sırayla dizilir */
+typedef struct MatokiUniformField {
+    const char* name;
+    u32         offset;
+    u32         base;   /* TB_* */
+    u32         n;      /* bileşen; matriste boyut */
+} MatokiUniformField;
+
+typedef struct MatokiLayout {
+    const MatokiUniformField* fields;
+    u32                       count;
+} MatokiLayout;
+
+b32 sema_module(Arena* a, Module* m, const MatokiLayout* layout, SemaResult* out, MatokiError* err);
 
 /* lower: tip denetimi geçmiş modülü IR'a çevirir. frag: çıktı paketlenmiş renk; vert: pos (out + xout[0..2])
  * ve varying'ler (xout, VertexOut ofsetleri). Aşamaya ait olmayan yapılar (türev, discard, attribute ...) hata. */

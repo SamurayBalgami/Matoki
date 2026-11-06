@@ -1,7 +1,7 @@
 // shaders/lit.mtk — doku + Lambert + yarım küre ortam ışığı + doğrusal sis.
 // C referansı shade_lit_tex (src/raster/ref_shaders.c) ile mip açık da kapalı da BİT-BİT aynı:
 // işlem sırası ve NaN davranışı birebir korunur (maxc/clampc, norm_safe).
-// Uniform sırası ve tipleri LitUniforms struct'ıyla aynı → aynı uniform bloğu iki shader'a da verilir.
+// Uniform'lar adla bağlanır (D56, gfx3d/lit_layout.c) → aynı LitUniforms bloğu iki shader'a da verilir.
 
 uniform tex: texture2d;
 uniform to_light: vec3;

@@ -8,6 +8,7 @@
 #include "core/mem.h"
 #include "core/sys.h"
 #include "matoki/matoki.h"
+#include "gfx3d/lit_layout.h"
 #include "matoki/wgsl.h"
 #include "raster/ref_shaders.h"
 
@@ -94,10 +95,10 @@ typedef struct WgslCase {
 
 TEST(wgsl_demo_shaders_structure) {
     const WgslCase CASES[] = {
-        { "lit.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, wrap) },
-        { "lit_hq.mtk", MATOKI_STAGE_FRAG, 4, (u32)__builtin_offsetof(LitUniforms, lv_count) },
-        { "water.mtk", MATOKI_STAGE_FRAG, 4, (u32)__builtin_offsetof(LitUniforms, field_scale) },
-        { "sky.mtk", MATOKI_STAGE_FRAG, 1, (u32)__builtin_offsetof(LitUniforms, shadow) },
+        { "lit.mtk", MATOKI_STAGE_FRAG, 1, 0 },   /* frag: düzenle (D56), boy kullanılan en son alana kadar */
+        { "lit_hq.mtk", MATOKI_STAGE_FRAG, 4, 0 },
+        { "water.mtk", MATOKI_STAGE_FRAG, 4, 0 },
+        { "sky.mtk", MATOKI_STAGE_FRAG, 1, 0 },
         { "std_vert.mtk", MATOKI_STAGE_VERT, 0, 168 },
         { "wave_vert.mtk", MATOKI_STAGE_VERT, 0, 184 },
     };
@@ -110,6 +111,7 @@ TEST(wgsl_demo_shaders_structure) {
         MatokiOptions o;
         mem_zero(&o, sizeof(o));
         o.stage = k->stage;
+        o.layout = k->stage == MATOKI_STAGE_FRAG ? &LIT_LAYOUT : NULL;
         MatokiError e;
         CHECK(matoki_compile(a, (const char*)f->data, f->len, &o, p, &e));
         MatokiWgsl w;
@@ -120,7 +122,8 @@ TEST(wgsl_demo_shaders_structure) {
         CHECK(arena_mark(a) == mark + w.len);   /* yalnız metin kadar bellek kalır */
         test_note("  WGSL bayt", (f64)w.len, 0);
         CHECK(w.tex_count == k->tex_count);
-        CHECK(w.uniform_size == k->uniform_size);
+        if (k->uniform_size) CHECK(w.uniform_size == k->uniform_size);
+        else CHECK(w.uniform_size > 0u && w.uniform_size <= (u32)__builtin_offsetof(LitUniforms, lv_count));
         for (u32 t = 0; t < w.tex_count; t++) {
             const char* decl = t ? "@group(1) @binding(1) var<storage, read> t1: array<u32>;" : "@group(1) @binding(0) var<storage, read> t0: array<u32>;";
             CHECK(str_has(w.text, w.len, decl));
@@ -136,7 +139,7 @@ TEST(wgsl_demo_shaders_structure) {
         u32 lets = check_ssa(w.text, w.len, a);
         CHECK(lets > 0u);
         /* bilinear sample_level donanımda (D50); JIT IR'ı aynı kalır, GPU IR'ı onu içermez */
-        if (k->uniform_size && k->tex_count > 1u) CHECK(str_has(w.text, w.len, "textureSampleLevel"));
+        if (k->stage == MATOKI_STAGE_FRAG && k->tex_count > 1u) CHECK(str_has(w.text, w.len, "textureSampleLevel"));
     }
 }
 
@@ -249,9 +252,11 @@ static b32 wgsl_of(const char* src, u32 stage, MatokiError* e) {
 TEST(wgsl_rejects_programs_over_gpu_limits) {
     MatokiError e;
     CHECK(wgsl_of("fn frag() -> vec4 { return vec4(1.0); }", MATOKI_STAGE_FRAG, &e));
-    /* uniform > 256 bayt */
-    CHECK(!wgsl_of("uniform a: mat4; uniform b: mat4; uniform c: mat4; uniform d: mat4; uniform e: f32;\n"
-                   "fn frag() -> vec4 { return vec4(1.0); }", MATOKI_STAGE_FRAG, &e));
+    /* parça uniform'u 512 bayta kadar (D56): 260 bayt geçer, 516 bayt reddedilir */
+    CHECK(wgsl_of("uniform a: mat4; uniform b: mat4; uniform c: mat4; uniform d: mat4; uniform e: f32;\n"
+                  "fn frag() -> vec4 { return vec4(1.0); }", MATOKI_STAGE_FRAG, &e));
+    CHECK(!wgsl_of("uniform a: mat4; uniform b: mat4; uniform c: mat4; uniform d: mat4; uniform a2: mat4; uniform b2: mat4;\n"
+                   "uniform c2: mat4; uniform d2: mat4; uniform e: f32;\nfn frag() -> vec4 { return vec4(1.0); }", MATOKI_STAGE_FRAG, &e));
     CHECK(e.msg[0] != 0);
     /* varying > 8 yuva */
     CHECK(!wgsl_of("varying a: vec4; varying b: vec4; varying c: f32;\nfn frag() -> vec4 { return vec4(a.x + b.x + c); }", MATOKI_STAGE_FRAG, &e));

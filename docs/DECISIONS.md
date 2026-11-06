@@ -779,3 +779,13 @@ Sınır: gerçek ekranda FPS hâlâ ölçülmedi. GPU'da MSAA ve gölge kopyası
 Görünüm 2 (ekranı dolduran pahlı küpler) ×1,05–1,10; toplam ölçüm gürültüsü ±%2.
 Kabul: `gpu_check` 66/66 (en kötü %0,027), 271/271 test, `check_demo` geçti.
 Sınır: pah analitik olduğu için uzakta da aynı genişlikte; küçük kutularda kenar ışığı ince bir çizgi olarak kalır, parlaklık yumuşatması (D51) kırpışmayı bastırır.
+
+## D56. Uniform'lar adla: düzen tablosu, kare / malzeme sırası, 512 bayt
+Sorun: tüm frag shader'ları tek 256 baytlık `LitUniforms` yapısını, onun bildirim sırasıyla birebir yazmak zorundaydı. `lit_hq` ~30 uniform'u doğru sırada bildiriyordu, kullanmadıklarını da yer tutucu olarak. Yapı dolmuştu ve her yeni alan bir takma ad gerektiriyordu: su `metal` / `rough` yuvasında ekran boyunu, `wrap` yuvasında zamanı, `field` yuvasında `wave`'i okuyordu.
+- **Düzen tablosu** (`MatokiOptions.layout`, `gfx3d/lit_layout.c`): uniform ofseti adla tablodan gelir, bildirim sırası serbest, shader yalnız kullandığını bildirir. Tabloda olmayan ad ya da yanlış tip satır:sütunlu derleme hatası (canlı editör de aynı yolu kullanır). Tablo `offsetof` ile yapının kendisinden üretilir: düzen tek yerde. Tablo verilmezse eski davranış (sırayla), küçük test shader'ları ve köşe shader'ları için.
+- **`LitUniforms` sırası:** önce kare alanları (göz, güneş, zaman, ekran, gölge, bulut), sonra malzeme. `time`, `screen_ix/iy` gerçek alan. Takma adların hepsi kalktı (`cloud_time` → `time`, `wave` → `field`).
+- **Yer:** parça uniform'u 256 → 512 bayt (iki `GCMD_SLOT`, WGSL `array<vec4u, 32>`), köşe uniform'u 256. Akış sürümü 9.
+- **Kare / malzeme ayrı bloklar ileride:** C shader'ları ve JIT tek uniform işaretçisi alıyor; ayrı blok bu ABI'yi değiştirir. Bu adımda sıralama ve tablo yeterli; motor kare alanlarını her malzemeye yazmayı sürdürür.
+
+Kabul: kare hash'leri önce / sonra 11/11 aynı (görüntü bit bit aynı), `gpu_check` 66/66 (en kötü %0,027), 272/272 test (iki kipte; yeni: adla düzen, bilinmeyen ad, yanlış tip, 512 bayt sınırı), `check_demo` geçti.
+Maliyet: GPU geçiş süresi aynı (görünüm 1, 4, 6, 8, 9, 10: 15,2 / 11,9 / 20,1 / 13,1 / 12,8 / 17,5 → aynı ±0,1 ms), ana iş parçacığı aynı. Yazılım, 5 görünüm, tek thread: gölge + MSAA ×1,008, düz ×1,03 (görünüm başına gürültü ±%5).

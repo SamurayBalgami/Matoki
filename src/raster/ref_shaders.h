@@ -23,36 +23,38 @@ void ref_sample_bilinear(const Texture* t, f32 u, f32 v, u32 level, f32 out[4]);
 
 /* ---- 3D shader'lar ---- */
 typedef struct LitUniforms {
-    const Texture* tex;
+    /* ---- kare (D56): motor her geçişte yazar; tüm malzemelerde aynı ---- */
+    Vec3 eye;
     Vec3 to_light;      /* ışığa doğru birim vektör */
     f32  ambient;
     Vec3 light_color;
-    f32  fog_start;
-    Vec3 fog_color;
-    f32  fog_end;
-    Vec3 eye;
-    u32  use_mip;       /* bitler: LIT_MIP; LIT_BEVEL yalnız lit_hq.mtk (D55) */
-    Vec3 tint;
-    /* yalnızca shaders/lit_hq.mtk (lit.mtk ve C shader'ları okumaz) */
-    f32  wrap;          /* diffuse: 0 = Lambert, 1 = half-Lambert² (yumuşak, kıvrımlar belli) */
-    f32  translucency;  /* arkadan gelen ışığın geçen payı (kumaş) */
-    /* gölge (yalnız lit_hq.mtk; M13 faz 7, gfx3d/shadow.h): px f32 derinlik bitleri, texel_fetch + bitcast_f32 ile.
+    f32  time;          /* s: su kırışıklığı, bulut rüzgârı */
+    f32  screen_ix, screen_iy;   /* 1 / ekran boyu: water.mtk yansıma haritasını ekran konumundan okur (D47) */
+    /* gölge (yalnız lit_hq.mtk, water.mtk; gfx3d/shadow.h): px f32 derinlik bitleri, texel_fetch + bitcast_f32 ile.
      * Kapalıyken shadow_none(): 1×1, derinlik 2 → hiçbir nokta gölgede değil, çarpan tam 1 (çıktı bit-bit aynı) */
     const Texture* shadow;
-    Mat4 shadow_mat;    /* dünya → (u, v, derinlik), u, v ∈ [0, 1] */
+    Mat4 shadow_mat;    /* yakın kademe: dünya → (u, v, derinlik), u, v ∈ [0, 1] */
     f32  shadow_bias;   /* derinlik sapması (ışık uzayı, 0..1 ölçeğinde) */
-    /* yalnız lit_hq.mtk (D45, D48) */
-    f32  metal;         /* 0 yalıtkan, 1 metal */
+    Mat4 shadow_mat2;   /* uzak kademe (D46) */
+    f32  shadow_bias2;
+    const Texture* clouds;   /* bulut (D53): sky.mtk ile aynı doku; yoksa refl_none */
+    /* ---- malzeme ---- */
+    const Texture* tex;
+    Vec3 tint;
+    u32  use_mip;       /* bitler: LIT_MIP; LIT_BEVEL yalnız lit_hq.mtk (D55) */
+    f32  fog_start;
+    f32  fog_end;
+    Vec3 fog_color;
+    /* yalnızca lit_hq.mtk (lit.mtk ve C shader'ları okumaz) */
+    f32  wrap;          /* diffuse: 0 = Lambert, 1 = half-Lambert² (yumuşak, kıvrımlar belli) */
+    f32  translucency;  /* arkadan gelen ışığın geçen payı (kumaş) */
+    f32  metal;         /* 0 yalıtkan, 1 metal (D48) */
     f32  rough;         /* pürüz: ≥ 0,97 → parlak kol çalışmaz */
     f32  bump;          /* doku parlaklığı → yükseklik (m) */
-    Mat4 shadow_mat2;   /* uzak gölge kademesi (D46); shadow_mat yakın kademe */
-    f32  shadow_bias2;
-    /* bulut (D53): sky.mtk ile aynı doku, güneşi keser ve parlak yüzeye yansır; yoksa refl_none. Saat rüzgârı sürer */
-    f32  cloud_time;
-    const Texture* clouds;
-    /* fizik alanı (D49): R gerilme, G katlanma; fizik modülü yazar, malzeme okur. water.mtk burada dalga alanını okur */
+    /* fizik alanı (D49): R gerilme, G katlanma, B zemin lekesi; fizik modülü yazar, malzeme okur. water.mtk burada dalga alanını okur */
     const Texture* field;
     f32  field_scale;   /* uv → alan dokusu; 0 = alan yok, kol çalışmaz */
+    /* ---- yalnız CPU: GPU'ya gitmez ---- */
     u32  lv_count;                  /* lit_uniforms_prepare doldurur */
     TexLevel lv[TEX_MAX_LEVELS];
 } LitUniforms;
