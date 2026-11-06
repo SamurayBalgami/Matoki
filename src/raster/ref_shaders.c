@@ -134,7 +134,7 @@ static void lit_shade_lanes(const ShadeQuad* q, const LitUniforms* u, const u32 
 void shade_lit_tex(const ShadeQuad* q, const void* uniforms, u32 out[4]) {
     const LitUniforms* u = (const LitUniforms*)uniforms;
     u32 texel[4];
-    if (u->use_mip) {
+    if (u->use_mip & LIT_MIP) {
         ref_sample_tex_mip(u->tex, q->var[VAR3D_UV], q->var[VAR3D_UV + 1], texel);
     } else {
         for (u32 l = 0; l < 4; l++) texel[l] = ref_sample_level(u->tex, q->var[VAR3D_UV][l], q->var[VAR3D_UV + 1][l], 0);
@@ -157,7 +157,7 @@ static inline u32 sample_lut(const TexLevel* lv, u32 flags, f32 u, f32 v) {
 }
 
 u32 lit_mip_level(const LitUniforms* u, const f32 uu[4], const f32 vv[4]) {
-    if (!u->use_mip || !(u->tex->flags & TEX_FLAG_MIPMAP)) return 0;
+    if (!(u->use_mip & LIT_MIP) || !(u->tex->flags & TEX_FLAG_MIPMAP)) return 0;
     u32 level = ref_mip_level(u->tex, uu, vv);
     return level < u->lv_count ? level : u->lv_count - 1;
 }

@@ -31,7 +31,7 @@ typedef struct LitUniforms {
     Vec3 fog_color;
     f32  fog_end;
     Vec3 eye;
-    b32  use_mip;
+    u32  use_mip;       /* bitler: LIT_MIP; LIT_BEVEL yalnız lit_hq.mtk (D55) */
     Vec3 tint;
     /* yalnızca shaders/lit_hq.mtk (lit.mtk ve C shader'ları okumaz) */
     f32  wrap;          /* diffuse: 0 = Lambert, 1 = half-Lambert² (yumuşak, kıvrımlar belli) */
@@ -56,6 +56,9 @@ typedef struct LitUniforms {
     u32  lv_count;                  /* lit_uniforms_prepare doldurur */
     TexLevel lv[TEX_MAX_LEVELS];
 } LitUniforms;
+
+#define LIT_MIP   1u   /* mip seviyesi seçilir */
+#define LIT_BEVEL 2u   /* kutu kenarına pah: doku koordinatının kenarından türetilen yükseklik (D55) */
 
 /* tex değiştiğinde çağrılmalı: mip seviye tablosunu hesaplar. */
 void lit_uniforms_prepare(LitUniforms* u);

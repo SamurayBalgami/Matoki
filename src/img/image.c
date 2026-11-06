@@ -70,6 +70,56 @@ void img_build_mips(u32* px, u32 w, u32 h, u32 levels) {
     }
 }
 
+/* Lanczos3, 2× küçültme: kaynak pikseller hedef merkezinden 0,5 / 1,5 / 2,5 uzakta → L3(0,25 / 0,75 / 1,25), toplamı 1.
+ * Kutu ortalaması her seviyede bulanıklık biriktirir, uzak doku sislenir; bu çekirdek ince ayrıntıyı tutar ve örtüşmeyi de kutudan
+ * iyi bastırır (negatif kanat). Ayrılabilir: önce yatay, sonra dikey; ışık doğrusal, ara sonuç f32 */
+static const f32 LANCZOS3_HALF[3] = { 0.43313f, 0.13151f, -0.06464f };
+
+void img_build_mips_sharp(Arena* scratch, u32* px, u32 w, u32 h, u32 levels) {
+    srgb_tables();
+    for (u32 k = 1; k < levels; k++) {
+        u32 sw = img_mip_dim(w, k - 1), sh = img_mip_dim(h, k - 1);
+        u32 dw = img_mip_dim(w, k), dh = img_mip_dim(h, k);
+        const u32* src = px + img_mip_offset(w, h, k - 1);
+        u32* dst = px + img_mip_offset(w, h, k);
+        usize mark = arena_mark(scratch);
+        f32* tmp = ARENA_ARRAY(scratch, f32, (usize)dw * sh * 4u);   /* yatay geçiş: dw × sh, RGBA doğrusal */
+        for (u32 y = 0; y < sh; y++) {
+            for (u32 x = 0; x < dw; x++) {
+                f32 acc[4] = { 0, 0, 0, 0 };
+                for (i32 t = -3; t < 3; t++) {
+                    /* hedef x'in kaynak dokunuşları 2x - 2 .. 2x + 3; sarmalı (doku tekrar eder) */
+                    u32 sx = (u32)((i32)(2u * x) + t + 1) & (sw - 1u);
+                    f32 wgt = LANCZOS3_HALF[t < 0 ? -t - 1 : t];
+                    u32 c = src[y * sw + sx];
+                    for (u32 ch = 0; ch < 3; ch++) acc[ch] += wgt * (f32)g_s2l[(c >> (ch * 8)) & 0xFF];
+                    acc[3] += wgt * (f32)(c >> 24) * 257.0f;
+                }
+                for (u32 ch = 0; ch < 4; ch++) tmp[((usize)y * dw + x) * 4u + ch] = acc[ch];
+            }
+        }
+        for (u32 y = 0; y < dh; y++) {
+            for (u32 x = 0; x < dw; x++) {
+                f32 acc[4] = { 0, 0, 0, 0 };
+                for (i32 t = -3; t < 3; t++) {
+                    u32 sy = (u32)((i32)(2u * y) + t + 1) & (sh - 1u);
+                    f32 wgt = LANCZOS3_HALF[t < 0 ? -t - 1 : t];
+                    for (u32 ch = 0; ch < 4; ch++) acc[ch] += wgt * tmp[((usize)sy * dw + x) * 4u + ch];
+                }
+                u32 out = 0;
+                for (u32 ch = 0; ch < 3; ch++) {
+                    i32 l = m_f2i_sat(acc[ch] * (1.0f / 16.0f) + 0.5f);   /* 16 bit → 12 bit */
+                    out |= (u32)g_l2s[CLAMP(l, 0, 4095)] << (ch * 8);
+                }
+                i32 a = m_f2i_sat(acc[3] * (1.0f / 257.0f) + 0.5f);
+                out |= (u32)CLAMP(a, 0, 255) << 24;
+                dst[y * dw + x] = out;
+            }
+        }
+        arena_reset(scratch, mark);
+    }
+}
+
 static b32 is_pow2(u32 x) { return x && !(x & (x - 1)); }
 
 Texture* tex_create(Arena* a, u32 w, u32 h, u32 flags) {
@@ -121,3 +171,4 @@ u32 tex_level_table(const Texture* t, TexLevel* out) {
 }
 
 void tex_build_mips(Texture* t) { img_build_mips(t->px, t->w, t->h, t->levels ? t->levels : 1); }
+void tex_build_mips_sharp(Texture* t, Arena* scratch) { img_build_mips_sharp(scratch, t->px, t->w, t->h, t->levels ? t->levels : 1); }

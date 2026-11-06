@@ -12,6 +12,8 @@ static inline u32 img_mip_dim(u32 d, u32 level) { u32 r = d >> level; return r ?
 usize img_mip_offset(u32 w, u32 h, u32 level);    /* seviye 'level'ın başlangıcı (texel) */
 usize img_mip_total(u32 w, u32 h, u32 levels);    /* tüm zincirin texel sayısı */
 void  img_build_mips(u32* px, u32 w, u32 h, u32 levels);
+/* Lanczos3 ile (D55): uzak doku keskin kalır; doku tekrar ediyor sayılır (kenar sarmalanır). scratch geçici, sonunda geri sarılır */
+void  img_build_mips_sharp(Arena* scratch, u32* px, u32 w, u32 h, u32 levels);
 
 /* Önceden hesaplanmış mip seviyesi bilgisi (Texture ABI'sine dokunmadan, shader uniform'larında tutulur).
  * Örnekleme sıcak yolunda img_mip_offset döngüsünü ortadan kaldırır. */
@@ -28,6 +30,7 @@ u32 tex_level_table(const Texture* t, TexLevel* out);
  * içerik doldurulduktan sonra img_build_mips(t->px, t->w, t->h, t->levels) çağrılmalı. */
 Texture* tex_create(Arena* a, u32 w, u32 h, u32 flags);
 void     tex_build_mips(Texture* t);
+void     tex_build_mips_sharp(Texture* t, Arena* scratch);
 /* seviye tablolarını (lv_ofs, lv_w/h, lv_fw/fh) w, h, levels'tan doldurur (tex_create çağırır; elle kurulan dokular için) */
 void     tex_fill_level_offsets(Texture* t);
 

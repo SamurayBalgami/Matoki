@@ -163,6 +163,8 @@ typedef struct Demo {
     u32 ao_max;
     LitUniforms u_curb;
     Material m_curb;
+    LitUniforms u_ball[3];   /* küre ve kapsül: ızgara rengi, pahsız (D55) */
+    Material m_ball[3];
     Texture* tex_white;     /* 4×4 beyaz: düz renkli malzemeler (direk, cetvel) — ince gövdede doku uzamasın */
     LitUniforms u_pole;
     Material m_pole;
@@ -1379,22 +1381,19 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     /* malzemeler (D52): başlangıçta bir kez üretilir, kare maliyeti eklemez */
     g.tex_bricks = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
     procgen_bricks(g.tex_bricks, 7);
-    tex_build_mips(g.tex_bricks);
     g.tex_paint = tex_create(&g.perm, 128, 128, TEX_FLAG_MIPMAP);
     procgen_paint(g.tex_paint, 11);
-    tex_build_mips(g.tex_paint);
     g.tex_pavers = tex_create(&g.perm, 512, 512, TEX_FLAG_MIPMAP);
     procgen_pavers(g.tex_pavers, 8, 21);
-    tex_build_mips(g.tex_pavers);
     g.tex_rock = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
     procgen_rock(g.tex_rock, 31);
-    tex_build_mips(g.tex_rock);
     g.tex_grass = tex_create(&g.perm, 256, 256, TEX_FLAG_MIPMAP);
     procgen_grass(g.tex_grass, 41);
-    tex_build_mips(g.tex_grass);
     g.tex_cloth = tex_create(&g.perm, 128, 128, TEX_FLAG_MIPMAP);
     procgen_cloth(g.tex_cloth, 51);
-    tex_build_mips(g.tex_cloth);
+    /* mip zinciri Lanczos3 ile (D55): uzak doku kutu ortalamasındaki gibi sislenmez; yalnız başlangıçta */
+    Texture* sharp[] = { g.tex_bricks, g.tex_paint, g.tex_pavers, g.tex_rock, g.tex_grass, g.tex_cloth };
+    for (u32 i = 0; i < ARRAY_COUNT(sharp); i++) tex_build_mips_sharp(sharp[i], &g.frame);
     g.tex_clouds = tex_create(&g.perm, 256, 256, TEX_FLAG_BILINEAR);
     procgen_clouds(g.tex_clouds, 61, 0.4f, 0.35f);
 
@@ -1449,6 +1448,11 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     g.u_pillar.fog_end = 450.0f;
     material(&g.m_bricks, &g.u_bricks);
     for (u32 i = 0; i < 3; i++) material(&g.m_grid[i], &g.u_grid[i]);
+    for (u32 i = 0; i < 3; i++) {
+        g.u_ball[i] = g.u_grid[i];
+        g.u_ball[i].use_mip &= ~LIT_BEVEL;
+        material(&g.m_ball[i], &g.u_ball[i]);
+    }
     material(&g.m_floor, &g.u_floor);
     material(&g.m_pillar, &g.u_pillar);
     lit_defaults(&g.u_pole, g.tex_white, v3(0.55f, 0.56f, 0.6f));   /* mat metal gri */
@@ -1481,6 +1485,8 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
     lit_defaults(&g.u_char, g.tex_paint, v3(0.26f, 0.4f, 0.66f));
     /* yüzey (D45, D48): boya ve metal parlak, plastik orta, tuğla pürüzlü; zemin ve kumaş tam mat */
     g.u_car.rough = 0.22f;
+    g.u_car.bump = 0.01f;   /* boya kabartısız; kutu kenarındaki pah ışık yakalasın (D55) */
+    g.u_car.use_mip |= LIT_BEVEL;
     g.u_char.rough = 0.5f;
     g.u_tire.rough = 0.7f;
     g.u_pole.metal = 1.0f;
@@ -1491,6 +1497,10 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
         g.u_grid[i].rough = 0.4f;
         g.u_grid[i].bump = 0.012f;
     }
+    /* pah (D55): yüzü dokuya tam oturan kutular; küre ve iskelette doku kenarı yüz kenarı değil */
+    for (u32 i = 0; i < 3; i++) g.u_grid[i].use_mip |= LIT_BEVEL;
+    g.u_bricks.use_mip |= LIT_BEVEL;
+    g.u_pillar.use_mip |= LIT_BEVEL;
     g.u_bricks.rough = 0.8f;
     g.u_bricks.bump = 0.03f;
     g.u_pillar.rough = 0.8f;
@@ -1728,12 +1738,12 @@ static void set_frame_uniforms(Vec3 eye) {
         g.u_water.tex = g.refl_active ? &g.refl_tex : refl_none();
         lit_uniforms_prepare(&g.u_water);
     }
-    LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_curb, &g.u_floor, &g.u_pillar,
+    LitUniforms* all[] = { &g.u_bricks, &g.u_grid[0], &g.u_grid[1], &g.u_grid[2], &g.u_ball[0], &g.u_ball[1], &g.u_ball[2], &g.u_curb, &g.u_floor, &g.u_pillar,
                            &g.u_car, &g.u_tire, &g.u_char, &g.u_rock, &g.u_terrain, &g.u_flag, &g.u_jelly[0], &g.u_jelly[1], &g.u_jelly[2], &g.u_water, &g.u_sky, &g.u_pole,
                            &g.u_arm, &g.u_tent };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = eye;
-        all[i]->use_mip = g.mip;
+        all[i]->use_mip = (all[i]->use_mip & LIT_BEVEL) | (g.mip ? LIT_MIP : 0u);
         all[i]->cloud_time = g.time;
         all[i]->clouds = g.sky ? g.tex_clouds : refl_none();   /* gök kapalıysa bulut da yok */
         if (g.shadow_active) {
@@ -1753,7 +1763,7 @@ static void set_frame_uniforms(Vec3 eye) {
     g.u_water.field = g.wave_tex;
     ShadeFn fn = g.capture ? shade_capture : lit_shader_for(g.shader_mode);
     PreludeFn pre = g.capture ? NULL : lit_prelude_for(g.shader_mode);
-    Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_curb, &g.m_floor, &g.m_pillar,
+    Material* mats[] = { &g.m_bricks, &g.m_grid[0], &g.m_grid[1], &g.m_grid[2], &g.m_ball[0], &g.m_ball[1], &g.m_ball[2], &g.m_curb, &g.m_floor, &g.m_pillar,
                          &g.m_car, &g.m_tire, &g.m_char, &g.m_rock, &g.m_terrain, &g.m_flag, &g.m_jelly[0], &g.m_jelly[1], &g.m_jelly[2], &g.m_water, &g.m_ocean, &g.m_pole,
                          &g.m_arm, &g.m_tent };
     /* köşe aşaması: Matoki std_vert.mtk ya da C kâhini (K); göl her zaman wave_vert.mtk (C eşi yok) */
@@ -1859,15 +1869,15 @@ static void draw_body(const Body* b, u32 i) {
         draw(g.cube, box_mat, mat4_from_pos_rot_scale(b->pos, b->rot, v3_scale(b->half, 2.0f)));
         break;
     case SHAPE_SPHERE:
-        draw(g.sphere, &g.m_grid[i % 3], mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
+        draw(g.sphere, &g.m_ball[i % 3], mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
         break;
     case SHAPE_CAPSULE: {
         Quat q = quat_mul(b->rot, quat_from_axis_angle(v3(0, 0, 1), M_PI_F * 0.5f));   /* silindir x → kapsül y */
-        draw(g.cylinder, &g.m_grid[2], mat4_from_pos_rot_scale(b->pos, q, v3(2.0f * b->half_height, b->radius, b->radius)));
+        draw(g.cylinder, &g.m_ball[2], mat4_from_pos_rot_scale(b->pos, q, v3(2.0f * b->half_height, b->radius, b->radius)));
         Vec3 ax = v3_scale(mat3_col(&b->rot_m, 1), b->half_height);
         Vec3 r = v3(b->radius, b->radius, b->radius);
-        draw(g.sphere, &g.m_grid[2], mat4_from_pos_rot_scale(v3_add(b->pos, ax), b->rot, r));
-        draw(g.sphere, &g.m_grid[2], mat4_from_pos_rot_scale(v3_sub(b->pos, ax), b->rot, r));
+        draw(g.sphere, &g.m_ball[2], mat4_from_pos_rot_scale(v3_add(b->pos, ax), b->rot, r));
+        draw(g.sphere, &g.m_ball[2], mat4_from_pos_rot_scale(v3_sub(b->pos, ax), b->rot, r));
         break;
     }
     case SHAPE_HULL:
@@ -1968,7 +1978,7 @@ static void render_scene3(void) {
         if (b->shape == SHAPE_BOX) {
             draw(g.cube, &g.m_bricks, mat4_from_pos_rot_scale(b->pos, b->rot, v3_scale(b->half, 2.0f)));
         } else if (b->shape == SHAPE_SPHERE) {
-            draw(g.sphere, &g.m_grid[i % 3], mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
+            draw(g.sphere, &g.m_ball[i % 3], mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
         }
     }
 }
@@ -1979,7 +1989,7 @@ static void render_scene4(void) {
         if (i == g.car.body || b->shape == SHAPE_PLANE) continue;
         const Material* m = b->inv_mass > 0.0f ? &g.m_bricks : &g.m_pillar;
         if (b->shape == SHAPE_BOX) draw(g.cube, m, mat4_from_pos_rot_scale(b->pos, b->rot, v3_scale(b->half, 2.0f)));
-        else draw(g.sphere, &g.m_grid[i % 3], mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
+        else draw(g.sphere, &g.m_ball[i % 3], mat4_from_pos_rot_scale(b->pos, b->rot, v3(b->radius, b->radius, b->radius)));
     }
     const Body* ch = &g.phys.bodies[g.car.body];
     draw(g.cube, &g.m_car, mat4_from_pos_rot_scale(ch->pos, ch->rot, v3_scale(ch->half, 2.0f)));

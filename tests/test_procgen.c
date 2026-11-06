@@ -4,6 +4,7 @@
 #include "img/image.h"
 #include "img/procgen.h"
 #include "core/math.h"
+#include "core/mem.h"
 #include "gfx3d/mesh.h"
 
 static f32 luma(u32 c) {
@@ -130,4 +131,37 @@ TEST(mesh_box_size_and_metric_uv) {
         CHECK_NEAR(vmax, ev, 1e-5f);
     }
     CHECK_NEAR(m->ny[8], 1.0f, 1e-6f);
+}
+
+/* keskin mip (D55): seviye ortalaması korunur, ince çizgilerin genliği kutu zincirinden fazla kalır */
+TEST(mips_sharp_keep_mean_and_detail) {
+    Arena* a = test_arena();
+    Texture* box = tex_create(a, 64, 64, TEX_FLAG_MIPMAP);
+    Texture* sh = tex_create(a, 64, 64, TEX_FLAG_MIPMAP);
+    /* dikey çizgiler, 16 piksel periyot: seviye 2'de (16²) 4 piksel, Nyquist'in üstünde; kutu zinciri genliği
+     * her seviyede kırpar, Lanczos3 daha çok korur */
+    for (u32 y = 0; y < 64u; y++) {
+        for (u32 x = 0; x < 64u; x++) {
+            u32 v = (u32)(128.0f + 100.0f * m_sinf((f32)x * (M_TAU_F / 16.0f) + 0.4f));
+            box->px[y * 64u + x] = sh->px[y * 64u + x] = color_pack(v, v, v, 255);
+        }
+    }
+    tex_build_mips(box);
+    tex_build_mips_sharp(sh, a);
+    const u32* pb = box->px + img_mip_offset(64, 64, 2);
+    const u32* ps = sh->px + img_mip_offset(64, 64, 2);
+    f32 mb = 0, ms = 0, lob = 255, hib = 0, los = 255, his = 0;
+    for (u32 i = 0; i < 256u; i++) {
+        f32 b = luma(pb[i]), q = luma(ps[i]);
+        mb += b;
+        ms += q;
+        lob = m_minf(lob, b);
+        hib = m_maxf(hib, b);
+        los = m_minf(los, q);
+        his = m_maxf(his, q);
+    }
+    test_note("genlik kutu", (f64)(hib - lob), 1);
+    test_note("genlik Lanczos3", (f64)(his - los), 1);
+    CHECK(m_absf(mb - ms) / mb < 0.03f);
+    CHECK(his - los > (hib - lob) * 1.1f);
 }

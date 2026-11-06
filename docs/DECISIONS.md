@@ -765,3 +765,17 @@ Kazanç eşit dağılmadı: görünüm 3 tek thread'de ×1,03, görünüm 6 D52'
 
 Kabul: `gpu_check` 66/66 (en kötü %0,029), 270/270 test, `check_demo` geçti.
 Sınır: gerçek ekranda FPS hâlâ ölçülmedi. GPU'da MSAA ve gölge kopyası (zaman damgası dışında) açık kalem; tek adaptör. Yazılımda üçgen işleme MSAA'sız yolun hâlâ yaklaşık 3 katı.
+
+## D55. Keskin kenar: Lanczos3 mip ve kutu pahı
+- **Mip zinciri Lanczos3 ile** (`img_build_mips_sharp`, malzeme dokuları): kutu ortalaması her seviyede bulanıklık biriktiriyordu. 6 dokunuşlu ayrılabilir çekirdek, doğrusal ışıkta, kenar sarmalı. Sınamada 16 piksel periyotlu çizginin genliği seviye 2'de kutuyla 147, Lanczos3 ile 165. Kare maliyeti yok, başlangıç ~10 ms. D54'teki 4x anizotropinin uzak zemindeki yumuşamasını da geri aldı. `tex_build_mips` (kutu) testler ve glTF için kalır.
+- **Kutu pahı:** yüzü dokuya tam oturan kutularda (ızgara, tuğla, sütun, araba) uv kenarından çeyrek daire yükseklik, kabartıya eklenir: kenar yuvarlanır, ışık yakalar. Bayrak `use_mip`'in 2. biti (`LIT_BEVEL`); 1. bit mip (`LIT_MIP`). Küre ve kapsül ayrı malzeme (`m_ball`), pahsız: orada doku kenarı yüz kenarı değil.
+- **Denenip atılan:** pahı doku alfasına yazmak. Alfa okununca anizotropik süzmenin her dokunuşunda bir kanal daha çözülüyor: gölgeleme 117 → 170 ms (×1,45). Analitik hesap 114,9 ms.
+
+| A/B, 1920×1080, tek thread, D54'e karşı (10 görünüm) | Önce | Sonra | Oran |
+|---|---|---|---|
+| gölge + MSAA | 2077 ms | 2111 ms | 1,017 |
+| düz | 1300 ms | 1302 ms | 1,002 |
+
+Görünüm 2 (ekranı dolduran pahlı küpler) ×1,05–1,10; toplam ölçüm gürültüsü ±%2.
+Kabul: `gpu_check` 66/66 (en kötü %0,027), 271/271 test, `check_demo` geçti.
+Sınır: pah analitik olduğu için uzakta da aynı genişlikte; küçük kutularda kenar ışığı ince bir çizgi olarak kalır, parlaklık yumuşatması (D51) kırpışmayı bastırır.

@@ -29,7 +29,7 @@ fn norm_safe(v: vec3) -> vec3 {
 }
 
 fn frag() -> vec4 {
-    let lod = select(use_mip != 0, mip_level(tex, uv), 0);
+    let lod = select((use_mip & 1) != 0, mip_level(tex, uv), 0);
     let texel = sample_level(tex, uv, lod);
     let n = norm_safe(nrm);
     let ndl = maxc(dot(n, to_light), 0.0);
