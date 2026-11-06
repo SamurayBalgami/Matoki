@@ -10,6 +10,7 @@ static const MatokiUniformField LIT_FIELDS[] = {
     F(eye, TB_FLOAT, 3), F(to_light, TB_FLOAT, 3), F(ambient, TB_FLOAT, 1), F(light_color, TB_FLOAT, 3),
     F(time, TB_FLOAT, 1), F(screen_ix, TB_FLOAT, 1), F(screen_iy, TB_FLOAT, 1),
     F(shadow, TB_TEX, 1), F(shadow_mat, TB_MAT, 4), F(shadow_bias, TB_FLOAT, 1), F(shadow_mat2, TB_MAT, 4), F(shadow_bias2, TB_FLOAT, 1),
+    F(shadow_nofs, TB_FLOAT, 1), F(shadow_nofs2, TB_FLOAT, 1),
     F(clouds, TB_TEX, 1),
     /* malzeme */
     F(tex, TB_TEX, 1), F(tint, TB_FLOAT, 3), F(use_mip, TB_INT, 1),

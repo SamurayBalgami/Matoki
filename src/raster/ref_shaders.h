@@ -37,11 +37,13 @@ typedef struct LitUniforms {
     f32  shadow_bias;   /* derinlik sapması (ışık uzayı, 0..1 ölçeğinde) */
     Mat4 shadow_mat2;   /* uzak kademe (D46) */
     f32  shadow_bias2;
+    f32  shadow_nofs;   /* normal ofseti (m, D58): gölge sorgusu normal boyunca bu kadar dışarıdan; yakın kademe */
+    f32  shadow_nofs2;  /* uzak kademe */
     const Texture* clouds;   /* bulut (D53): sky.mtk ile aynı doku; yoksa refl_none */
     /* ---- malzeme ---- */
     const Texture* tex;
     Vec3 tint;
-    u32  use_mip;       /* bitler: LIT_MIP; LIT_BEVEL yalnız lit_hq.mtk (D55) */
+    u32  use_mip;       /* bitler: LIT_MIP; LIT_BEVEL, LIT_FIELD_FINE yalnız lit_hq.mtk (D55, D58) */
     f32  fog_start;
     f32  fog_end;
     Vec3 fog_color;
@@ -61,6 +63,7 @@ typedef struct LitUniforms {
 
 #define LIT_MIP   1u   /* mip seviyesi seçilir */
 #define LIT_BEVEL 2u   /* kutu kenarına pah: doku koordinatının kenarından türetilen yükseklik (D55) */
+#define LIT_FIELD_FINE 4u   /* fizik alanı piksel başına okunur (küçük cisim: bayrak, jöle); yoksa quad başına (D58) */
 
 /* tex değiştiğinde çağrılmalı: mip seviye tablosunu hesaplar. */
 void lit_uniforms_prepare(LitUniforms* u);

@@ -810,3 +810,25 @@ Kabul: 7 programın (lit, lit_hq, gölgesiz lit_hq, water, sky, std_vert, wave_v
 yeni `test_matoki_module.c`: const = literal IR'ı, const kuralları, değiştirme, import bir kez + bağımlılık sırası, döngü / eksik / çakışma / konum, lit_hq
 gölgesiz türevde gölge okuması 0). İki bilinçli bozma (değiştirme uygulanmasın; dosya içi çift bildirim birleşsin) testlerce yakalandı.
 Maliyet: kare maliyeti yok (üretilen kod aynı). Derleme süresi ayrıca ölçülmedi; ek iş iki küçük dosyanın lex + parse'ı.
+
+## D58. Yumuşak pah, pürüzsüz bayrak, gölgede normal ofseti
+Sorun: D55'in pahı kenarı sert bir ışık çizgisine çeviriyordu (çeyrek daire profili kenarda sonsuz eğim; %3,5'lik bant uzakta pikselden ince → noktalı
+çizgi). Bayrak yakında pikselli görünüyordu: üç ayrı neden — fizik alanı quad başına okunuyor (kıvrım gölgesi 2×2 basamak), parçacık değeri komşu
+bağların tepesi (ara değerde baklava izi), 24 × 16 parçacık ağı olduğu gibi çiziliyor (köşeli kıvrım); en görünürü de kendi üstüne düşen gölgenin
+texel basamakları (bayrakta wrap = 1: ışığa sırtını dönen yüz de aydınlık, n·l ≈ 0'daki gölge sınırı görünür).
+- **Pah:** profil q² (kenarda eğim sınırlı), genişlik en az %5 ve en az ~1,5 piksel (uv ayak izi; türevler dalın dışında, sample_aniso'nunkiyle aynı IR).
+  Bant ayak izine göre genişleyince derinliği aynı oranda azalır: uzakta pah söner, noktalı çizgi kalmaz.
+- **Bayrak yüzeyi** (`gfx3d/cloth_mesh`): parçacık ızgarası Catmull-Rom tensör yüzeyiyle 2 kat sıklaştırılır (47 × 31 köşe), yüzey her parçacıktan
+  geçer, normal yüzeyin analitik türevlerinden. Fizik aynı (parçacık sayısı, adım maliyeti değişmedi). 3 kat görünürde farksız, MSAA yolunda ×1,1 daha pahalı.
+- **Gerinim alanı:** parçacık değerleri 3×3 binom süzgeçten geçer; küçük cisimde (bayrak, jöle; `LIT_FIELD_FINE`) alan piksel başına okunur. Zemin
+  quad başına kalır (uniform koşul → gerçek dal, zemin ek okuma ödemez).
+- **Normal ofseti:** gölge sorgusu normal boyunca 1,5 texel dışarıdan (`shadow_nofs`, `shadow_nofs2`, kademe başına `texel_world` · 1,5; D56 düzeninde
+  iki satır). Kendi üstüne gölge düşüren eğri yüzeyde sınır texel basamağı değil n·l = 0 eğrisi olur. Temas gölgeleri cisme yapışık kaldı (görünüm 1, 8
+  görsel denetim). Su değişmedi (tek okumalı gölge, düz yüzey).
+
+Kabul: 280/280 test (iki kipte; yeni `test_cloth_mesh.c`: düz ızgara doğrusal kalır, yüzey parçacıklardan geçer, sarım = normal, komşu normal sapması
+parçacık ağınınkinin 1/6'sı), `check_demo` geçti, `gpu_check` 66/66 (en kötü %0,027). Hash: lit_hq sütunu her görünümde değişti (pah, normal ofseti);
+bayrak görünümünde (5) tüm sütunlar, jöle görünümünde (11) MSAA sütunları (bayrak geometrisi); C ↔ lit.mtk eşitliği her görünümde korunuyor.
+Maliyet (yazılım, tek thread, 960×540, 4 tekrarın en küçüğü): bayrak görünümü gölge + MSAA 102,5 → 115,0 ms, düz 62,8 → 63,0 ms; yalnız shader
+değişiklikleri (sıklaştırma 1 iken) 101,4 / 61,2 ms, yani pah, alan ve normal ofseti ölçüm gürültüsünde. Diğer görünümler toplamı ×1,00–1,03 (gürültü
+±%5). GPU geçiş süresi ölçülmedi.

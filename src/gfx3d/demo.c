@@ -11,6 +11,7 @@
 #include "core/sys.h"
 #include "matoki/matoki.h"
 #include "gfx3d/lit_layout.h"
+#include "gfx3d/cloth_mesh.h"
 #include "phys/phys.h"
 #include "phys/character.h"
 #include "phys/shapes.h"
@@ -51,6 +52,7 @@
 #define SHADOW_RADIUS2 42.0f   /* m: uzak kademe (texel ≈ 8 cm) */
 #define SHADOW_BIAS_M 0.04f    /* m: yakın kademe ≈ 2 texel; alıcı düzlemi eğimi ayrıca karşılar */
 #define SHADOW_BIAS2_M 0.14f   /* m: uzak kademe ≈ 2 texel */
+#define SHADOW_NOFS_TEXELS 1.5f /* normal ofseti, texel cinsinden (D58): kendi üstüne gölge düşüren eğri yüzeyde sınır texel değil geometri izler */
 #define REFL_W 1024            /* su yansıma haritası (D47); Texture satır adımı 2'nin kuvveti ister */
 #define REFL_H 512
 #define WATER_Y 0.9f           /* m: göl düzlemi */
@@ -69,6 +71,7 @@ typedef struct AoSplat { f32 x, z, hx, hz, r, s; } AoSplat;
 #define JELLY_FIELD_SCALE 0.125f   /* uv → doku: jölenin uv açıklığı (x + z, y) · 1,5 ≈ 8 */
 #define FLAG_NU 24u            /* bayrak parçacık ızgarası */
 #define FLAG_NV 16u
+#define FLAG_R 2u              /* bayrağın çizim yüzeyi (D58): parçacık aralığı başına 2 alt aralık, 47 × 31 köşe. 3 görünürde farksız, MSAA yolunda ×1,1 daha pahalı */
 
 /* sahne 8: 3 sütun × 3 değen top, Hertz temaslı DEM (D34) */
 #define DROP_COLS  3
@@ -203,6 +206,8 @@ typedef struct Demo {
     SoftWorld soft;
     SoftBody* flag;
     Mesh* flag_mesh;
+    ClothMesh* flag_cloth;   /* flag_mesh bunun yüzeyi (D58) */
+    f32* flag_tmp;           /* gerinim yumuşatma tamponu */
     SoftBody* jelly[3];
     Mesh* jelly_mesh[3];
     u32 jelly_count;
@@ -337,6 +342,7 @@ static void lit_defaults(LitUniforms* u, const Texture* tex, Vec3 tint) {
     u->bump = 0.0f;
     mem_zero(&u->shadow_mat2, sizeof(u->shadow_mat2));
     u->shadow_bias2 = 0.0f;
+    u->shadow_nofs = u->shadow_nofs2 = 0.0f;
     u->field = refl_none();
     u->clouds = refl_none();
     u->time = 0.0f;
@@ -944,15 +950,12 @@ static void soft_scene_build(void) {
     for (u32 j = 0; j < nv; j++) soft_pin(g.flag, j * nu);
     soft_add_tethers(a, g.flag);
     soft_world_add(&g.soft, g.flag);
-    g.flag_mesh = soft_mesh_alloc(a, g.flag, TRUE);
+    /* çizim: parçacık ızgarasının Catmull-Rom yüzeyi (D58); uv metre (u ∈ [0, 3], v ∈ [0, 2]) */
+    g.flag_cloth = cloth_mesh_alloc(a, nu, nv, FLAG_R, 3.0f, 2.0f);
+    g.flag_mesh = g.flag_cloth->mesh;
     g.flag_tension = ARENA_ARRAY(a, f32, g.flag->count);
     g.flag_fold = ARENA_ARRAY(a, f32, g.flag->count);
-    for (u32 j = 0; j < nv; j++) {
-        for (u32 i = 0; i < nu; i++) {
-            g.flag_mesh->u[j * nu + i] = (f32)i / (f32)(nu - 1) * 3.0f;
-            g.flag_mesh->v[j * nu + i] = (f32)j / (f32)(nv - 1) * 2.0f;
-        }
-    }
+    g.flag_tmp = ARENA_ARRAY(a, f32, g.flag->count);
     /* jöleler: zeminde, dinamik kutunun üstünde, statik bloğun kenarına düşen */
     BodyDesc block = phys_desc_box(v3(3.5f, 0.5f, -1.0f), v3(1.0f, 0.5f, 1.0f), 0.0f);
     phys_add_body(w, &block);
@@ -1467,11 +1470,13 @@ EXPORT(engine_init) i32 engine_init(i32 w, i32 h) {
         g.jelly_field[k] = tex_create(&g.perm, JELLY_FIELD_N, JELLY_FIELD_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
         g.u_jelly[k].field = g.jelly_field[k];
         g.u_jelly[k].field_scale = JELLY_FIELD_SCALE;
+        g.u_jelly[k].use_mip |= LIT_FIELD_FINE;
     }
     lit_defaults(&g.u_water, g.tex_white, v3(0.04f, 0.16f, 0.22f));   /* derin su rengi (water.mtk) */
     g.flag_field = tex_create(&g.perm, FLAG_FIELD_N, FLAG_FIELD_N, TEX_FLAG_CLAMP | TEX_FLAG_BILINEAR);
     g.u_flag.field = g.flag_field;
     g.u_flag.field_scale = 1.0f / 3.0f;   /* uv metre: u ∈ [0, 3] */
+    g.u_flag.use_mip |= LIT_FIELD_FINE;   /* küçük cisim: alan piksel başına (D58) */
     wave_init(&g.wave, &g.perm, WAVE_N, WAVE_SIZE, 3.0f, 0.3f);   /* c = √(g·0,9 m) */
     for (i32 k = 0; k < 7; k++) {
         f32 px, pz;
@@ -1687,7 +1692,7 @@ static void set_frame_uniforms(Vec3 eye) {
                            &g.u_arm, &g.u_tent };
     for (u32 i = 0; i < ARRAY_COUNT(all); i++) {
         all[i]->eye = eye;
-        all[i]->use_mip = (all[i]->use_mip & LIT_BEVEL) | (g.mip ? LIT_MIP : 0u);
+        all[i]->use_mip = (all[i]->use_mip & (LIT_BEVEL | LIT_FIELD_FINE)) | (g.mip ? LIT_MIP : 0u);
         all[i]->time = g.time;
         all[i]->screen_ix = 1.0f / (f32)g.fb.w;
         all[i]->screen_iy = 1.0f / (f32)g.fb.h;
@@ -1698,12 +1703,15 @@ static void set_frame_uniforms(Vec3 eye) {
             all[i]->shadow_bias = shadow_bias_for(g.shadow, 0, SHADOW_BIAS_M);
             all[i]->shadow_mat2 = g.shadow->c[1].world_to_tex;
             all[i]->shadow_bias2 = shadow_bias_for(g.shadow, 1, SHADOW_BIAS2_M);
+            all[i]->shadow_nofs = g.shadow->c[0].texel_world * SHADOW_NOFS_TEXELS;
+            all[i]->shadow_nofs2 = g.shadow->c[1].texel_world * SHADOW_NOFS_TEXELS;
         } else {
             all[i]->shadow = shadow_none();
             mem_zero(&all[i]->shadow_mat, sizeof(all[i]->shadow_mat));
             all[i]->shadow_bias = 0.0f;
             mem_zero(&all[i]->shadow_mat2, sizeof(all[i]->shadow_mat2));
             all[i]->shadow_bias2 = 0.0f;
+            all[i]->shadow_nofs = all[i]->shadow_nofs2 = 0.0f;
         }
     }
     g.u_water.field = g.wave_tex;
@@ -1892,11 +1900,28 @@ static void jelly_field_bake(u32 k) {
     g.jelly_field[k]->gen++;
 }
 
+/* nu × nv ızgarada 3×3 binom süzgeç (1 2 1 ⊗ 1 2 1, kenarda kenetli), yerinde; tmp aynı boyda */
+static void grid_blur3(f32* v, f32* tmp, u32 nu, u32 nv) {
+    for (u32 j = 0; j < nv; j++) {
+        for (u32 i = 0; i < nu; i++) {
+            const f32* r = v + j * nu;
+            tmp[j * nu + i] = 0.25f * r[i > 0 ? i - 1 : i] + 0.5f * r[i] + 0.25f * r[i + 1 < nu ? i + 1 : i];
+        }
+    }
+    for (u32 j = 0; j < nv; j++) {
+        u32 j0 = j > 0 ? j - 1 : j, j1 = j + 1 < nv ? j + 1 : j;
+        for (u32 i = 0; i < nu; i++) v[j * nu + i] = 0.25f * tmp[j0 * nu + i] + 0.5f * tmp[j * nu + i] + 0.25f * tmp[j1 * nu + i];
+    }
+}
+
 /* yumuşak cisim mesh'leri (bayrak + jöleler): karede bir kez, gölge ve ana geçişten önce */
 static void soft_meshes_update(void) {
-    soft_mesh_update(g.flag_mesh, g.flag, TRUE, 0.0f);
-    /* gerinim → doku (D49): dokunun u'su bayrağın eni (3 m), v'si boyu 2/3'üne kadar; ölçek görünür aralığa, shader 1 = tam gerili / katlı */
+    cloth_mesh_update(g.flag_cloth, g.flag->x);
+    /* gerinim → doku (D49): dokunun u'su bayrağın eni (3 m), v'si boyu 2/3'üne kadar; ölçek görünür aralığa, shader 1 = tam gerili / katlı.
+     * Parçacık değeri komşu bağların tepesi: tek parçacıkta sivrilir, ara değerde baklava izi bırakırdı. 3×3 binom süzgeç (D58) */
     soft_strain_field(g.flag, g.flag_tension, g.flag_fold);
+    grid_blur3(g.flag_tension, g.flag_tmp, FLAG_NU, FLAG_NV);
+    grid_blur3(g.flag_fold, g.flag_tmp, FLAG_NU, FLAG_NV);
     u32* fpx = g.flag_field->px;
     for (u32 y = 0; y < FLAG_FIELD_N; y++) {
         f32 fv = (f32)y / (f32)(FLAG_FIELD_N - 1) * 1.5f * (f32)(FLAG_NV - 1);

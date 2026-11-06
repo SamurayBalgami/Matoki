@@ -8,6 +8,8 @@ uniform shadow_mat: mat4;
 uniform shadow_bias: f32;
 uniform shadow_mat2: mat4;
 uniform shadow_bias2: f32;
+uniform shadow_nofs: f32;
+uniform shadow_nofs2: f32;
 
 // üçüncü derece B-spline ağırlıkları, kesir f ∈ [0, 1): dört komşu (taban - 1 .. taban + 2), toplam 1
 fn spline(f: f32) -> vec4 {
@@ -29,10 +31,12 @@ fn shadow_row(ix: i32, iy: i32, z: f32, zu: f32, cx: f32, w: vec4) -> f32 {
 
 // ışık görüşünden görünür mü: 1 = aydınlık, 0 = gölgede; 4×4 komşunun sonucu B-spline ağırlıklarıyla karışır. Her komşu alıcı
 // düzleminin o noktadaki derinliğiyle karşılaştırılır: yoksa geniş çekirdek eğik yüzeyin kendisini gölge sayar
-fn shadow_lit(p: vec3) -> f32 {
+// n: yüzey normali (görünen yüze doğru). Normal ofseti (D58): sorgu normal boyunca bir texel dışarıdan; ışığa bakan yüz kendi
+// derinliğinden ayrılır, sırtını dönen yüz kendi arkasında kalır → kendi üstüne gölge düşüren kıvrımda sınır texel basamağı değil n·l = 0 eğrisi
+fn shadow_lit(p: vec3, n: vec3) -> f32 {
     // iki kademe (D46): çekirdek yakın haritaya sığıyorsa o (keskin), yoksa uzak; seçim lane başına, türevler kademe başına
-    let s0 = shadow_mat * vec4(p, 1.0);
-    let s1 = shadow_mat2 * vec4(p, 1.0);
+    let s0 = shadow_mat * vec4(p + n * shadow_nofs, 1.0);
+    let s1 = shadow_mat2 * vec4(p + n * shadow_nofs2, 1.0);
     let size = tex_size(shadow).x;
     let lo = 6.0 / size;
     let hi = 1.0 - lo;
