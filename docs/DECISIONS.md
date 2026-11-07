@@ -861,3 +861,39 @@ uyku kapalı (uykunun gizlediği titreme de ölçülsün).
 Sahne kurulumu ayrıca sınandı: zincir kütle oranı 1'de patlamıyor (kurulum doğru), domino 8 s'de yetişmiyordu (süre 20 s'ye çıktı), ağırlık önce
 halkalarla çakışıyordu (düzeltildi). Eşikler bizim; Box2D / PhysX ile aynı sahnede yan yana ölçüm sonraki adım (kodlarını indirmek ayrıca onay ister).
 Kabul: `test_phys_suite.c` bugün geçen 6 sahnenin geçmeye devam ettiğini ve kalan 6'nın belirleyici olduğunu denetler; 282/282 test (iki kipte).
+
+## D60. Eklemler: ağaç biçimli eklemlerde doğrudan çözücü, tam döngü kapatma
+Sorun (D59 düzeneği): ağır sarkaç zinciri (20 halka 0,1 kg + 100 kg) patlıyordu, eklem hatası 269 m; oran 1'de bile %5 uzama. Ölçüm üç ayrı neden
+buldu, her biri ayrı denendi:
+1. **Bayat kuvvet kolları.** `joints_prepare` adım başında bir kez; 4 alt adım boyunca dönen gövdede kol eskiyordu (Box2D v3 her çözümde döndürür).
+   Alt adım sayısını artırmak bu yüzden hiç yardım etmiyordu (oran 1: 4 → 32 alt adımda 0,126 → 0,110 m). Artık her alt adımda hazırlanır.
+2. **Gauss-Seidel yakınsaması.** Kütle oranı 100–1000'de satır satır çözüm yakınsamıyor. Ağaç oluşturan eklemlerin eşitlik satırları (top 3,
+   menteşe 5 (+1 etkin açı sınırı), çubuk 1) doğrudan çözülür: Baraff 1996 tarzı, eklemler yapraktan köke elenir, her gövde 6×6 etkin ters kütle
+   W taşır (W_up ← W_up − h S⁻¹ hᵀ), ileri/geri yerine koyma O(n). Döngü kapatan eklemler (en çok 8 eklem / 24 satır) ağacın tepkisini içeren
+   Schur tümleyeni K = J_L (W₀ − W₀ J_Tᵀ A_T⁻¹ J_T W₀) J_Lᵀ ile tam (her sütun bir ağaç çözümü); fazlası, ip ve menteşe motoru Gauss-Seidel'de,
+   ağaçla blok Gauss-Seidel (4 tur). Gövde başına net itki önce toplanır, sonra bir kez uygulanır (ağır yükte eklem itkileri hafif gövdede birbirini
+   götürür; tek tek uygulanan dönüşler bu farkı bozuyordu).
+3. **Yumuşaklığın kütle referansı.** Box2D'nin yumuşak eklemi (60 Hz) sertliği eklemin yerel kütlesinden alır: 0,1 kg'lık halkada 100 kg yük
+   her eklemi ~7 cm esnetiyordu (20 eklemde 1,3 m). Ağaç satırları katıdır; kayma bias hızıyla (aynı 60 Hz oranı) düzeltilir.
+
+Enerji: katı izdüşüm + relax, sarkaçta 10 s'de %21,7 enerji kaybettirdi (bias'sız teğet izdüşümü alt adım başına θ²/2 kaybeder). Denenip
+bırakılanlar: her alt adımda konum izdüşümü (%21,7), SHAKE (konumu kısıta düşüren hız; enerji %0,58 ama hafif halkada açık merkezcil terim tek
+alt adımda patladı, kısmi γ = 0,5'te bile), XPBD tarzı türetilmiş hız (%51). Seçilen: ağaç satırları yalnız bias geçişinde çözülür, relax'ta
+silinmez → bias hızı merkezcil terimi bir alt adım gecikmeyle verir (%0,68). Güvenlik ağı: kayma 1 mm'yi aşarsa fazlası konumda, kütle ağırlıklı
+izdüşümle silinir (post-stabilizasyon, Cline & Pai 2003; 2 Newton adımı, her adımda güncel J — eski J'yle büyük düzeltmede yakınsamıyordu).
+Açı sınırı etkin küme: sınır dışındaysa ağaçta eşitlik satırı, itki çekmeye dönerse atılır ve yeniden çözülür; motor ağaçtan sonra Gauss-Seidel.
+
+| ölçüm (60 Hz, 4 alt adım) | önce | sonra |
+|---|---|---|
+| ağır zincir oran 1000: en büyük eklem hatası / uzama | 269 m / %4696 | 1,5 mm / %0,33 |
+| sarkaç enerjisi (10 s, % mgL) | 0,72 | 0,68 |
+| köprü: 10 menteşeli, iki ucu sabit, ortası 1000× ağır | 10,1 m (patlıyor) | 1,2 mm |
+| halka: 4 kutu, döngü kapatan eklem, köşe 50× | 0,118 m | 0,35 mm |
+| yıldız: göbek 200 kg + 4 kol × 3 küre | 16 mm | 1,4 mm |
+| menteşe sınırı aşımı (sınır −0,5 rad) | — (eşik 0,03) | −0,5046 |
+| zincir adım süresi (21 eklem, en küçük / 4) | 0,037 ms | 0,098 ms |
+| 2000 kutu (eklemsiz) | 4,1 ms | 4,2 ms (gürültü) |
+
+Düzenek 7/12 (zincir geçti). Maliyet: eklem başına ~4,6 µs/adım (alt adım başına çarpanlara ayırma; döngüde + satır başına bir ağaç çözümü).
+Bellek: dünya başına ~260 KB (256 eklemlik sabit tampon). Görüntü hash'leri değişmedi. Kabul: 287/287 test (iki kipte; yeni `test_phys_tree.c`:
+zincir 1000:1, sarkaç enerjisi, halka, köprü, yıldız), `check_demo` geçti.

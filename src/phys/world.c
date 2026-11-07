@@ -31,6 +31,7 @@ void phys_world_init(PhysWorld* w, Arena* a, u32 max_bodies, u32 max_manifolds) 
     w->pairs = ARENA_ARRAY(a, u32, w->pair_cap * 2);
     w->joint_cap = PHYS_DEFAULT_JOINTS;
     w->joints = ARENA_ARRAY(a, Joint, w->joint_cap);
+    joints_init(w, a);
     if (max_bodies > 65536) sys_panic("phys: en çok 65536 gövde (çift anahtarı 16+16 bit)");
     tree_init(&w->static_tree, a, max_bodies * 2, 0.0f);
     tree_init(&w->dyn_tree, a, max_bodies * 2, PHYS_TREE_MARGIN);
@@ -1101,7 +1102,6 @@ static void soft_step(PhysWorld* w, f32 dt) {
     f32 hz = m_minf(w->contact_hertz, 0.25f / h);
     Softness soft = make_soft(hz, w->contact_damping, h);
     soft_prepare(w);
-    joints_prepare(w, h);
     if (!w->warm_start) {   /* hazırlık itkileri kullanmaz → döngüden önce sıfırlamak sonucu değiştirmez */
         for (u32 mi = 0; mi < w->cur_count; mi++) {
             for (u32 i = 0; i < w->cur[mi].count; i++) w->cur[mi].p[i].jn = w->cur[mi].p[i].jt1 = w->cur[mi].p[i].jt2 = 0.0f;
@@ -1113,6 +1113,7 @@ static void soft_step(PhysWorld* w, f32 dt) {
 #endif
     for (u32 sub = 0; sub < n; sub++) {
         integrate_velocities(w, h);
+        joints_prepare(w, h);   /* kollar ve ağaç her alt adımda güncel dönüşlerle (D60) */
         if (w->warm_start) {
             joints_warm_start(w);
             soft_warm_start(w);
@@ -1120,6 +1121,7 @@ static void soft_step(PhysWorld* w, f32 dt) {
         joints_solve(w, h, TRUE, TRUE);
         soft_solve(w, h, soft, TRUE);
         integrate_positions(w, h);
+        joints_stabilize(w);
         joints_solve(w, h, FALSE, TRUE);
         soft_solve(w, h, soft, FALSE);
         soft_accum_jn(w);
@@ -1433,6 +1435,7 @@ void phys_step(PhysWorld* w, f32 dt) {
         }
         rolling_resistance(w, FALSE);
         integrate_positions(w, dt);
+        joints_stabilize(w);
     }
     guard_bodies(w);
     if (w->continuous) continuous(w, dt);

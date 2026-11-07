@@ -261,6 +261,7 @@ typedef struct PhysWorld {
     u32       color_words;
     u8*       manifold_color;
     void*     wide;         /* SIMD geniş kısıtları (solver_simd_wasm.c) */
+    void*     jtree;        /* eklem ağacı doğrudan çözücüsü (joints.c, D60) */
     u32       wide_cap, wide_count;
     u32       wide_color_start[PHYS_COLORS + 1];
     PhysStats stats;

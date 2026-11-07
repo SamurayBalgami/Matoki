@@ -1,6 +1,6 @@
 /* tests/test_phys_suite.c — fizik doğruluk düzeneğinin (D59) gerilemeye karşı korunması.
- * Bugün eşiği geçen sahneler (piramit, esneklik, domino, mermi, sarkaç enerjisi, belirlenimcilik) geçmeye devam etmeli; kalanlar
- * (dikey yığın, kütle oranı, ağır zincir, sürtünme ivmesi, girişim hızı, açısal momentum) iyileştirme listesi: burada yalnız
+ * Bugün eşiği geçen sahneler (piramit, ağır zincir (D60), esneklik, domino, mermi, sarkaç enerjisi, belirlenimcilik) geçmeye devam
+ * etmeli; kalanlar (dikey yığın, kütle oranı, sürtünme ivmesi, girişim hızı, açısal momentum) iyileştirme listesi: burada yalnız
  * düzeneğin koştuğu ve sonucun belirleyici olduğu denetlenir. Büyük yığın (hız) testte koşmaz. */
 #include "test.h"
 #include "core/fmt.h"
@@ -14,7 +14,7 @@ enum { S_STACK, S_PYRAMID, S_MASS, S_CHAIN, S_FRICTION, S_RESTITUTION, S_OVERLAP
 
 TEST(phys_suite_passing_scenes_stay_passing) {
     CHECK(phys_suite_count() == 13);
-    static const i32 MUST[] = { S_PYRAMID, S_RESTITUTION, S_DOMINO, S_BULLET, S_PENDULUM, S_DET };
+    static const i32 MUST[] = { S_PYRAMID, S_CHAIN, S_RESTITUTION, S_DOMINO, S_BULLET, S_PENDULUM, S_DET };
     for (u32 i = 0; i < ARRAY_COUNT(MUST); i++) {
         f64* r = phys_suite_run(MUST[i]);
         CHECK(r != NULL);
@@ -27,7 +27,7 @@ TEST(phys_suite_passing_scenes_stay_passing) {
 }
 
 TEST(phys_suite_failing_scenes_are_deterministic) {
-    static const i32 IDS[] = { S_STACK, S_MASS, S_CHAIN, S_FRICTION, S_OVERLAP, S_GYRO };
+    static const i32 IDS[] = { S_STACK, S_MASS, S_FRICTION, S_OVERLAP, S_GYRO };
     for (u32 i = 0; i < ARRAY_COUNT(IDS); i++) {
         f64 a[6], b[6];
         mem_copy(a, phys_suite_run(IDS[i]), sizeof(a));
